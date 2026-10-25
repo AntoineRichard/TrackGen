@@ -96,8 +96,10 @@ Select it by name. ``order=None`` (the default of ``presets.gates``, and
 .. snippet: after
 
    _count = gates.count.numpy()
-   assert ((_count >= MIN_GATES) & (_count <= MAX_GATES)).all()
-   assert gates.valid.numpy().any()
+   _valid = gates.valid.numpy() != 0
+   assert ((_count[_valid] >= MIN_GATES) & (_count[_valid] <= MAX_GATES)).all()
+   assert (_count[~_valid] == 0).all()
+   assert _valid.any()
 
 Because it excludes ``"raw"`` instead of whitelisting ``"ccw"``, it also runs with
 ``"random_pairs"`` and with any order a plugin registers (`Writing an ordering`_).

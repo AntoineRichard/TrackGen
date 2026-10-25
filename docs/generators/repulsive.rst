@@ -1,6 +1,12 @@
 Repulsive Generator
 ====================
 
+.. note::
+
+   Sample figures, seed-specific ranges and measured yields on this page are historical
+   measurements from before the 0.3 RNG switch. The algorithms and parameter contracts
+   describe current code; remeasure current seeds (:ref:`upgrading-0.3-rng`).
+
 The ``repulsive`` generator grows each environment's closed centerline from a small seed
 circle under a **hard ratcheting length constraint**, while a tangent-point (TP) energy
 keeps the curve self-avoiding as it is confined to a disc domain seeded with per-env random

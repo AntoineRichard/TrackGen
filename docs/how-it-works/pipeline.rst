@@ -54,8 +54,8 @@ Data flow
      │  UNIFORM    re-uniformised resample ─► FRAMES (tangents, curvature, arc length)
      │             ─► OFFSET (the band) ─► ELEVATION ─► VALIDITY (fail bits) ─► LIFT (3D)
      ▼
-   Track(outer, center, inner, tangent, normal, arclen, length, half_width, count, valid,
-         fail_mask, truncated, winding, generation, attributes)
+   Track: outer, center, inner, tangent, normal, arclen, length, half_width, count, valid,
+          fail_mask, truncated, winding, generation; layout, fail_bits, attributes metadata
 
 .. figure:: ../assets/readme-pipeline-stages.png
 
@@ -148,7 +148,8 @@ per seed. As with every generator, cross-*device* output is statistically equiva
 between CPU and CUDA. See ``track_gen/_src/warp_generate_repulsive.py``'s module
 docstring for the full account.
 
-**Yield.** Nearly every env is :term:`valid` at the defaults: the measured yield of each
+**Yield (historical, before the 0.3 RNG switch).** Nearly every env was :term:`valid`
+at the defaults: the measured yield of each
 generator is in :doc:`/generators/benchmarks`, and the relaxation pages give it per regime
 (:doc:`/relaxation/convergence`). With a thin road (``half_width=0.03``) the default
 ``N_max = 384`` is too short for the longest loops, which then fail as truncated: size

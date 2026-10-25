@@ -3,6 +3,12 @@
 Domain randomization and curricula
 ==================================
 
+.. note::
+
+   Empirical size thresholds, yield, capacity headroom and collision measurements on
+   this page predate the 0.3 hashed-RNG switch. They are historical reference values;
+   measure your current seeds and largest curriculum size (:ref:`upgrading-0.3-rng`).
+
 Many knobs of a generator are :term:`dynamic fields <dynamic field>`: per-:term:`env`
 ``[E]`` arrays the stages read at every generation, so each env can run its own value and
 the values can change between generations with no rebuild and no new :term:`capture`.

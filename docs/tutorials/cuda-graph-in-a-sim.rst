@@ -34,8 +34,9 @@ over fixed-shape arrays, so a different batch size needs a new generator.
 
 Every buffer (scratch, seeds, epochs, the result ``Track``) is allocated once, at
 construction; shapes and device addresses stay stable for the generator's lifetime. The
-generator keeps a private copy of its config: changing the config object afterwards has
-no effect. Change a :term:`dynamic field` through ``gen.params[...]`` instead
+generator keeps a private frozen config snapshot. Config field assignments raise;
+use ``dataclasses.replace`` and build a new generator for static changes. Change a
+:term:`dynamic field` through ``gen.params[...]``
 (:ref:`curricula`), or build a new generator for a static one.
 
 Construction and the generator's own graph

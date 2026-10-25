@@ -11,6 +11,10 @@ knobs the generator's (``generator_params={...}``), and ``half_width``, ``spacin
 ``n_max`` and ``scale`` are keywords of ``presets.track``. For the complete parameter
 descriptions, see the :doc:`Configuration reference <reference>`.
 
+Measured yields, point-count ranges and benchmark figures on this page are historical
+measurements from before the 0.3 hashed-RNG switch, unless labeled otherwise. Use them
+to choose an initial configuration, then measure your current seeds and settings.
+
 .. code-block:: python
 
    from track_gen import TrackGenConfig, TrackGenerator
@@ -97,7 +101,9 @@ XPBD solver enough room to converge within the default iteration budget.
    A fixed ``spacing`` value does **not** scale with ``half_width``. If you
    change ``half_width`` without adjusting ``spacing``, the per-bead geometry
    shifts and the solver may under-converge. Unless you have a specific reason
-   to override, leave ``spacing=None`` and let the auto-coupling handle it.
+   to override, leave ``spacing=None`` and let the auto-coupling handle it. Configs
+   are frozen and resolve spacing at construction: use ``dataclasses.replace(cfg,
+   half_width=0.1, spacing=None)`` to recouple it when making a replacement.
 
 The :term:`N_max` buffer must be large enough to hold the longest track in the
 batch (at its largest ``size``: :ref:`tuning-size`). The formula for the required size

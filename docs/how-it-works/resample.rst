@@ -85,10 +85,13 @@ Spacing defaults and sizing
 :term:`spacing` defaults to ``None``, which couples it to ``0.6 * half_width`` (the
 relax-friendly rule of thumb; ``0.06`` at the default ``half_width = 0.1``): a fixed
 spacing default would be wrong as ``half_width`` varies. Set it explicitly to override.
+A frozen config resolves this at construction; use ``dataclasses.replace(cfg,
+half_width=..., spacing=None)`` to derive it again for a replacement.
 
 **Size** ``N_max >= max(perimeter) / spacing + 1``: a track whose true count exceeds
 ``N_max`` is truncated (its closing segment would span the gap); the scan flags it in
 ``Track.truncated`` and it fails validity (:ref:`pipeline-fail-bits`,
 :ref:`tuning-size`). The fat-band regime of the relaxation benchmarks
-(``half_width=0.5``, ``spacing=0.30``, ``N_max=384``) leaves ample headroom (mean about
-160, max about 270 points per track).
+(``half_width=0.5``, ``spacing=0.30``, ``N_max=384``) left ample headroom in historical
+pre-0.3 measurements (mean about 160, max about 270 points per track). Remeasure the
+current seed mapping before choosing a capacity.

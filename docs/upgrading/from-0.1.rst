@@ -408,9 +408,8 @@ invalid envs a new course with a masked regeneration, new in 0.2
 
 .. snippet: after
 
-   # the invalid fraction above is data-dependent (one env of 64 here), so check the
-   # reading where it certainly applies: at N_max=64 every track is truncated (the
-   # shortest needs about 140 points at this spacing), so every env is invalid
+   # The invalid fraction is data-dependent. Exercise the sentinel path with a
+   # deliberately small N_max, then check whichever envs actually failed.
    assert oob[~valid].all() and (reward[~valid] == 0.0).all() and done[~valid].all()
    config = TrackGenConfig(num_envs=E, half_width=0.03, N_max=64, device=device)
    course = Course(CourseConfig(mode="track", gen=config, seeds=0, checkpoint_spacing=0.6,
@@ -458,7 +457,7 @@ is enough. :ref:`tuning-size` has the sizing rule for larger courses.
    rng = PerEnvSeededRNG(seeds=0, num_envs=E, device=device)
    config = TrackGenConfig(num_envs=E, half_width=0.03, device=device)   # the 0.1 README
    track = TrackGenerator(config, rng).generate()
-   print(track.truncated.numpy().sum())       # 1 of 64 envs: invalid on 0.2
+   print(track.truncated.numpy().sum())       # measure on the current seed mapping
 
    config = TrackGenConfig(num_envs=E, half_width=0.03, N_max=512, device=device)
    track = TrackGenerator(config, rng).generate()
@@ -500,6 +499,10 @@ says so:
 .. snippet: after
 
    assert np.array_equal(np.nan_to_num(before), np.nan_to_num(after))
+
+In current 0.3 code, assigning ``config.half_width`` raises
+``dataclasses.FrozenInstanceError``. The example uses a replacement config instead;
+building it alone does not change the existing generator.
 
 Change a dynamic field through ``gen.params`` (its value is read on the device at
 every generation), draw it per env with ``randomize=`` (:ref:`curricula`), and build a

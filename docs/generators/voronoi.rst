@@ -1,6 +1,12 @@
 Voronoi Generator
 =================
 
+.. note::
+
+   Sample figures, seed-specific ranges and measured yields on this page are historical
+   measurements from before the 0.3 RNG switch. The algorithms and parameter contracts
+   describe current code; remeasure current seeds (:ref:`upgrading-0.3-rng`).
+
 The ``voronoi`` generator produces compact, feature-rich closed centerlines by snapping a
 cycle of angular anchor targets onto a randomly placed field of cell sites, rounding the
 resulting polyline, and arc-resampling it into the standard pipeline buffer.  It is the

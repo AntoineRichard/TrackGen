@@ -129,10 +129,11 @@ of an env:
 
 .. code-block:: python
 
-   n0 = int(count[0])
-   center_env0 = center[0, :n0]   # shape [n0, 3]
-   outer_env0 = outer[0, :n0]
-   inner_env0 = inner[0, :n0]
+   if valid[0]:
+       n0 = int(count[0])
+       center_env0 = center[0, :n0]   # shape [n0, 3]
+       outer_env0 = outer[0, :n0]
+       inner_env0 = inner[0, :n0]
 
 Valid and invalid envs
 ----------------------
@@ -151,12 +152,15 @@ regenerate the invalid envs:
 
 .. snippet: after
 
-   assert (~valid).mean() < 0.05 and len(loops) == int(valid.sum())
+   import numpy as np
+   assert len(loops) == int(valid.sum())
+   assert (count[~valid] == 0).all()
+   assert np.isnan(center[~valid]).all()
 
-At these settings few envs are invalid (none of seeds ``0..255`` for ``bezier``, ``hull``,
-``polar`` and ``voronoi``, one for ``checkpoint``, on CPU), but the fraction grows with
-every setting that truncates the loop or thins the course: with the default ``n_max=384``
-about 3 % of this batch is truncated. :ref:`invalid-envs` lists the checks, the measured
+Historical measurements before the 0.3 seed switch found few invalid envs at these
+settings, with truncation rising at the default ``n_max=384``. Measure the current
+batch rather than relying on the old percentages. The fraction grows with settings
+that truncate the loop or thin the course. :ref:`invalid-envs` lists the checks, the measured
 rates and the knobs that lower them.
 
 Track Figure

@@ -711,15 +711,15 @@ The gate Program ends with the commit of :ref:`The commit <pipeline-commit>`, ov
   them after, bit for bit (``position``, ``tangent``, ``forward``, ``left``, ``right``,
   ``orientation``, ``half_size``, ``count``, ``valid``, ``fail_mask``, every attribute;
   ``generation`` is written for the masked envs only).
-- **Invalid envs.** ``BatchSpec.on_invalid`` applies: ``"keep"`` (default) leaves an
+- **Invalid envs.** ``BatchSpec.on_invalid`` applies: explicit ``"keep"`` leaves an
   :term:`invalid env`'s computed gates and
-  ``valid = 0``. ``"poison"`` leaves it with ``count = 0``, every per-gate field NaN
+  ``valid = 0``. The default, ``"poison"``, leaves it with ``count = 0``, every per-gate field NaN
   (``orientation`` and ``half_size`` included), every attribute its padding and
   ``valid = 0``, keeping ``fail_mask``;
   ``CheckpointSet.from_gates`` and ``ProgressTracker`` then take their empty-course path
-  for that env. There is no ``GateGenConfig.on_invalid``: use ``presets.gates(...,
-  on_invalid="poison")`` or edit the spec's batch.
-- **Cost.** As for tracks: no launch for an unmasked default generation, one for a derived
+  for that env. ``GateGenConfig`` and ``presets.gates`` expose the same policy;
+  a saved ``/2`` batch missing the key also defaults to poison.
+- **Cost.** As for tracks: no launch for an unmasked explicit-keep generation, one for a derived
   ``valid`` (a check after ``validity.gate_default``) or for poison, two for a masked
   generation, plus per exported attribute two for a masked generation and one for
   poison. The held copy costs 80 B per gate slot (plus each attribute's size) and 12 B
@@ -734,7 +734,7 @@ A default gate generation is a short, fixed launch sequence: the effective seed,
 parameter latches (:ref:`pipeline-latch`), the generator's kernels, the order (its
 ``gates.xy`` and a ``gates.count`` copy), the normalization for the generators that
 prefer it, the sphere separation, the elevation, the lift, the tangents, the frames and
-the validity kernel, then the ``generation`` write. The normalizing
+the validity kernel, the default poison commit, then the ``generation`` write. The normalizing
 generators (``polar``, ``checkpoint``, ``voronoi``) normalize after the order stage, out
 of place: ``_normalize_extent_to_sized_k`` reads the order's ``gates.xy`` and writes its
 own version.
@@ -746,21 +746,22 @@ own version.
    * - generation (CPU, launches per ``generate()``)
      - launches
    * - ``bezier`` / ``hull``, any ordering, flat, ``gate_solve_iters=8``
-     - 16 (2 latches: ``size`` and ``gate_frames.gate_width``)
+     - 17 (2 latches: ``size`` and ``gate_frames.gate_width``)
    * - ``polar`` / ``checkpoint``, flat, ``gate_solve_iters=8``
-     - 18 (4 latches: the two ring knobs, ``normalize.size`` and
+     - 19 (4 latches: the two ring knobs, ``normalize.size`` and
        ``gate_frames.gate_width``)
    * - ``voronoi``, flat, ``gate_solve_iters=8``
-     - 19 (4 latches)
+     - 20 (4 latches)
    * - masked (``advance=True, mask=m``)
-     - three more: the epoch advance, the hold and the commit
-   * - ``on_invalid="poison"``
-     - one more (the commit)
+     - two more: the epoch advance and the hold (the poison commit becomes masked)
+   * - explicit ``on_invalid="keep"``
+     - one fewer when the default validity check is last (no commit)
    * - a plugin check after ``validity.gate_default``
-     - one more for the commit (the derived ``valid``), plus the check's own launches
-       (and its parameter latch, for a check with dynamic params)
+     - the check's own launches (and its parameter latch for dynamic params); the
+       default poison commit also derives the final ``valid``
 
-A non-flat elevation adds the ``gate_arclen`` launch and its latches (2 for ``uniform``,
+These counts include the default poison policy and were remeasured with the current
+0.3 source on CPU. A non-flat elevation adds the ``gate_arclen`` launch and its latches (2 for ``uniform``,
 3 for ``random_walk`` / ``noise``); ``gate_solve_iters=0`` drops the separation launch.
 
 .. _pipeline-gate-plan-rules:

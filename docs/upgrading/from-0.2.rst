@@ -3,11 +3,13 @@
 Upgrading from 0.2
 ==================
 
-The current milestone, ``0.3.0.dev2``, includes the API removals from
-``0.3.0.dev1`` and switches every built-in random stream to hashed salts. Generated
-track and gate bytes change for the same seed. There is no compatibility shim,
-legacy RNG config field or reproduction mode. Poison defaults, frozen configs and
-required result fields remain pending for a later milestone.
+The 0.3 development line removes the old compatibility APIs, switches built-in RNG
+streams to hashed salts, defaults invalid results to poison, freezes configs and
+requires complete Track and GateSequence results. These are intentional breaks:
+there are no compatibility shims, legacy RNG settings or reproduction modes.
+``0.3.0.dev1`` covers removals, ``dev2`` RNG, ``dev3`` the defaults and contracts,
+and ``dev4`` the completed documentation. The final release still needs an rc tested
+by the downstream racing repositories.
 
 Update imports and configuration dictionaries, rebaseline stored generated outputs,
 run your tests, then review any saved pipeline specs. The :doc:`from-0.1` guide
@@ -52,14 +54,14 @@ plugin geometry without an analytic length bound. Record the old capacity as
 ``max_checkpoints=`` when constructing the replacement. Choose a larger explicit
 capacity if the new geometry needs more checkpoints.
 
-The RNG validation gate compares empirical distributions rather than old track bytes:
-all built-in track and gate generators, including ``repulsive``, run on two seed
-blocks of at least 4096 envs each. It includes nonzero uniform/walk/noise elevations
-and ``order.random_pairs``: 19 cases and 133 distributions. Validity uses a
-six-sigma binomial band plus one percentage point. Counts, length, compactness,
-curvature, mean altitude and altitude standard deviation use a two-sample empirical
-CDF bound with family-wise alpha ``0.001``. The tool reports the observed distances
-and limits rather than assuming a pass:
+The RNG distribution gate passed all **133 distributions across 19 cases**, each with
+**8192 envs** (two blocks of 4096 seeds) on the same GPU before and after the switch.
+It covers every built-in track and gate generator, including ``repulsive``, nonzero
+uniform/walk/noise elevations and ``order.random_pairs``. The largest observed
+absolute yield change was **0.00146484375** (about 0.1465 percentage points).
+Validity uses a six-sigma binomial band plus one percentage point. Counts, length,
+compactness, curvature, mean altitude and altitude standard deviation use a
+two-sample empirical CDF bound with family-wise alpha ``0.001``. To repeat the check:
 
 .. code-block:: bash
 
@@ -189,11 +191,124 @@ gates, a Stage can instead write ``gates.xy`` / ``gates.count`` and declare
 and RNG constants when preserving a plugin's bytes. Run ``check_generator`` or
 ``check_gate_generator`` after the port (:ref:`testing-a-plugin`).
 
-Later 0.3 milestones
---------------------
+.. _upgrading-0.3-poison:
 
-The approved later work changes every entry point's invalid-output default to
-``on_invalid="poison"``, freezes config dataclasses and makes the newer Track and
-GateSequence fields required. These are pending changes, not behavior in
-``0.3.0.dev2``; they will be documented here when they land.
-The final release follows an rc tested by the downstream racing repositories.
+Invalid results are poisoned by default
+---------------------------------------
+
+``on_invalid="poison"`` is the default on ``TrackGenConfig``, ``GateGenConfig``,
+``BatchSpec``, both presets, and the resulting Program. A saved ``/2`` spec whose
+batch omits ``on_invalid`` also loads with ``"poison"``; saving it writes the policy
+explicitly. Invalid policy names raise ``ValueError``.
+
+An invalid env now has ``count = 0``, NaN geometry in every slot, attribute padding
+(NaN for floats, ``-1`` for integers), and zero track length and winding. Its
+``valid`` stays zero; ``fail_mask``, ``truncated`` and ``generation`` stay readable.
+Valid envs and unmasked envs in a masked regeneration are unaffected by the choice.
+If diagnostics need failed geometry, opt in explicitly:
+
+.. code-block:: python
+
+   from track_gen import TrackGenConfig, TrackGenerator
+   from track_gen.pipeline import presets
+
+   cfg = TrackGenConfig(num_envs=4, device="cpu", on_invalid="keep")
+   diagnostic = TrackGenerator(cfg)
+   spec = presets.gates(num_envs=4, device="cpu", on_invalid="keep")
+   assert cfg.on_invalid == spec.batch.on_invalid == "keep"
+
+Read ``valid[e]`` before indexing a result, then check ``count[e]`` before taking a
+neighbor modulo the count. Zero is a legitimate empty count. Mask rewards and
+observations with a select (``np.where(valid, reward, 0.0)`` or ``torch.where``),
+never multiplication: ``NaN * 0`` is NaN. Regenerate invalid envs instead of using
+their poisoned geometry (:ref:`invalid-envs`). Runtime utilities keep their existing
+invalid-env sentinels under both policies.
+
+.. _upgrading-0.3-frozen:
+
+Configs are frozen values
+-------------------------
+
+``TrackGenConfig`` and ``GateGenConfig`` are frozen dataclasses. Attribute assignment
+and deletion raise ``dataclasses.FrozenInstanceError``; use ``dataclasses.replace``
+and build a new generator for a static change. Generator snapshots are frozen too.
+Dynamic curricula continue through ``gen.params``; a config's initial values do not
+track later device parameter updates.
+
+``spacing=None`` is resolved when a Track config is constructed. Replacing
+``half_width`` alone preserves that resolved spacing. Reset it to ``None`` to derive
+``0.6 * half_width`` again:
+
+.. code-block:: python
+
+   import dataclasses
+   from track_gen import TrackGenConfig
+
+   cfg = TrackGenConfig(num_envs=4, device="cpu", half_width=0.05)
+   wider = dataclasses.replace(cfg, half_width=0.1, spacing=None)
+   assert abs(wider.spacing - 0.06) < 1e-12
+   assert abs(cfg.spacing - 0.03) < 1e-12
+
+Decorate config subclasses as frozen dataclasses too; Python refuses a non-frozen
+dataclass subclass of a frozen base:
+
+.. code-block:: python
+
+   @dataclasses.dataclass(frozen=True)
+   class MyTrackConfig(TrackGenConfig):
+       experiment_label: str = "baseline"
+
+   custom = dataclasses.replace(MyTrackConfig(device="cpu"), experiment_label="wide")
+   assert custom.experiment_label == "wide"
+
+This is dataclass freezing, not recursive freezing of objects a user puts inside a
+mapping. Do not mutate a nested parameter mapping as a way to reconfigure a live
+generator; use a replacement config or the supported dynamic parameter interface.
+
+.. _upgrading-0.3-results:
+
+Track and GateSequence require complete storage
+------------------------------------------------
+
+``Track.truncated``, ``generation``, ``fail_mask``, ``half_width`` and ``layout`` are
+required constructor arguments. ``GateSequence.generation``, ``fail_mask`` and
+``layout`` are required too. All concrete Track/GateSequence array fields and
+``layout`` reject explicit ``None`` with ``ValueError``; omitting a required argument
+raises ``TypeError``. ``validate()`` also rejects a required field later replaced with
+``None``. Full shape, dtype and device checks still happen in ``validate()``, rather
+than the constructor.
+
+For manual storage and ``out=`` pipelines, allocate a complete result from a Layout:
+
+.. code-block:: python
+
+   from track_gen.results import GateSequence, Layout, Track
+
+   track = Track.alloc(Layout(4, 384, "cpu"))
+   gates = GateSequence.alloc(Layout(4, 16, "cpu"))
+   assert track.validate().stride == 384
+   assert gates.validate().stride == 16
+   assert (track.count.numpy() == 0).all() and (track.valid.numpy() == 0).all()
+   assert track.fail_bits == {} and track.attributes == {}
+
+``fail_bits`` and ``attributes`` remain optional metadata arguments with independent
+empty-mapping defaults. Pipelines populate their bit names; an allocator does not
+invent failure reasons for empty storage. Even a pipeline that provides a Track
+without a road offset keeps a required ``half_width`` array, with NaN where no width
+is available. ``out=`` no longer fills missing arrays with private buffers or infers
+a Track/GateSequence layout.
+
+``Centerline`` keeps its optional ``generation`` and inferred layout. Runtime
+capability protocols still accept suitable duck-typed sources and infer their layout
+from the members a consumer reads (:ref:`results-check-source`). They do not require
+you to construct a Track when your utility only needs a centerline.
+
+Retained arithmetic and release gate
+-------------------------------------
+
+The static ``edgy`` parameter is retained. Its ``atan(edgy) / pi + 0.5`` transform
+still runs on the host in double precision; making it dynamic would change that
+arithmetic. No additional geometry policy or reproduction mode is introduced.
+
+The final 0.3.0 release still requires an rc and validation in the downstream racing
+repositories; completing these development milestones does not complete that gate.

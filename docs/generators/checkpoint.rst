@@ -1,6 +1,12 @@
 Checkpoint Generator
 ====================
 
+.. note::
+
+   Sample figures, seed-specific ranges and measured yields on this page are historical
+   measurements from before the 0.3 RNG switch. The algorithms and parameter contracts
+   describe current code; remeasure current seeds (:ref:`upgrading-0.3-rng`).
+
 The checkpoint generator produces organic, continuously undulating closed loops by steering
 a bounded-turn path through a ring of random radial checkpoints.  It is the only generator
 in ``track_gen`` that derives its shape from a proportional-gain steering walk, making it the

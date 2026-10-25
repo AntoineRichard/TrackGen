@@ -123,17 +123,21 @@ instead, with the device resolved through ``wp.get_device`` at check time, so a 
 makes (the planner's, ``alloc``'s, ``view``'s, an inferred one) stores the canonical
 device string, so ``==`` holds between them.
 
-``result.layout`` is set on every result a generator, ``view``, ``alloc`` or ``clone``
-returns. It is ``None`` on a result you build by hand: ``validate()`` then infers it
-(and never stores it), and a build with ``out=`` sets it on the object you passed when
-it was ``None``. ``program.layout`` is the pipeline's layout: the ``layout`` of the
-result it allocates, and the canonical equal of an ``out=`` result's.
+``Track.layout`` and ``GateSequence.layout`` are required, even for hand-built
+results. Use ``Track.alloc(Layout(...))`` or ``GateSequence.alloc(Layout(...))`` for
+complete storage. A ``Centerline`` may still omit its layout: ``validate()`` infers
+one without storing it. ``view``, ``alloc`` and ``clone`` return results with layouts.
+``program.layout`` is the pipeline's layout: the ``layout`` of the result it allocates,
+and the canonical equal of an ``out=`` result's. Capability sources retain their own
+inference rules (:ref:`results-check-source`).
 
 Schemas
 -------
 
-Each class has a fixed schema: the arrays ``validate`` checks, with their dtype and form.
-An *optional* field may be ``None`` (a hand-built result); the others are required.
+Each class has a fixed schema: the arrays ``validate`` checks, with their dtype and
+form. Every Track and GateSequence array and their ``layout`` are required and reject
+``None``. Only Centerline's ``generation`` remains optional. ``fail_bits`` and
+``attributes`` are metadata mappings with independent empty defaults.
 
 .. list-table::
    :header-rows: 1
@@ -148,12 +152,12 @@ An *optional* field may be ``None`` (a hand-built result); the others are requir
        ``arclen``, ``half_width`` (``float32``)
      - ``length``, ``winding`` (``float32``); ``valid``, ``count``, ``truncated``,
        ``generation``, ``fail_mask`` (``int32``)
-     - ``truncated``, ``generation``, ``fail_mask``, ``half_width``
+     - None
    * - ``GateSequence``
      - ``position``, ``tangent``, ``forward``, ``left``, ``right`` (``vec3f``);
        ``orientation`` (``quatf``); ``half_size`` (``float32``)
      - ``valid``, ``count``, ``generation``, ``fail_mask`` (``int32``)
-     - ``generation``, ``fail_mask``
+     - None
    * - ``Centerline``
      - ``center``, ``tangent`` (``vec3f``); ``arclen`` (``float32``)
      - ``length`` (``float32``); ``count``, ``valid``, ``generation`` (``int32``)
@@ -170,11 +174,11 @@ An attribute (an entry of ``attributes``) is a per-point ``[E * stride]`` array 
 ``result.validate()`` checks every array of the result and returns its ``Layout``:
 
 1. ``count`` must be a ``wp.array``: it gives ``E``.
-2. The layout is ``result.layout`` when it is set (it must be a ``Layout``), else
-   inferred: ``E = count.shape[0]``, ``stride`` from the first per-point field
-   (``center``; ``position`` for gates) divided by ``E`` (a length that ``E`` does not
-   divide raises), the device of ``count``, ``closed=True``.
-3. Every schema field that is not ``None`` must be a 1-D contiguous array of its dtype,
+2. The layout is the required ``result.layout`` on a Track or GateSequence (it must
+   be a ``Layout``). A Centerline with no layout infers ``E = count.shape[0]``,
+   ``stride = center.shape[0] / E`` (a length that ``E`` does not divide raises),
+   the device of ``count``, and ``closed=True``.
+3. Every required schema field must be present. Each held field must be a 1-D contiguous array of its dtype,
    ``[E * stride]`` or ``[E]``, on the layout's device (a 2-D ``[E, stride]`` array is
    named as such: ``expected a flat 1-D [E*stride] array, got a 2-D array of shape
    (4, 384) (flatten it, e.g. arr.reshape((-1,)))``). A field named in ``need`` (a
@@ -190,13 +194,14 @@ It raises ``ValueError`` with the field, what was expected and what it got:
      got shape (3064,) vec3f on cpu
    Track.winding: expected a contiguous [8] float32 ([E] = [8]) array on cpu,
      got shape (7,) float32 on cpu
-   Track.half_width is None; this consumer needs it
+   Track.half_width is None
 
 ``validate`` runs on the host only (a few microseconds), launches nothing, never syncs
 and never mutates the result, so it is safe anywhere, a :term:`capture` included. It is
-**explicit**: constructing a ``Track(...)`` by hand checks nothing (a partial ``Track``
-is a legal value), and the library calls ``validate`` where every field is about to be
-used: ``out=``, ``view``, ``copy_from`` and ``clone``. The runtime utilities check only
+**explicit** for shape, dtype and device checks. Track/GateSequence construction
+requires every array and layout and rejects explicit ``None``; validation catches
+malformed arrays or later field corruption. The library calls ``validate`` before
+``out=``, ``view``, ``copy_from`` and ``clone``. The runtime utilities check only
 the members they read (`Capability protocols`_).
 
 .. _results-views:
@@ -207,7 +212,8 @@ Views, copies and snapshots
 ``view(e0, e1)``
    An env-slice view of envs ``e0`` to ``e1 - 1``: the same class (a subclass is kept),
    whose per-point arrays are ``arr[e0 * S : e1 * S]``, per-env arrays ``arr[e0 : e1]``
-   and attributes sliced alike; ``None`` fields stay ``None``, ``fail_bits`` is shared,
+   and attributes sliced alike; Centerline's optional ``generation`` stays ``None`` when
+   absent, ``fail_bits`` is shared,
    and ``layout`` is ``Layout(e1 - e0, S, device, closed)``. A Warp slice of a 1-D
    array is a pointer offset with the same element stride, so a view is contiguous,
    allocates nothing, launches nothing and keeps its parent's memory alive. It validates
@@ -221,8 +227,9 @@ Views, copies and snapshots
    Copies ``src`` into this result: one ``ctx.copy`` per array this result holds. ``src``
    must be an instance of the same class (``TypeError``) with the same canonical layout
    (``ValueError``: ``Track.copy_from: layouts differ: this Track is Layout(4, 384,
-   'cpu', True), src is Layout(8, 384, 'cpu', True)``). A field ``None`` here is
-   skipped; a field held here but ``None`` in ``src`` raises; every attribute key here
+   'cpu', True), src is Layout(8, 384, 'cpu', True)``). Centerline's optional
+   ``generation`` is skipped when absent here and raises when held here but absent in
+   ``src``; Track/GateSequence fields cannot be absent. Every attribute key here
    must be in ``src`` with the same dtype (extra keys in ``src`` are ignored). The same
    array on both sides is skipped (``t.copy_from(t)`` is a no-op), and a partial overlap
    raises ``ValueError`` naming the field. It allocates nothing and never syncs: under a
@@ -230,8 +237,9 @@ Views, copies and snapshots
    result preallocated with ``alloc``.
 
 ``clone(*, stream=None)``
-   A new result that owns its memory: one new array per held field and attribute, ``None``
-   fields kept, the class kept, the same ``layout``, and ``fail_bits`` shared (the same
+   A new result that owns its memory: one new array per held field and attribute,
+   Centerline's absent optional generation kept, the class kept, the same ``layout``,
+   and ``fail_bits`` shared (the same
    object). It validates first, so a malformed hand-built result raises. It **allocates
    and blocks on every call**: keep it off the hot path, and use ``copy_from`` into an
    ``alloc`` result instead. It raises ``CaptureError`` before allocating under any
@@ -240,7 +248,7 @@ Views, copies and snapshots
    ``alloc`` result.
 
 ``alloc(layout, *, attributes=None)`` (a classmethod)
-   A new result of ``layout`` with every field allocated (the optional ones included)
+   A new result of ``layout`` with every field allocated (including Centerline's generation)
    in the "no track yet" state: per-point fields and attributes at their padding,
    ``count``, ``valid``, ``truncated``, ``generation`` and ``fail_mask`` zero,
    ``length`` and ``winding`` zero, ``fail_bits`` empty. ``attributes`` maps plugin keys
@@ -338,15 +346,12 @@ allocated:
 2. ``out.validate()`` passes, with every required field present, and its canonical
    layout equals the pipeline's (``ValueError``: ``out: a Track for Layout(4, 384,
    'cpu', True); this pipeline writes Layout(8, 384, 'cpu', True)``). Messages name the
-   field as ``out.<field>`` (``out.truncated is None; this pipeline needs it``).
-3. An optional field ``out`` leaves ``None`` (``generation``, ``fail_mask``,
-   ``half_width``; ``truncated`` is required) is not added to ``out``: the Program keeps
-   a private buffer for it, which ``tap`` reaches.
-4. ``out.attributes`` follows the rule of `Attributes of a caller-owned result`_.
-5. ``out`` may not overlap the result of a live Program (`Disjoint outputs`_).
+   field as ``out.<field>``. No field may be ``None``, and the caller must provide a
+   ``Layout``; the Program does not infer one or substitute private missing-field buffers.
+3. ``out.attributes`` follows the rule of `Attributes of a caller-owned result`_.
+4. ``out`` may not overlap the result of a live Program (`Disjoint outputs`_).
 
-After the build, ``out.layout`` is set when it was ``None``, ``out.fail_bits`` names the
-pipeline's bits, and the generator's default stream is recorded as the stream that
+After the build, ``out.fail_bits`` names the pipeline's bits, and the generator's default stream is recorded as the stream that
 produced ``out`` (for ``copy_from`` and ``clone``). A view keeps its parent's memory alive, so
 ``out=big.view(...)`` needs nothing else to stay valid.
 
@@ -587,6 +592,8 @@ their sources with the same rules and messages:
    ``optional`` protocols use it (``check_source(obj, (HasCenterline, HasValidity,
    HasGeneration), ..., optional=("valid", "generation"))``).
 
+These protocol checks retain layout inference independently of the concrete
+Track/GateSequence construction rules; they never call the result's full validation.
 It returns the layout (with the canonical device). The utilities pass ``members=`` when
 they read fewer members than the protocol lists (``CollisionChecker``, ``PropSampler``,
 ``HeightFieldBaker``, ``FrameChecker``, ``CheckpointSet.from_gates``, ``curvature``) and
@@ -705,23 +712,26 @@ bars cross, the common one: lower ``gate_width`` or raise ``size``,
    track = gen.generate()
 
    invalid = track.valid.numpy() == 0
-   print(f"{invalid.mean():.1%} invalid")            # 1.6% invalid: check it after construction
+   print(f"{invalid.mean():.1%} invalid")            # measure after construction
    fail = track.fail_mask.numpy()
    for name, bit in track.fail_bits.items():         # why, per check
        n = int(((fail >> bit) & 1).sum())
        if n:
-           print(f"{name}: {n} envs")                # here: truncation: 1 envs
+           print(f"{name}: {n} envs")                # the checks that failed
 
 .. snippet: after
 
-   assert invalid.sum() == ((fail >> track.fail_bits["truncation"]) & 1).sum()
+   import numpy as np
+   assert np.array_equal(invalid, fail != 0)
+   assert (track.count.numpy()[invalid] == 0).all()
+   assert np.isnan(track.center.numpy().reshape(E, -1, 3)[invalid]).all()
 
-**What an invalid env's result holds.** ``on_invalid`` (``presets.track(on_invalid=...)``
-and ``presets.gates(on_invalid=...)``; a config always uses ``"keep"``) chooses:
+**What an invalid env's result holds.** ``on_invalid`` on configs, presets and
+``BatchSpec`` chooses (a saved ``/2`` batch without the key also defaults to poison):
 
-- ``"keep"`` (the default): the env keeps the geometry it computed, with ``valid = 0``.
-  The rows are finite and may look usable: read ``valid`` before using them.
-- ``"poison"``: the env reads like an env with no track: ``count = 0``; every per-point
+- ``"keep"`` (explicit opt-in): the env keeps the geometry it computed, with
+  ``valid = 0``. Read ``valid`` before using those rows.
+- ``"poison"`` (the default): the env reads like an env with no track: ``count = 0``; every per-point
   field NaN on every slot (``outer``, ``center``, ``inner``, ``tangent``, ``normal``,
   ``arclen``, ``half_width``; for gates every per-gate field, ``orientation`` and
   ``half_size`` included) and every attribute its padding; ``length = 0`` and
@@ -733,7 +743,9 @@ road for a band collision (``oob = 1``, NaN ``distance``), no post or frame hit,
 progress with ``dist_to_next = 0``, no checkpoints. :ref:`utilities-invalid-envs` lists
 what each utility reports.
 
-**How many envs.** Measured at the preset defaults (``E = 256``, seeds ``0..255``, CPU):
+**How many envs.** Historical measurements before the 0.3 hashed-RNG switch, at the
+then-preset defaults (``E = 256``, seeds ``0..255``, CPU). Remeasure your current seeds:
+
 
 .. list-table::
    :header-rows: 1
@@ -782,5 +794,5 @@ batch with no retry: regenerate those envs.
 
 **In a loop.** Gate every reward, observation and termination on ``valid``, with a
 select (``np.where(valid, r, 0.0)``, never ``r * valid``: a NaN times zero is NaN), and
-give an invalid env a new course with a masked regeneration rather than a respawn on the
-same one: :ref:`rl-valid-recipe` has the recipe, :ref:`rl-auto-reset` the loop.
+check validity before reading source geometry, guard a zero ``count`` before modulo
+indexing, and give an invalid env a new course with a masked regeneration: :ref:`rl-valid-recipe` has the recipe, :ref:`rl-auto-reset` the loop.

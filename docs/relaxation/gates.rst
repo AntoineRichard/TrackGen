@@ -1,6 +1,12 @@
 Gate relaxation — collision solve
 =================================
 
+.. note::
+
+   Figures and empirical yield, range and timing measurements on this page predate the
+   0.3 hashed-RNG switch. They are historical reference measurements; current generated
+   bytes and seed-specific outcomes differ (:ref:`upgrading-0.3-rng`).
+
 Drone-style gate sequences (``GateGenerator``, tutorial at
 :doc:`/tutorials/gate-sequences`) run their own **gate self-collision relaxation**, a
 :term:`stage` separate

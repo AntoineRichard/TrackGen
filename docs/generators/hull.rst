@@ -1,6 +1,12 @@
 Hull Generator
 ==============
 
+.. note::
+
+   Sample figures, seed-specific ranges and measured yields on this page are historical
+   measurements from before the 0.3 RNG switch. The algorithms and parameter contracts
+   describe current code; remeasure current seeds (:ref:`upgrading-0.3-rng`).
+
 The ``hull`` generator produces closed track centerlines in the angle-sorted-loop-with-lobes
 family.  It samples a set of random grid-jittered points, orders them by centroid-relative
 angle as a cheap static stand-in for a convex hull, interleaves each edge with one

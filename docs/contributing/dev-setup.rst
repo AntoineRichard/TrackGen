@@ -107,8 +107,9 @@ Capture runs all five geometry and utility reference families. Merge checks sour
 hashes and complete family coverage before writing any golden; it replaces the stored
 platform set with the supplied fragments. The manual test workflow's
 ``capture_goldens`` input captures the Linux runner fragment as an artifact. The
-reference captures explicitly use ``on_invalid="keep"`` where supported so a later
-invalid-output default change does not require another geometry baseline.
+reference captures explicitly use ``on_invalid="keep"`` so the 0.3 poison default
+does not replace failed geometry in the byte baseline. Public-default poison behavior
+has separate contract tests.
 
 A changed seed mapping also needs the empirical distribution check described in
 :ref:`upgrading-0.3-rng`; replacing byte hashes alone does not establish that the

@@ -70,7 +70,8 @@ arrays in place. Parameters:
        from the env's :term:`seed` and :term:`epoch`, see :ref:`generating-seeds`).
        Read-only.
    * - ``config``
-     - The generator's own copy of the configuration it was constructed with. With
+     - The generator's own frozen copy of the configuration it was constructed with.
+       Config subclasses must be frozen dataclasses too (:ref:`upgrading-0.3-frozen`). With
        ``params=``, ``config.generator_params`` is the resolved, validated Params
        instance.
    * - ``out_centerline``

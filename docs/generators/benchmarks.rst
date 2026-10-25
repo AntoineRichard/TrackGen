@@ -3,6 +3,12 @@
 Generator Benchmarks
 ====================
 
+.. note::
+
+   Figures and empirical yield, range and timing measurements on this page predate the
+   0.3 hashed-RNG switch. They are historical reference measurements; current generated
+   bytes and seed-specific outcomes differ (:ref:`upgrading-0.3-rng`).
+
 Reference metrics for the six registered centerline generators, produced by
 ``benchmarks/compare_generators.py``. They characterize trade-offs among quality,
 diversity and speed, and never gate which generators ship: every registered generator

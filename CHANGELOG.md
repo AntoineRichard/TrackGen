@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0.dev4 (documentation milestone, `v3` branch)
+
+Document the complete 0.2 → 0.3 migration in `docs/upgrading/from-0.2.rst`, covering
+all removals, changed RNG streams, poison defaults, frozen config/subclass recipes
+and complete result storage. Current guides and executed examples use the active
+contracts; pre-switch figures and tuning measurements are labeled historical.
+The rc and downstream racing-repository validation remain pending before 0.3.0.
+
 ## 0.3.0.dev3 (defaults and contracts milestone, `v3` branch)
 
 - Default `on_invalid="poison"` everywhere: Track/Gate configs, `BatchSpec`, presets,

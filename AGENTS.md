@@ -9,8 +9,9 @@ the architecture and the roadmap, and `CHANGELOG.md` for what shipped.
 ## State (2026-10-25)
 - `main` = **v0.2.0** (released; GitHub release v0.2.0). It is the v2 refactor, roadmap
   PR0–PR15b; see the CHANGELOG and `docs/upgrading/from-0.1.rst`.
-- `v3` = the 0.3 line, version `0.3.0.dev0`. **The job is roadmap PR16, retargeted from
-  "1.0 cleanup" to 0.3.** 1.0 is a later milestone.
+- `v3` = the 0.3 line, version `0.3.0.dev4`. Roadmap PR16 cleanup is implemented in
+  four dev milestones. The rc and downstream racing-repository validation are still
+  required before 0.3.0. 1.0 is a later milestone.
 
 ## User decisions for 0.3 (binding; they override any older doc that says otherwise)
 Not production software: break things cleanly, with no compatibility shims or deprecation
@@ -42,8 +43,8 @@ Inputs: `docs/library-readiness/handoff-0.3/`:
 - `pr16-design-0.2-conservative.md`, the earlier design written for the *conservative*
   path. Reuse its removal inventory, its evidence (§1, §12 critic review) and its pitfalls.
   Its §13 records the decisions above; ignore its tombstones, `rng="0.2"` and staged
-  deprecations. Known pitfall: live stages still call some legacy helpers, so move every
-  internal caller to private or `ops` code BEFORE deleting anything.
+  deprecations. Historical pitfall: live stages called legacy helpers; PR16 moved every
+  internal caller to private or `ops` code before deleting them.
 
 Suggested split (each one its own commit and dev tag):
 - **A, removals:** must change NO output; the byte guards below must stay green.
@@ -56,13 +57,12 @@ Suggested split (each one its own commit and dev tag):
 CPU (macOS arm64 works; Python venv with `pip install -e ".[dev,docs]"`):
 ```bash
 PYTHONPATH=$PWD PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -p no:cacheprovider \
-  -m "not cuda and not slow and not benchmark" \
-  --deselect tests/test_golden_migration.py::test_pipelines_match_pre_vec3f_goldens
+  -m "not cuda and not slow and not benchmark"
 python docs/_tools/build_ci_env.py -W --keep-going -E -b html -d /tmp/dt docs /tmp/html   # CI-equivalent docs build
 ```
 - Byte guards (must not change in part A): `tests/test_generator_fingerprints.py`,
   `tests/test_pipeline_parity.py`, `tests/test_gate_pipeline_parity.py`, and the goldens in
-  `tests/goldens/`. They are keyed by platform (`darwin-arm64`, `linux-x86_64`). The
+  `tests/goldens/`. They are keyed by platform (`darwin-arm64`, `linux-aarch64`, `linux-x86_64`, plus the Warp version). The
   checkpoint track generator's fields are host-sensitive:
   `TRACKGEN_SKIP_HOST_SENSITIVE_GOLDENS=1` (CI sets it) excludes them.
 - Doc examples are executed: `tests/test_doc_snippets.py`.

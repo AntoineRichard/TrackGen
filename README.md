@@ -10,8 +10,10 @@ native.**
 ![Warp](https://img.shields.io/badge/warp--lang-%E2%89%A5%201.18-76b900)
 
 > [!NOTE]
-> **Coming from 0.1?** Read [Upgrading from 0.1](https://antoinerichard.github.io/TrackGen/upgrading/from-0.1.html):
-> most 0.1 code keeps running, but some results change without an error.
+> **The `v3` branch develops 0.3.** Read [Upgrading from 0.2](https://antoinerichard.github.io/TrackGen/upgrading/from-0.2.html)
+> before updating: legacy APIs are removed, built-in seeds produce new geometry,
+> invalid results default to poison, configs are frozen, and Track/GateSequence storage
+> must be complete. The rc and downstream validation are still pending.
 
 Given a batch of per-environment seeds, TrackGen generates `E` closed-loop
 tracks (or gate sequences) in parallel — and then keeps working at sim
@@ -76,6 +78,11 @@ center = track.center.numpy().reshape(E, -1, 3)   # count[e] real points per env
 valid = track.valid.numpy()                  # [E]: 0 for an env that failed a check
 ```
 
+Invalid envs have `count=0` and NaN geometry by default. Check `valid` before using
+points; set `on_invalid="keep"` explicitly on a preset or config to inspect failed
+geometry. Configs are frozen values: use `dataclasses.replace` for static changes
+and `gen.params` for dynamic curricula.
+
 …or let one object run the sim-time side — checkpoints, progress,
 out-of-bounds checks, per-env regeneration:
 
@@ -121,7 +128,7 @@ More: [quickstart](https://antoinerichard.github.io/TrackGen/getting-started/qui
 | | |
 |---|---|
 | [Getting started](https://antoinerichard.github.io/TrackGen/getting-started/quickstart.html) | install, quickstart, concepts and terms, parameter explorer |
-| [Upgrading from 0.1](https://antoinerichard.github.io/TrackGen/upgrading/from-0.1.html) | what changed, what to check, how to port |
+| [Upgrading from 0.2](https://antoinerichard.github.io/TrackGen/upgrading/from-0.2.html) | every 0.3 break and its replacement; [historical 0.1 → 0.2 guide](https://antoinerichard.github.io/TrackGen/upgrading/from-0.1.html) |
 | [Generating tracks and gates](https://antoinerichard.github.io/TrackGen/user-guide/generating.html) | presets, specs, params, seeds; [results](https://antoinerichard.github.io/TrackGen/user-guide/results.html); [curricula](https://antoinerichard.github.io/TrackGen/user-guide/curricula.html); [choosing a generator](https://antoinerichard.github.io/TrackGen/tutorials/choosing-a-generator.html) |
 | [Generators](https://antoinerichard.github.io/TrackGen/generators/overview.html) | the six families, quality benchmarks |
 | [Courses, simulators and RL](https://antoinerichard.github.io/TrackGen/utilities/course.html) | courses, [CUDA graphs in a sim](https://antoinerichard.github.io/TrackGen/tutorials/cuda-graph-in-a-sim.html), [RL auto-reset](https://antoinerichard.github.io/TrackGen/user-guide/rl-auto-reset.html), [runtime utilities](https://antoinerichard.github.io/TrackGen/utilities/overview.html) |

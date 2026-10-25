@@ -1,6 +1,12 @@
 2.5D tracks
 ===========
 
+.. note::
+
+   Figures and empirical yield, range and timing measurements on this page predate the
+   0.3 hashed-RNG switch. They are historical reference measurements; current generated
+   bytes and seed-specific outcomes differ (:ref:`upgrading-0.3-rng`).
+
 Tracks (``TrackGenerator``, tutorial at :doc:`/tutorials/batch-of-tracks`) are
 **2.5D**, exactly like :doc:`gate courses </gates-3d>`: the plan-view layout comes
 from the 2D centerline generators and the XPBD relaxer, and altitude (Z) is

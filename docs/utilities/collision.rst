@@ -7,6 +7,10 @@ Collision backends
 leave the drivable band?* and *did it hit an obstacle?* (a gate post, a cone, a gate
 frame). Every check is batched over the :term:`envs <env>` and records into a CUDA graph.
 
+The accuracy and timing tables below are historical measurements from before the
+0.3 hashed-RNG switch. The query algorithms are retained; remeasure current geometry
+and seeds when comparing performance or accuracy (:ref:`upgrading-0.3-rng`).
+
 Choosing a backend
 ------------------
 

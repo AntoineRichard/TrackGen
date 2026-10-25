@@ -1028,9 +1028,10 @@ TrackGen's own checks.
    track = gen.generate()
    too_curvy = (track.fail_mask.numpy() >> 16) & 1
 
-``Track.fail_mask`` is ``None`` and ``Track.fail_bits`` empty on a ``Track`` built
-elsewhere (the standalone ``inflate_warp`` path, for example). When ``fail_mask`` is set,
-``valid[e] == (fail_mask[e] == 0)`` for every env.
+``Track.fail_mask`` is a required array. A generated Track has
+``valid[e] == (fail_mask[e] == 0)`` for every env. Manually allocated storage begins
+with zero count, validity and fail mask, and an empty ``fail_bits`` mapping; the
+mapping is populated when a pipeline writes it.
 
 .. _pipeline-commit:
 
@@ -1083,9 +1084,9 @@ what the commit does with an :term:`invalid env`, one whose ``fail_mask`` is not
 
    * - value
      - an invalid env leaves the commit with
-   * - ``"keep"`` (default)
+   * - ``"keep"`` (explicit opt-in)
      - its computed geometry, and ``valid = 0``.
-   * - ``"poison"``
+   * - ``"poison"`` (default)
      - ``count = 0``; ``outer``, ``center``, ``inner``, ``tangent``, ``normal`` all
        ``(NaN, NaN, NaN)`` and ``arclen`` and ``half_width`` NaN on every slot; every
        attribute its padding (NaN, or ``-1`` for ``int32``) on every slot;
@@ -1101,8 +1102,8 @@ that env ``TrackLocalizer`` returns a NaN ``s`` and ``segment = -1``,
 under both policies, and a masked generation poisons only
 the masked envs (the others are restored). The utilities answer an
 invalid env the same way under both policies (:ref:`utilities-invalid-envs`); keep gating
-rewards and observations on ``valid``. ``"poison"`` is planned to become the default at
-1.0.
+rewards and observations on ``valid``. Poison is the default for configs, presets,
+``BatchSpec`` and missing policies in saved ``/2`` batches.
 
 **Cost.** The commit launches only when it has work to do:
 
@@ -1112,12 +1113,11 @@ rewards and observations on ``valid``. ``"poison"`` is planned to become the def
 
    * - generation
      - launches added
-   * - unmasked, ``on_invalid="keep"``, ``validity.default`` the last check (the
-       default pipelines)
-     - none (156 launches for a default ``bezier`` generation, the four latches of
+   * - unmasked, explicit ``on_invalid="keep"``, ``validity.default`` the last check
+     - none (156 launches for a default ``bezier`` generation with explicit keep, the four latches of
        ``min_num_points``, ``rad``, ``handle_clamp_frac`` and ``size`` included:
        `Parameter latch`_)
-   * - unmasked, with a check after ``validity.default``
+   * - unmasked, explicit keep, with a check after ``validity.default``
      - one (``valid`` derived, ``E`` threads)
    * - unmasked, ``on_invalid="poison"``
      - one (the commit, ``E * N_max`` threads)
@@ -1134,9 +1134,9 @@ per env: about 107 MB at ``E = 4096``, ``N_max = 384``, allocated once at build 
 every Program, whether or not it ever runs a masked generation. The ``Track`` and every
 working buffer keep their addresses forever.
 
-``Program.on_invalid`` reports the policy. ``TrackGenConfig`` has no ``on_invalid``
-field: build the spec with ``presets.track(..., on_invalid="poison")``, or edit a spec's
-batch (both are frozen dataclasses):
+``Program.on_invalid`` reports the policy. Both config classes expose
+``on_invalid="poison"``. Set it to ``"keep"`` explicitly for failed-geometry diagnostics,
+or replace a spec's frozen batch:
 
 .. code-block:: python
 
@@ -1145,10 +1145,11 @@ batch (both are frozen dataclasses):
    from track_gen import TrackGenConfig
    from track_gen.pipeline import legacy
 
-   config = TrackGenConfig(num_envs=64, device="cpu")
+   config = TrackGenConfig(num_envs=64, device="cpu", on_invalid="keep")
    spec = legacy.to_pipeline_spec(config)
    spec = dataclasses.replace(spec, batch=dataclasses.replace(spec.batch,
                                                               on_invalid="poison"))
+   assert config.on_invalid == "keep" and spec.batch.on_invalid == "poison"
 
 .. _pipeline-attributes:
 
@@ -1158,8 +1159,9 @@ Per-point attributes in the result
 ``Track.half_width`` is the band's half-width per point, ``[E * N_max]`` ``float32``:
 the value on the real points, NaN on the padding (the constant on every real point at
 constant width). It is ``offset.default``'s ``track.half_width``, so the band and the
-field agree: ``|outer - center| == half_width`` on every real point. It is ``None`` on a
-``Track`` built by hand.
+field agree: ``|outer - center| == half_width`` on every real point. It is required
+on manually built Tracks too; a pipeline with no road offset keeps an allocated
+NaN half-width array where no width is available.
 
 ``Track.attributes`` maps a key to the final version of each per-point plugin channel
 exported with ``export=``; the key is the channel's name without its domain prefix:
@@ -1376,29 +1378,33 @@ of ``lo`` and ``gate_width``), the size kernels append the ``[E]`` size array, a
      - launches
      - of which latches
    * - default track (``bezier``, flat)
-     - 156
+     - 157
      - 4
    * - ``hull`` / ``polar`` / ``voronoi`` / ``checkpoint``
-     - 154 / 146 / 154 / 150
+     - 155 / 147 / 155 / 151
      - 3 / 3 / 3 / 4
    * - ``bezier`` + elevation ``uniform`` / ``random_walk`` / ``noise``
-     - 162 / 163 / 161
+     - 163 / 164 / 162
      - 6 / 7 / 7
    * - ``bezier`` + ``randomize={"generator.rad": (lo, hi)}``
-     - 158
+     - 159
      - 5 (and the draw)
    * - gates: ``bezier`` / ``hull`` (the default gate pipeline)
-     - 16
+     - 17
      - 2 (``size``, ``gate_width``)
    * - gates: ``polar`` / ``checkpoint`` / ``voronoi``
-     - 18 / 18 / 19
+     - 19 / 19 / 20
      - 4 (two ring knobs, ``normalize.size``, ``gate_width``)
    * - gates: ``bezier`` + elevation ``uniform`` / ``random_walk`` / ``noise``
-     - 19 / 20 / 20
+     - 20 / 21 / 21
      - 4 / 5 / 5
    * - gates: ``source="stations"`` (``bezier``, 12 gates)
-     - 32
+     - 33
      - 5 (the track generator's four, ``gate_width``)
+
+These counts include the default poison commit; explicit ``on_invalid="keep"``
+removes that launch when the default validity check is last. They were remeasured
+with the current 0.3 source on CPU.
 
 A masked generation runs the same latches as ``_latch_masked_*`` launches after the
 advance and the masked effective seed, and the hold comes right after them (index 6 of a
@@ -1430,11 +1436,10 @@ What the pipeline does not do in this release:
 - **Gates**: composite generators, provided attributes other than ``z`` from
   ``stations`` (``tangent``, ``half_size``, ``roll``), ``roll`` on
   ``gate_frames.default``, ``preferred`` hints of track generators for the gate stages
-  (they declare ``"relax"`` only), split gate checks, and a ``GateGenConfig.on_invalid``
-  field.
+  (they declare ``"relax"`` only), and split gate checks.
 - Opening ``resample``, ``frames``, ``offset`` and ``lift`` to plugins; split built-in
   checks (``validity.turning``, ...); an aliasing in-place write form; a
-  ``TrackGenConfig.on_invalid`` field; a segmented ``Course`` (over a generator with a
+  segmented ``Course`` (over a generator with a
   ``HOST`` stage, ``Course.regenerate()`` runs eagerly).
 
 Reference compositions

@@ -1,6 +1,12 @@
 Bezier Generator
 ================
 
+.. note::
+
+   Sample figures, seed-specific ranges and measured yields on this page are historical
+   measurements from before the 0.3 RNG switch. The algorithms and parameter contracts
+   describe current code; remeasure current seeds (:ref:`upgrading-0.3-rng`).
+
 The ``bezier`` generator is the default and most configurable of the centerline generators.
 It samples a set of random grid-jittered corner anchors, sorts them by angle around
 their centroid to form a simple star-shaped polygon, and assembles a closed cubic

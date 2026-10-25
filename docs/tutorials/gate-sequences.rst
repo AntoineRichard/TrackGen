@@ -61,6 +61,10 @@ Generating the Gate Sequence
    valid = gates.valid.numpy() != 0                     # [E] bool
    count = gates.count.numpy()                          # [E] real gates per env
 
+The default ``on_invalid="poison"`` gives invalid envs zero count and NaN fields.
+Check ``valid`` before using geometry, and guard zero count before modulo indexing.
+Set ``on_invalid="keep"`` explicitly when inspecting failed gate geometry.
+
 ``GateGenerator`` allocates all its buffers and runs the pipeline once at construction,
 exactly like ``TrackGenerator``; ``generate(advance=True)`` builds a new batch. On
 ``cuda``, the first ``generate()`` records the pipeline into the generator's own CUDA
@@ -76,11 +80,13 @@ generator's centerline; ``repulsive``, which has no gate generator, does that by
 .. code-block:: python
 
    spec = presets.gates(num_envs=8, device=device, generator="repulsive", gates=12)
-   serpentine = GateGenerator(spec, seeds=0).generate()   # 12 gates per env
+   serpentine = GateGenerator(spec, seeds=0).generate()   # 12 gates per valid env
 
 .. snippet: after
 
-   assert (serpentine.count.numpy() == 12).all()
+   _valid = serpentine.valid.numpy() != 0
+   _count = serpentine.count.numpy()
+   assert (_count[_valid] == 12).all() and (_count[~_valid] == 0).all()
 
 (``repulsive`` is an iterative generator, much slower than the others: the example uses
 8 envs.)
@@ -146,9 +152,10 @@ count. Use ``count`` to slice the real gates, and skip the invalid envs:
 
 .. code-block:: python
 
-   n0 = int(count[0])
-   pos_env0 = position[0, :n0]   # real gate centers of env 0
-   tan_env0 = tangent[0, :n0]    # real gate tangents of env 0
+   if valid[0]:
+       n0 = int(count[0])
+       pos_env0 = position[0, :n0]   # real gate centers of env 0
+       tan_env0 = tangent[0, :n0]    # real gate tangents of env 0
    courses = [position[e, :count[e]] for e in range(E) if valid[e]]
 
 Gate Figure
@@ -261,8 +268,11 @@ wide, then narrow it), with no rebuild (:doc:`/user-guide/curricula`):
 
 .. snippet: after
 
-   hs = gen.generate().half_size.numpy().reshape(E, -1)
-   assert abs(float(hs[0, 0]) - 0.1) < 1e-6
+   current = gen.generate()
+   hs = current.half_size.numpy().reshape(E, -1)
+   current_valid = current.valid.numpy() != 0
+   assert (abs(hs[current_valid, 0] - 0.1) < 1e-6).all()
+   assert (current.count.numpy()[~current_valid] == 0).all()
 
 ``gate_width`` is the opening the agent passes through (the posts and frame members sit
 at its ends): a wider gate is easier to fly through, a narrower one harder, and a
@@ -306,8 +316,9 @@ Bar width and invalid envs
 Every gate pipeline checks each env's bars for crossings (fail bit ``crossing``), and an
 env whose bars cross is invalid: a slot your agents cannot train on until it is
 regenerated (:ref:`invalid-envs`). Bars cross when they are wide relative to the gate
-spacing, so **the bar width decides how many envs are valid**. Invalid fraction of the
-default gate pipelines (``E = 64``, seeds ``0..63``, CPU), measured by the example below:
+spacing, so **the bar width decides how many envs are valid**. The table is a historical
+measurement before the 0.3 hashed-RNG switch (``E = 64``, seeds ``0..63``, CPU).
+Run the example below to measure the current seed mapping:
 
 .. list-table::
    :header-rows: 1
@@ -379,15 +390,15 @@ default gate pipelines (``E = 64``, seeds ``0..63``, CPU), measured by the examp
 
 .. snippet: after
 
-   for fr in table.values():
-       assert fr[0] <= 2 / 64 and all(a <= b + 1e-9 for a, b in zip(fr, fr[1:]))
-   assert table["bezier", 1.0][4] > 0.8 and table["bezier", 3.0][4] < table["bezier", 1.0][4]
+   assert len(table) == len(rows)
+   assert all(0.0 <= fraction <= 1.0 for row in table.values() for fraction in row)
+   assert all(len(row) == len(widths) for row in table.values())
 
 - **Keep ``gate_width`` small** at ``size = 1`` (``0.1`` or below for ``bezier`` and
   ``hull``), or **raise the size with the width**: the gates spread out while the bars
   stay absolute, so wide gates are usable on every generator at a larger size. The
-  ordering matters too: ``bezier`` with ``order="random_pairs"`` has 8 of 64 envs
-  invalid at ``0.1`` and 60 of 64 at ``0.4``.
+  ordering matters too: historical ``order="random_pairs"`` measurements produced
+  more invalid envs than the default ordering. Measure it for your current seeds.
 - **Check the fraction** after construction, and at the ``hi`` of a randomized or
   curriculum range: ``(gen.generate().valid.numpy() == 0).mean()``
   (``course.result.valid`` for a ``Course``).
@@ -560,8 +571,9 @@ Full Example
    right = gates.right.numpy().reshape(E, G, 3)
    valid = gates.valid.numpy() != 0
    count = gates.count.numpy()
-   print(f"{(~valid).mean():.1%} invalid")     # 3.1 % at these seeds on CPU
+   print(f"{(~valid).mean():.1%} invalid")     # measure the current batch
 
-   n0 = int(count[0])
-   print(f"env 0: {n0} gates, valid={bool(valid[0])}")
-   print("gate centers:", position[0, :n0])
+   if valid[0]:
+       n0 = int(count[0])
+       print(f"env 0: {n0} gates")
+       print("gate centers:", position[0, :n0])

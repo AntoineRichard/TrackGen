@@ -32,10 +32,10 @@ physics) writes in place. Bind it once, then query with no arguments:
 
    @wp.kernel
    def _walk_k(center: wp.array(dtype=wp.vec3f), count: wp.array(dtype=wp.int32),
-               stride: int, t: wp.array(dtype=wp.int32), pos: wp.array(dtype=wp.vec3f)):
+               valid: wp.array(dtype=wp.int32), stride: int, t: wp.array(dtype=wp.int32), pos: wp.array(dtype=wp.vec3f)):
        e = wp.tid()
        n = count[e]
-       if n > 0:
+       if valid[e] != 0 and n > 0:
            pos[e] = center[e * stride + (t[0] * 2) % n] + wp.vec3f(0.0, 0.01, 0.0)
 
    @wp.kernel
@@ -46,7 +46,7 @@ physics) writes in place. Bind it once, then query with no arguments:
    robot_pos = wp.zeros(E, dtype=wp.vec3f, device=device)
 
    def sim_step():
-       wp.launch(_walk_k, E, [track.center, track.count, track.layout.stride, _t, robot_pos],
+       wp.launch(_walk_k, E, [track.center, track.count, track.valid, track.layout.stride, _t, robot_pos],
                  device=device)
        wp.launch(_tick_k, 1, [_t], device=device)
 

@@ -3,6 +3,12 @@
 Choosing a Centerline Generator
 ===============================
 
+.. note::
+
+   Figures and empirical yield, range and timing measurements on this page predate the
+   0.3 hashed-RNG switch. They are historical reference measurements; current generated
+   bytes and seed-specific outcomes differ (:ref:`upgrading-0.3-rng`).
+
 This is the decision guide: a few questions, and the generator they point to. The
 catalogue, :ref:`generators-overview`, has the facts per family (how each one builds its
 loops, its per-env knobs, the shared contract and the cost table); each generator has a

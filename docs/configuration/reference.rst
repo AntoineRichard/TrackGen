@@ -38,6 +38,14 @@ Config classes
 .. autoclass:: track_gen.GateGenConfig
    :no-members:
 
+Both configs are frozen dataclasses. Build a replacement with ``dataclasses.replace``
+instead of assigning fields, and make dataclass subclasses frozen too. When changing
+``half_width``, pass ``spacing=None`` in the same replacement to derive spacing again
+(:ref:`upgrading-0.3-frozen`). ``on_invalid`` defaults to ``"poison"`` on both configs;
+``"keep"`` explicitly retains invalid geometry for diagnostics. Config-to-spec and
+spec-to-config conversion preserve this choice. A missing policy in a saved ``/2``
+spec defaults to ``"poison"`` (:ref:`upgrading-0.3-poison`).
+
 .. _gate-width-config:
 
 Gate width and radius
@@ -57,12 +65,11 @@ Two ``GateGenConfig`` fields size a gate, and they are easy to confuse:
   separation: the solve pushes centers to at least ``2 * gate_radius`` apart, and the
   ``spacing`` check rejects an env whose gates stay closer. It does not size the bar.
 
-In a pipeline spec each value lives in the stages that use it (``gate_frames`` and
-``validity.gate_default`` for ``gate_width``; ``gate_relax.spheres`` and
-``validity.gate_default`` for ``gate_radius``), and the planner requires them to agree
-(for ``gate_width``, the initial values: ``gate_frames.default``'s is a dynamic per-env
-field, and ``validity.gate_default``'s copy is inert: that stage checks crossings per
-env from the bars themselves). A generator that provides its own
+In a pipeline spec the bar width lives on ``gate_frames.default`` as a dynamic
+per-env field. ``validity.gate_default`` checks crossings from the bars themselves;
+it accepts no separate ``gate_width`` or ``check_crossing`` setting. Gate radius
+lives on ``gate_relax.spheres`` and ``validity.gate_default``, and the planner
+requires those radius values to agree. A generator that provides its own
 ``half_size`` refuses a non-zero ``gate_width`` (``ValueError``); its bar widths come from
 the generator (:ref:`pipeline-provides`).
 
@@ -1109,7 +1116,7 @@ fields, with ``z_profile`` only required to be a non-empty string; for gates
 ``num_envs``, the gate counts, radius, width, solver iterations, alignment and the Z
 fields, with ``z_profile`` only required to be a non-empty string and ``gate_ordering``
 ``None`` or a non-empty string)
-and the type of ``generator_params``. The ``relax_solver``, ``gate_ordering`` and
+``on_invalid`` (``"poison"`` or ``"keep"``), and the type of ``generator_params``. The ``relax_solver``, ``gate_ordering`` and
 ``z_profile`` names are resolved by ``TrackGenerator`` and ``GateGenerator`` (see
 :ref:`flat-stage-shortcuts` and :ref:`gate-stage-shortcuts`). The
 generator-specific rules in the tables above run when the generator is constructed

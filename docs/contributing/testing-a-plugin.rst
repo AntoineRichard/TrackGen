@@ -26,6 +26,12 @@ for a runtime component (see :ref:`kit-check-component`). TrackGen's own test su
 the same checks over every built-in generator and stage, so a plugin is held to the
 standard the built-ins meet. The kit's functions are listed in :ref:`reference-testing`.
 
+Generator and stage diagnostics default to explicit ``on_invalid="keep"`` so checks
+can inspect failed geometry; an explicit policy in their ``config`` override is
+honored. Component diagnostics force keep for every producer form so their own
+invalid-env checks can compare retained and poisoned cases. These diagnostic choices
+do not change the public poison default.
+
 The kit checks the contract, not the quality of the tracks: yield, shape variety and
 speed are measured by ``benchmarks/compare_generators.py`` (see
 :ref:`how-a-generator-is-judged`), and your generator's own properties need tests of

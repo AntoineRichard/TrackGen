@@ -143,8 +143,11 @@ built:
 
    course = Course.track(spec, checkpoint_spacing=0.6, collision="segments", seeds=42)
 
-   # Stand-ins for your simulator's buffers: one box per env, on its start line.
-   start = course.result.center.numpy().reshape(E, -1, 3)[:, 0]
+   # Stand-ins for your simulator: place valid envs on their start lines only.
+   initial_valid = course.result.valid.numpy() != 0
+   start = np.zeros((E, 3), dtype=np.float32)
+   center = course.result.center.numpy().reshape(E, -1, 3)
+   start[initial_valid] = center[initial_valid, 0]
    pos = wp.array(start, dtype=wp.vec3f, device=device)
    quat = wp.full(E, wp.quatf(0.0, 0.0, 0.0, 1.0), dtype=wp.quatf, device=device)
    half_extents = wp.full(E, wp.vec2f(0.02, 0.01), dtype=wp.vec2f, device=device)

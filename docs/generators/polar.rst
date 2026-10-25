@@ -1,6 +1,12 @@
 Polar Generator
 ===============
 
+.. note::
+
+   Sample figures, seed-specific ranges and measured yields on this page are historical
+   measurements from before the 0.3 RNG switch. The algorithms and parameter contracts
+   describe current code; remeasure current seeds (:ref:`upgrading-0.3-rng`).
+
 The **polar** generator produces smooth, closed, radially symmetric track
 centerlines by placing a fixed number of control knots in polar coordinates,
 fitting a periodic cubic spline through them, and normalizing the result to a

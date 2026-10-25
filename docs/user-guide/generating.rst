@@ -92,8 +92,8 @@ holds a batch when the constructor returns. Construct a generator before you beg
 ``GateGenerator``, before anything is bound; anything other than a config or a spec
 raises ``TypeError``.
 
-- ``gen.config`` returns what was passed (a copy of a config; a spec is immutable and
-  returned as is), so ``TrackGenerator(gen.config, rng)`` rebuilds an identical generator.
+- ``gen.config`` returns what was passed (a frozen copy of a config; a spec is immutable
+  and returned as is), so ``TrackGenerator(gen.config, rng)`` rebuilds an identical generator.
 - ``gen.params`` maps ``"generator"`` and every stage with a :term:`dynamic field` to its
   live parameters (`Parameters`_).
 - ``gen.program`` is the pipeline the spec built: its result (``gen.program.result``),
@@ -126,7 +126,7 @@ built.
                  generator="bezier", generator_params=None, num_points=256,
                  half_width=0.1, spacing=None,
                  relax="auto", width="constant", elevation="flat",
-                 checks=("default",), on_invalid="keep",
+                 checks=("default",), on_invalid="poison",
                  z_base=0.0, registry=None, randomize=None) -> PipelineSpec
 
 The stages, by id: ``generator``, ``resample`` (``resample.constant_spacing``),
@@ -202,7 +202,8 @@ empty sequence or another first check ``ValueError``. The other arguments:
 - ``registry`` is the registry the preset reads (default ``track_gen.plugin.registry``).
 - Each further check gets the id ``ref.id or name``. Two checks with the same id raise
   ``ValueError``: give one an explicit ``StageRef(..., id=...)``.
-- ``on_invalid`` is ``"keep"`` or ``"poison"`` (``ValueError`` otherwise): what an
+- ``on_invalid`` defaults to ``"poison"``; ``"keep"`` is an explicit opt-in. Other
+  values raise ``ValueError``. This chooses what an
   :term:`invalid env`'s rows hold (:ref:`invalid-envs`).
 - ``randomize`` is ``None``, a mapping ``{"<stage id>.<field>": (lo, hi)}`` or a
   sequence of ``StageRef("randomize", "uniform", ...)``: per-env draws of dynamic
@@ -233,7 +234,7 @@ Gate presets: ``presets.gates``
                  gate_radius=0.025, gate_solve_iters=8, gate_width=0.0,
                  gate_align="yaw_only", elevation="flat", z_base=0.0,
                  z_valid_grade=0.0, checks=("gate_default",), scale=1.0, size=1.0,
-                 on_invalid="keep", n_max=384, num_points=256, half_width=0.1,
+                 on_invalid="poison", n_max=384, num_points=256, half_width=0.1,
                  spacing=None, relax="auto", width="constant",
                  spacing_metric="xy", elevation_on=None,
                  registry=None, randomize=None) -> PipelineSpec
@@ -291,7 +292,7 @@ stage list.
   ``elevation_on`` (``None``, ``"gates"`` or ``"centerline"``) where the elevation runs;
   both apply to a centerline source, and ``"xyz"`` with an anchors generator raises
   ``ValueError`` (:ref:`gates-3d-stations`).
-- ``on_invalid`` is ``"keep"`` or ``"poison"``.
+- ``on_invalid`` defaults to ``"poison"``; ``"keep"`` is an explicit opt-in.
 - ``randomize`` is the per-env draws of `Presets: presets.track`_
   (:ref:`pipeline-randomize`); a randomizer of a gate generator's field
   (``{"generator.m": (3.0, 9.0)}``) is placed before the generator.
@@ -339,7 +340,7 @@ What a spec holds
    ``{"raw": num_points}``, its default raw point count; a Stage generator's own
    ``Stage.capacity()`` overrides it. A ``capacity`` on any other stage is refused.
 
-``BatchSpec(num_envs, device, n_max, closed=True, scale=1.0, on_invalid="keep", max_gates=None)``
+``BatchSpec(num_envs, device, n_max, closed=True, scale=1.0, on_invalid="poison", max_gates=None)``
    The batch every stage shares: ``E`` envs on one device, the per-env point capacity
    ``N_max``, the coordinate ``scale``, and what happens to an invalid env's rows
    (``"keep"`` or ``"poison"``, :ref:`invalid-envs`). ``closed`` must be a ``bool``, and
@@ -808,15 +809,14 @@ The saved format
 
 ``to_dict()`` writes ``{"format": "track_gen.pipeline/2", "batch": {...}, "stages":
 [...]}``: the batch's fields (``on_invalid`` and ``max_gates`` are optional when reading,
-``"keep"`` and ``None`` when absent), then one entry per stage with its ``kind``,
+``"poison"`` and ``None`` when absent), then one entry per stage with its ``kind``,
 ``name``, ``params`` and the optional ``id``, ``ports`` and ``capacity``. A missing key
 raises a ``ValueError`` naming it (``stages[3] is missing 'kind'``), and so does any
 format string ``from_dict`` does not know. ``require_caller_capturable`` is written only
 when it is set.
 
-``from_dict`` also reads the older ``"track_gen.pipeline/1"`` dicts and migrates them,
-with one ``DeprecationWarning``; the migration guide says :ref:`how, and which ones
-cannot be migrated <pipeline-dev3-specs>`.
+``from_dict`` refuses older ``"track_gen.pipeline/1"`` dictionaries. Load and re-save
+them as ``/2`` using TrackGen 0.2 before upgrading (:ref:`upgrading-0.3-removals`).
 
 Inspecting a generator
 ----------------------

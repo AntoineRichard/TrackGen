@@ -1,6 +1,12 @@
 Track relaxation — convergence and tuning
 =========================================
 
+.. note::
+
+   Figures and empirical yield, range and timing measurements on this page predate the
+   0.3 hashed-RNG switch. They are historical reference measurements; current generated
+   bytes and seed-specific outcomes differ (:ref:`upgrading-0.3-rng`).
+
 This page covers how the solve converges, what the Chebyshev acceleration buys (with
 measured numbers), the ``relax_sep_every`` pitfall, and tuning guidance including the
 dead ends that were measured so you don't have to retry them.
