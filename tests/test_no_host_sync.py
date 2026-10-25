@@ -1114,7 +1114,6 @@ _CONSTRUCTION_ONLY = {
         '_root_of',
         '_seed_state',
         '_segments',
-        '_self_drawn',
         '_slot_info',
         '_stage_bounds',
         '_stage_class',

@@ -18,11 +18,7 @@ bezier / hull gate generators, ``"normalize.size"`` on the polar / voronoi / che
 gate pipelines, and ``"gate_frames.gate_width"``), plugin Params' and
 ``width.from_channel``'s ``scale`` / ``lo`` / ``hi``. An ``int32`` dynamic field (bezier
 / hull's ``min_num_points``) is not drawable in 0.x. The initial range must lie inside
-the field's declared bounds (compared in float32) and the draws are clamped to them. A
-knob bezier's ``style_sampling`` draws (its ``*_range`` set) is not drawable (set the
-range to ``None``): ``style_sampling``'s ``rad_range`` / ``handle_clamp_frac_range`` are
-superseded by ``randomize={"generator.rad": ..., "generator.handle_clamp_frac": ...}``
-(different random streams, same distributions).
+the field's declared bounds (compared in float32) and the draws are clamped to them.
 """
 from __future__ import annotations
 
