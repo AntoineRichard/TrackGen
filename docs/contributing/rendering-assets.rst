@@ -50,6 +50,9 @@ selection and checks. A selected gallery sample is not a yield estimate. To show
 failed candidate, use ``on_invalid="keep"`` explicitly and retain its validity/failure
 labels. Otherwise the default poison policy correctly removes its geometry.
 
+Source archives can be rendered without Git metadata. The relaxation manifest leaves
+unavailable repository fields null and retains measured source-file hashes.
+
 Solver convergence clips
 ------------------------
 

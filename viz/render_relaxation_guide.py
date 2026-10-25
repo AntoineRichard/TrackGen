@@ -159,19 +159,42 @@ def _render_comparison(row, out_dir):
                          {"finite": True} for sample in samples])
 
 
+def _git_provenance(root):
+    """Use Git only when it identifies this source root, never an enclosing repo."""
+    unknown = dict(git_commit=None, runtime_reference=None, runtime_worktree_changed=None)
+    root = Path(root).resolve()
+    # An archive nested in another checkout must not inherit that checkout's HEAD.
+    # Worktrees use a .git file, while ordinary checkouts use a directory.
+    if not (root / ".git").exists():
+        return unknown
+    try:
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
+
+        repository = git("rev-parse", "--show-toplevel")
+        if repository.returncode or Path(repository.stdout.strip()).resolve() != root:
+            return unknown
+        commit = git("rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+        if commit.returncode:
+            return unknown
+        reference = git("rev-parse", "--verify", "--quiet", f"v{__version__}^{{commit}}")
+        changed = git("diff", "--quiet", "HEAD", "--", "track_gen")
+        return dict(git_commit=commit.stdout.strip() or None,
+                    runtime_reference=reference.stdout.strip() if reference.returncode == 0 else None,
+                    runtime_worktree_changed={0: False, 1: True}.get(changed.returncode))
+    except OSError:
+        # Source archives and environments without a Git executable still render;
+        # measured source hashes below remain available for reproduction.
+        return unknown
+
+
 def render_guide(out_dir):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     comparisons = collect_comparisons()
     source = dict(version=__version__, warp_version=wp.__version__,
                   numpy_version=np.__version__, device="cpu",
-                  git_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT,
-                                                     text=True).strip(),
-                  runtime_reference=subprocess.run(
-                      ["git", "rev-parse", "--verify", "--quiet", f"v{__version__}^{{commit}}"],
-                      cwd=ROOT, capture_output=True, text=True).stdout.strip() or None,
-                  runtime_worktree_changed=subprocess.run(
-                      ["git", "diff", "--quiet", "HEAD", "--", "track_gen"], cwd=ROOT).returncode != 0,
+                  **_git_provenance(ROOT),
                   solver_sha256=hashlib.sha256((ROOT/"track_gen/_src/warp_relax.py").read_bytes()).hexdigest(),
                   runtime_source_sha256={name: hashlib.sha256((ROOT/name).read_bytes()).hexdigest()
                                          for name in ("track_gen/seeds.py", "track_gen/ops/sampling.py",

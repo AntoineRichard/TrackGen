@@ -62,3 +62,19 @@ rc2 as the immutable install target while racing validation gates the final rele
 A future re-render must inspect labels/failures as well as numerical checks; matching
 pixels is not a correctness criterion. Retain internal history and implementation
 comments outside the published narrative.
+
+## Source-archive validation finding
+
+The first exact archive passed the dedicated CUDA lane (744 passed, zero skips),
+but its full suite reported one renderer-provenance failure alongside 4,287 passes
+and four optional UI skips. The renderer required `git rev-parse HEAD` even though
+`git archive` deliberately omits repository metadata. Geometry generation and all
+existing output goldens passed.
+
+Three regression cases reproduced failures before the fix: a source archive, an
+archive nested in an unrelated repository, and an unavailable Git executable.
+The corrected renderer reports unavailable Git fields as null, checks repository
+root identity and retains measured source hashes. Seven focused checks pass both
+in the checkout and copied source archive. No figures or library code changed.
+Final full-suite and CI results are recorded in PR #5 after the corrected archive
+is validated.
