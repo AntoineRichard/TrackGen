@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0rc1 (release candidate, tag `v0.3.0rc1`)
+
+The first release candidate for 0.3 includes the legacy API removals, hashed built-in
+RNG streams without a reproduction mode, poison defaults, frozen configurations,
+required result storage, and the updated documentation from dev1-dev4. See the
+[0.2 to 0.3 migration guide](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc1/docs/upgrading/from-0.2.rst)
+for every break and its replacement. Package metadata and `track_gen.__version__`
+both report `0.3.0rc1`.
+
+Final release requires validation in the downstream racing repositories and the
+user's explicit approval.
+
 ## 0.3.0.dev4 (documentation milestone, `v3` branch)
 
 Document the complete 0.2 → 0.3 migration in `docs/upgrading/from-0.2.rst`, covering

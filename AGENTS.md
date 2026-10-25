@@ -9,9 +9,10 @@ the architecture and the roadmap, and `CHANGELOG.md` for what shipped.
 ## State (2026-10-25)
 - `main` = **v0.2.0** (released; GitHub release v0.2.0). It is the v2 refactor, roadmap
   PR0–PR15b; see the CHANGELOG and `docs/upgrading/from-0.1.rst`.
-- `v3` = the 0.3 line, version `0.3.0.dev4`. Roadmap PR16 cleanup is implemented in
-  four dev milestones. The rc and downstream racing-repository validation are still
-  required before 0.3.0. 1.0 is a later milestone.
+- `v3` = the 0.3 line, version `0.3.0rc1`. Roadmap PR16 cleanup is implemented in
+  four dev milestones. Draft PR #4 prepares the release candidate; downstream racing-
+  repository validation and the user's explicit approval are required before 0.3.0.
+  1.0 is a later milestone.
 
 ## User decisions for 0.3 (binding; they override any older doc that says otherwise)
 Not production software: break things cleanly, with no compatibility shims or deprecation
