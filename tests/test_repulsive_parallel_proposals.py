@@ -10,7 +10,7 @@ import pytest
 import warp as wp
 
 from tests.conftest import DEVS
-from track_gen._src import warp_generate_repulsive as serial
+from tests import _repulsive_serial_reference as serial
 from track_gen._src.repulsive_parallel_energy import EnergyModel
 from track_gen.exec import LaunchContext
 

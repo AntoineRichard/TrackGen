@@ -8,7 +8,7 @@ import warp as wp
 
 from tests.conftest import DEVS
 from tests.test_repulsive_armijo_precision import _fixture, _reference
-from track_gen._src import warp_generate_repulsive as serial
+from tests import _repulsive_serial_reference as serial
 from track_gen._src import repulsive_parallel_energy as parallel
 from track_gen.exec import LaunchContext
 from track_gen.testing.contract import no_allocation, no_host_sync

@@ -8,6 +8,9 @@ import warp as wp
 from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
 from track_gen._src import warp_generate_repulsive as rep
 from tests.conftest import DEVS
+from track_gen.exec import LaunchContext
+from track_gen._src.repulsive_parallel_energy import EnergyModel, evaluate_energy
+from track_gen._src import repulsive_parallel_proposals as proposals
 
 
 def _segment_distances(points, center):
@@ -142,10 +145,10 @@ def test_periodic_resampling_cannot_inject_a_rougher_shape():
     margin = wp.zeros(1, dtype=wp.float32, device='cpu')
     frozen = wp.zeros(1, dtype=wp.int32, device='cpu')
     movement = wp.zeros(1, dtype=wp.float32, device='cpu')
-    wp.launch(rep._accept_resample_k, dim=1,
-              inputs=[center, proposal, n, dc, dr, 0, 3., margin, frozen, movement, 0,
-                      3., 6., 1e-4, dc, dr, 0, -1.5],
-              device='cpu')
+    model = EnergyModel(3., 6., 1e-4, dc, dr, 0, -1.5, dc, dr, 0, 3., margin)
+    workspace = proposals.alloc_proposal_workspace(1, n, 'cpu')
+    proposals.accept_resample_inplace(LaunchContext.current('cpu'), center, proposal, n,
+                                      model, frozen, movement, 0, workspace)
     assert center.numpy().tobytes() == old.tobytes()
 
 
@@ -161,9 +164,10 @@ def test_satisfied_length_constraint_is_an_exact_noop():
     dr = wp.zeros(1, dtype=wp.float32, device='cpu')
     margin = wp.zeros(1, dtype=wp.float32, device='cpu')
     frozen = wp.zeros(1, dtype=wp.int32, device='cpu')
-    wp.launch(rep._grow_feasible_k, dim=1,
-              inputs=[center, proposal, n, target, .012, dc, dr, 0, 3., margin, frozen],
-              device='cpu')
+    model = EnergyModel(3., 6., 1e-4, dc, dr, 0, -1.5, dc, dr, 0, 3., margin)
+    workspace = proposals.alloc_proposal_workspace(1, n, 'cpu')
+    proposals.grow_feasible_inplace(LaunchContext.current('cpu'), center, proposal, n,
+                                   target, .012, model, frozen, workspace)
     assert center.numpy().tobytes() == points.tobytes()
 
 
@@ -214,29 +218,27 @@ def test_quantized_unchanged_candidate_is_not_accepted_as_progress():
     points = np.stack([.5 * np.cos(angle), .5 * np.sin(angle)], axis=-1).astype(np.float32)
     center = wp.array(points, dtype=wp.vec2f, device='cpu')
     proposal = wp.array(points.copy(), dtype=wp.vec2f, device='cpu')
-    trial = wp.empty(n, dtype=wp.vec2f, device='cpu')
-    gradient = wp.array(np.tile([1., -1.], (n, 1)).astype(np.float32), dtype=wp.vec2f, device='cpu')
     dc = wp.zeros(1, dtype=wp.vec2f, device='cpu')
     dr = wp.zeros(1, dtype=wp.float32, device='cpu')
     margin = wp.zeros(1, dtype=wp.float32, device='cpu')
     frozen = wp.zeros(1, dtype=wp.int32, device='cpu')
     energy = wp.zeros(1, dtype=wp.float64, device='cpu')
     scale = wp.zeros(1, dtype=wp.float64, device='cpu')
-    wp.launch(rep._shape_energy_k, dim=1,
-              inputs=[center, n, 3., 6., 1e-4, dc, dr, 0, -1.5, dc, dr, 0, 3., margin,
-                      frozen, energy, scale], device='cpu')
+    model = EnergyModel(3., 6., 1e-4, dc, dr, 0, -1.5, dc, dr, 0, 3., margin)
+    workspace = proposals.alloc_proposal_workspace(1, n, 'cpu')
+    evaluate_energy(LaunchContext.current('cpu'), center, center, n, 0., model,
+                    wp.ones(1, dtype=wp.int32, device='cpu'), workspace.energy_workspace,
+                    energy, scale)
     msl = wp.full(1, .1, dtype=wp.float32, device='cpu')
     movement = wp.zeros(1, dtype=wp.float32, device='cpu')
-    stationarity = wp.ones(1, dtype=wp.float32, device='cpu')
     blocked = wp.zeros(1, dtype=wp.int32, device='cpu')
     slope = wp.full(1, -1., dtype=wp.float64, device='cpu')
     numerical = wp.zeros(1, dtype=wp.int32, device='cpu')
     failed = wp.zeros(1, dtype=wp.int32, device='cpu')
     accepted = wp.zeros(1, dtype=wp.int32, device='cpu')
-    wp.launch(rep._accept_shape_k, dim=1,
-              inputs=[center, proposal, trial, gradient, energy, scale, n, 3., 6., 1e-4,
-                      dc, dr, 0, -1.5, dc, dr, 0, 3., margin, msl, frozen,
-                      movement, stationarity, blocked, slope, numerical, failed, accepted], device='cpu')
+    proposals.accept_shape_inplace(LaunchContext.current('cpu'), center, proposal, n,
+                                  model, energy, msl, frozen, movement, blocked, slope,
+                                  numerical, failed, accepted, workspace)
     assert accepted.numpy().tolist() == [0]
     assert blocked.numpy().tolist() == [1]
     assert center.numpy().tobytes() == points.tobytes()
