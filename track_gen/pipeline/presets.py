@@ -125,7 +125,7 @@ def _sel_name(sel) -> "str | None":
 
 def _declared(reg, kind: str, name: str, params=None) -> "tuple[dict, frozenset]":
     """``(writes, provides)`` of a registered generator Stage for ``params`` (its
-    ``Stage.declare``, roadmap PR13b; the class attributes when ``params`` do not coerce:
+    ``Stage.declare``; the class attributes when ``params`` do not coerce:
     ``build`` reports them), ``({}, frozenset())`` for an unknown name or a legacy
     spec."""
     from ..plugin.params import _coerce  # noqa: PLC0415
@@ -219,7 +219,7 @@ def _size_fields(reg, kind: str, name: str) -> "tuple[bool, str] | None":
 
 def _with_size(ref: StageRef, size, *, declares: "bool | None",
                hint: str = _SIZE_REMEDY, what: str = "generator") -> StageRef:
-    """``presets.track / gates(size=)`` (roadmap PR13d): ``ref`` with the INITIAL per-env
+    """``presets.track / gates(size=)``: ``ref`` with the INITIAL per-env
     ``size`` in its params (a mapping or ``None``: added; a Params instance: replaced);
     ``size=1.0`` leaves ``ref`` unchanged (the spec dict stays the same). ``declares``:
     whether its Params declare ``size`` (``None``: unknown, ``build`` reports it)."""
@@ -565,7 +565,7 @@ def _gate_stages(gen_ref: StageRef, *, provides=frozenset(), upstream=(),
     generator ``provides`` are dropped (z: gate_arclen + elevation; tangent: tangents)
     and carried instead; ``half_size`` + ``roll`` select ``gate_frames.posed``;
     ``carry_attributes`` carries the per-anchor plugin attributes to the gate slots.
-    ``size`` (roadmap PR13d): the initial ``normalize.size`` (params only when not 1)."""
+    ``size``: the initial ``normalize.size`` (params only when not 1)."""
     provides = frozenset(provides)
     stages = [gen_ref, *upstream]
     if stations_ref is not None:

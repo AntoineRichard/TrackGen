@@ -654,7 +654,7 @@ def resolve(ctx: "LaunchContext | None", device) -> LaunchContext:
 
 def _call_context(device, stream=None, ctx: "LaunchContext | None" = None
                   ) -> LaunchContext:
-    """The context of a utility's hot call (roadmap PR14): ``ctx`` when given (it must be
+    """The context of a utility's hot call: ``ctx`` when given (it must be
     a :class:`LaunchContext` on ``device``), else ``LaunchContext.for_call(device,
     stream)``.
 

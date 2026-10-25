@@ -37,14 +37,14 @@ for a masked one. Memory: one held copy of the ``Track`` (68 B per point + 24 B 
 about 107 MB at ``E = 4096``, ``N_max = 384``), allocated once at build for every
 Program, whether or not it is ever run with a mask.
 
-Exported attributes (``Track.attributes`` / ``GateSequence.attributes``, roadmap PR13a)
+Exported attributes (``Track.attributes`` / ``GateSequence.attributes``)
 are committed by one :class:`_AttrCommit` each, launched right after the result's own
 hold / commit and only when attributes exist: a masked generation adds two launches
 per attribute (hold + restore), an unmasked one under ``on_invalid="poison"`` one per
 attribute, an unmasked ``keep`` (derived ``valid`` included) none; each holds a copy of
 its attribute.
 
-A gate Program (roadmap PR11) commits its ``GateSequence`` the same way
+A gate Program commits its ``GateSequence`` the same way
 (:class:`_GateCommit`: :func:`_gate_hold_k` / :func:`_gate_commit_k` over
 :data:`GATE_POINT_FIELDS` and :data:`GATE_ENV_FIELDS`); a poisoned gate env leaves with
 ``count = 0``, every per-gate field NaN and ``valid = 0`` (``fail_mask`` kept). Its held

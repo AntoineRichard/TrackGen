@@ -3,12 +3,6 @@
 Domain randomization and curricula
 ==================================
 
-.. note::
-
-   Empirical size thresholds, yield, capacity headroom and collision measurements on
-   this page predate the 0.3 hashed-RNG switch. They are historical reference values;
-   measure your current seeds and largest curriculum size (:ref:`upgrading-0.3-rng`).
-
 Many knobs of a generator are :term:`dynamic fields <dynamic field>`: per-:term:`env`
 ``[E]`` arrays the stages read at every generation, so each env can run its own value and
 the values can change between generations with no rebuild and no new :term:`capture`.
@@ -461,13 +455,12 @@ bands, ``gate_radius``, ``gate_width``) and z (``z_min`` / ``z_max``, the noise
 amplitude, ``z_valid_grade``) are absolute: ``size`` is the "course larger relative to
 the car" axis. So:
 
-- under constant spacing a larger course has more points (the rule below), and small
-  sizes lose yield to the absolute road width (self-overlap after the offset): for
-  ``bezier``, 0.945 valid at ``size = 0.5``;
+- under constant spacing a larger course needs more points, while smaller courses have
+  less room for the same absolute road width;
 - ``elevation.uniform`` places its knots at arc fractions and ``noise`` runs its harmonics
-  in normalized arc length, so their **grades fall as** ``~1 / size`` (``uniform`` with
-  ``z_max = 0.3``: median per-track maximum grade 0.666 / 0.337 / 0.225 at size 1 / 2 /
-  3): scale ``z_max`` / ``z_noise_amplitude`` with the size to keep the grade.
+  in normalized arc length, so stretching the same altitude profile over a larger
+  course reduces its grade. Scale altitude ranges/amplitude with size when you want
+  similar slopes.
   ``random_walk``'s ``z_max_step`` is a grade cap per unit arc and does not depend on
   the size. On gates the spacing grows with the size, so the ``z_valid_grade`` check
   passes more envs. A joint size and hills curriculum is therefore not orthogonal.
@@ -477,54 +470,12 @@ the car" axis. So:
 ``n_max`` slots; a track that needs more is flagged in ``Track.truncated`` and fails
 validity (:ref:`invalid-envs`). A gate pipeline with ``source="relaxed_stations"`` fails
 the same way (its centerline is resampled into ``n_max``); anchor-sourced gates have a
-fixed count and are not affected (their spacing grows). At the defaults (``n_max = 384``,
-``half_width = 0.1``, spacing ``0.06``; CPU), the longest loop (rounded up) and its p99
-over 8192 envs (seeds ``0..4095`` and ``7919 * e + 13`` for ``e < 4096``) and the yields
-over ``E = 256`` (seeds ``7919 * e + 13``); ``repulsive``: both over ``E = 32``, seeds
-``7919 * e + 13``:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 16 26 24 34
-
-   * - generator
-     - longest raw loop at size 1 (p99)
-     - ``n_max = 384`` truncates from
-     - valid at size 0.5 / 1 / 2 / 3
-   * - ``bezier``
-     - 8.68 (7.17)
-     - ~2.6
-     - 0.945 / 1.000 / 0.996 / 0.996
-   * - ``hull``
-     - 8.30 (6.90)
-     - ~2.8
-     - 0.828 / 0.992 / 1.000 / 1.000
-   * - ``polar``
-     - 6.24 (5.67)
-     - ~3.7
-     - 0.961 / 1.000 / 1.000 / 1.000
-   * - ``voronoi``
-     - 5.01 (4.78)
-     - ~4.6
-     - 0.996 / 1.000 / 1.000 / 1.000
-   * - ``checkpoint``
-     - 7.26 (6.18)
-     - ~3.2
-     - 0.902 / 0.992 / 0.996 / 0.992
-   * - ``repulsive``
-     - 14.48 (bound 14.83)
-     - ~1.6
-     - — / 1.000 / 0.000 (every env truncated) / —
-
-**The sizing rule**, for a size range up to ``size_hi`` (``L_max`` from the table, times
-``scale``, or measured on your configuration with ``gen.program.tap("raw.xy")``):
+fixed count and are not affected (their spacing grows). **The sizing rule**, for a size range up to ``size_hi`` (``L_max`` measured on your configuration with ``gen.program.tap("raw.xy")``):
 
 1. ``n_max >= size_hi * L_max / spacing + 1`` (else truncation, an invalid env);
 2. ``num_points >= size_hi * L_max / spacing``: the raw loop keeps its static
-   ``num_points``, so its point spacing is ``size * L / num_points`` (``bezier``, 256
-   points: median per-env largest raw segment 0.019 / 0.038 / 0.057 at size 1 / 2 / 3,
-   against the output spacing 0.06); a coarser raw loop makes the constant-spacing
-   resample interpolate a polyline;
+   ``num_points``, so a larger course can expose the raw polyline's resolution. Use
+   enough raw points for the highest-curvature shape and largest size you need;
 3. the utilities' capacities and resolutions (`Size and the utilities`_).
 
 .. code-block:: python
@@ -551,8 +502,7 @@ over ``E = 256`` (seeds ``7919 * e + 13``); ``repulsive``: both over ``E = 32``,
 **Build-time warning.** When the generator is built, a ``generator.size`` randomizer whose
 ``hi`` (or a construction value) would truncate the generator's nominal longest loop
 emits one ``UserWarning`` naming the ``n_max`` that fits. The nominal loop is exact for
-``repulsive`` (from its parameters); for the others it is the longest loop of the table
-(so the warning fires from the "truncates from" column), scaled by the knobs that
+``repulsive`` (from its parameters); for the others it uses a nominal bound, scaled by the knobs that
 lengthen it: ``bezier`` / ``hull``'s ``max_num_points`` (``(max_num_points / 13) **
 0.6`` above 13), ``hull_displacement`` (its initial value or the ``hi`` of its
 randomizer: ``1 + 0.6 * (d - 0.15)`` above 0.15). It is not checked when ``polar``'s ``polar_num_knots`` /

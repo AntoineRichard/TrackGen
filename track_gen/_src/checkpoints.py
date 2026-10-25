@@ -19,7 +19,7 @@ Two producers:
   segment is the road cross-section: ``left``/``right`` are ``inner``/
   ``outer`` interpolated at the same centerline segment and parameter.
 
-Invalid envs (roadmap PR14): the sampler's set reads like a poisoned env's for
+Invalid envs: the sampler's set reads like a poisoned env's for
 ``valid[e] == 0`` (``count = 0``, NaN slots), and carries ``valid`` / ``generation``
 (owned, written by ``sample()``) so its consumer (``ProgressTracker``) freezes invalid
 envs and self-resets on a new generation. A ``from_gates`` set aliases the gates (their

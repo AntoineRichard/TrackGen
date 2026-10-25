@@ -1,5 +1,5 @@
-Create a gate course
-====================
+Gate sources and placement
+==========================
 
 Use ``GateGenerator`` for ordered 3D gate centers, square openings and poses. Native
 gate generators place anchors directly; track-station sources place gates along a

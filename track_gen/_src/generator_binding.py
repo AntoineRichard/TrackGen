@@ -14,7 +14,7 @@ selected generator only, and builds the two config snapshots a facade keeps:
 A :class:`~track_gen.plugin.Stage` generator is adapted to the context-aware
 generator callable by :class:`_StageGenerator` (``alloc`` through a StageBuilder at build,
 ``generate`` = the stage's ``enqueue``), so the rest of the track pipeline is unchanged.
-A gate generator Stage (``output="anchors"``, roadmap PR11) is bound as is: the planner
+A gate generator Stage (``output="anchors"``) is bound as is: the planner
 builds it like any other stage of the gate pipeline.
 
 Host-only: binding allocates nothing and launches nothing.
@@ -330,11 +330,11 @@ class _StageGenerator:
               drawn=None) -> _BuiltStage:
         """Allocate the dynamic-param arrays, run ``Stage.build`` on a StageBuilder bound
         to the orchestrator-owned outputs, and check its post-conditions. ``resolve``
-        (the pipeline's generator slot, roadmap PR13a): ``resolve(channel, dtype, interp,
+        (the pipeline's generator slot): ``resolve(channel, dtype, interp,
         export) -> wp.array`` allocates a raw attribute (``raw.z``, ``raw.half_width``,
         ``raw.<pkg>.<name>``) as a pipeline channel; without it (the PR9 reference
         composition) the builder allocates it privately (nothing carries it there).
-        ``drawn`` (roadmap PR13b): ``field -> [E] array`` of the dynamic fields a
+        ``drawn``: ``field -> [E] array`` of the dynamic fields a
         ``randomize.*`` stage draws: that single array replaces the field's latch pair
         (unlatched). A field the stage draws itself through the private
         ``Params._self_drawn()`` hook gets such an array here

@@ -1,9 +1,9 @@
-"""Gate-native polar control-knot generation (a ``gate_generator`` Stage, roadmap PR11).
+"""Gate-native polar control-knot generation (a ``gate_generator`` Stage).
 
 The ``polar_num_knots`` control knots of the polar track generator, in loop order
 (``anchors.xy``); the gate pipeline orders them (``order.ccw`` by default, ``order.raw``
 keeps the loop order; ``order.random_pairs`` is excluded) and normalizes their extent
-(``preferred["normalize"] = "extent"``). The jitters are dynamic (roadmap PR13c): per-env
+(``preferred["normalize"] = "extent"``). The jitters are dynamic: per-env
 arrays drawn by :func:`~track_gen._src.warp_generate_polar.sample_polar_controls_per_env`
 (the track generator's kernel), clamped to the declared bounds at use.
 """

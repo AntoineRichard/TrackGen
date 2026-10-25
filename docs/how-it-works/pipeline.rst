@@ -148,29 +148,12 @@ per seed. As with every generator, cross-*device* output is statistically equiva
 between CPU and CUDA. See ``track_gen/_src/warp_generate_repulsive.py``'s module
 docstring for the full account.
 
-**Yield (historical, before the 0.3 RNG switch).** Nearly every env was :term:`valid`
-at the defaults: the measured yield of each
-generator is in :doc:`/generators/benchmarks`, and the relaxation pages give it per regime
-(:doc:`/relaxation/convergence`). With a thin road (``half_width=0.03``) the default
-``N_max = 384`` is too short for the longest loops, which then fail as truncated: size
-``N_max`` for the longest track (:ref:`tuning-size`; :ref:`invalid-envs` explains how to
-measure the invalid fraction). Two design choices give that yield:
-
-- **Constant spacing makes relaxation lossless.** At a fixed 256 points the centerline is
-  over-resolved relative to its half-width, so a fixed iteration count cannot drive the
-  Jacobi solve to convergence (a yield ceiling of about 0.68 in the fat-band regime).
-  Relaxing at about ``0.6 × half_width`` spacing (about 145 to 160 nodes per track instead
-  of 256) lifts that regime to about 0.999, runs faster (fewer nodes), and keeps the solve
-  recordable.
-- **Single-pass centerline generation.** With relaxation lossless, the remaining
-  failures are smooth-centerline self-crossers. Rather than an accept-first-valid
-  regeneration loop, the ``bezier`` generator takes one corner draw per env and routes any
-  track whose smooth Bezier centerline self-crosses to its provably simple corner polygon,
-  which XPBD re-rounds. ``hull`` follows the same selected-polygon rescue for its
-  Catmull-Rom self-crossers, ``voronoi`` falls back to its selected anchor polygon,
-  ``checkpoint`` uses bounded best-of-K selection with an optional single-crossing clip
-  fallback, and ``polar`` emits a closed radial spline with no generator-local fallback.
-  The pipeline uses a single generation pass rather than a host retry budget.
+**Validity is measured on the completed geometry.** Width, spacing, shape and solve
+settings affect the fraction that passes. Size capacity for your largest perimeter and
+measure failure bits on the actual seed set (:ref:`invalid-envs`). The generator guides
+explain their local fallback/selection mechanisms; XPBD then attempts to improve spacing,
+curvature and nonlocal separation. Neither stage guarantees that every sample becomes
+valid, and generation has no host retry loop.
 
 **FP tolerance and hard thresholds.** Validity gates (``th_ok``, ``turn_ok``) are hard
 comparisons; near a decision boundary the accepted ~1e-4 Warp-vs-torch drift can flip a

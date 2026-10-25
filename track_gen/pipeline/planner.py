@@ -14,7 +14,7 @@ Stages of the kinds open to plugins (``relax``, ``width``, ``elevation``, ``vali
 ``carry``, ``gate_relax``, ``gate_arclen``, ``tangents``, ``gate_frames``) from
 TrackGen's built-in catalogue.
 
-Channel carry (roadmap PR13a): the resamples and the built-in stations carry the
+Channel carry: the resamples and the built-in stations carry the
 per-point channels of their source loop to their output points (``raw.<attr>`` ->
 ``cl.<attr>`` -> uniform ``cl.<attr>`` -> ``anchors.<attr>`` -> ``gates.<attr>``). Which
 families each carrier carries is static, computed here from the declared writes and
@@ -22,14 +22,14 @@ reads before any allocation, and appears as the carrier's implicit ports (``~<ch
 in :attr:`Program.channels <track_gen.pipeline.Program.channels>`, the read-before-write
 and second-writer rules and the exports.
 
-Rule 6 (roadmap PR12): the stages are grouped into segments of equal host-ness
+Rule 6: the stages are grouped into segments of equal host-ness
 (``CaptureClass.HOST`` vs ``STATIC`` / ``BOUNDED``, :attr:`Program.segments
 <track_gen.pipeline.Program.segments>`); ``PipelineSpec.require_caller_capturable``
 refuses any HOST stage, host-side. Every stage's ``enqueue`` runs inside its slot context
 (its id and declared capture class: ``ctx.host()`` and the ``ctx.bounded_loop``
 declaration check read it).
 
-One planner, two result kinds (roadmap PR11): ``BatchSpec.max_gates=None`` plans a
+One planner, two result kinds: ``BatchSpec.max_gates=None`` plans a
 track Program (its result a ``Track``), an int a gate Program (a ``GateSequence``). In a
 gate Program each stage runs on one point domain: the centerline generator and any
 stage with a ``cl.*`` port on ``N_max`` points, every other stage on ``max_gates`` gate
@@ -1562,7 +1562,7 @@ def _check_param_writers(slots) -> list:
     float32 field of a later, existing, non-randomizer stage, at most one per field (a
     field the stage draws itself counts as drawn),
     with an initial range inside the field's declared ``lo`` / ``hi`` (compared in
-    float32, roadmap PR13c), and the target's cross-field draw rules
+    float32), and the target's cross-field draw rules
     (``Params._check_draws``: e.g. elevation randomizers whose ``z_min`` / ``z_max``
     can cross; run for every stage that has the hook, randomized or not). Returns
     ``[(writer slot, target slot, field)]``."""
@@ -1642,7 +1642,7 @@ def _check_param_writers(slots) -> list:
 
 def _check_draws(draws, slots) -> None:
     """Each stage's cross-field draw rules (the private Params hook ``_check_draws(
-    params, ranges, randomized)``, roadmap PR13c), for EVERY stage whose Params class
+    params, ranges, randomized)``), for EVERY stage whose Params class
     defines it, drawn or not: ``ranges`` maps every drawn field of the stage (a
     randomizer's initial ``(lo, hi)``, or a self-drawn field's range; empty when none)
     and ``randomized`` names the randomized ones (e.g. the elevation's inert-window
@@ -1690,7 +1690,7 @@ def _draw_bounds(slot, drawn_for) -> "dict | None":
 
 
 def _stage_bounds(slot, drawn_for) -> dict:
-    """The per-instance bounds of a stage's StageParams (roadmap PR13d): its Params'
+    """The per-instance bounds of a stage's StageParams: its Params'
     ``_instance_bounds()`` (bezier / hull's ``min_num_points <= max_num_points``) and a
     randomizer's :func:`_draw_bounds`."""
     from ..plugin.params import _instance_bounds  # noqa: PLC0415
@@ -1707,7 +1707,7 @@ _RENORMALIZED_HINT = ("this gate generator is re-normalized by normalize.extent:
 def _stage_hints(slot, slots) -> dict:
     """``field -> hint`` appended to the ``KeyError`` (``StageParams``) and the
     ``PlanError`` (a randomizer) of a per-env use of a field the stage has not as a
-    dynamic one (roadmap PR13d): its Params' ``_field_hints`` (external's ``size``, a
+    dynamic one: its Params' ``_field_hints`` (external's ``size``, a
     point gate generator's ``min_num_points``), and ``size`` of a gate generator without
     one whose gates ``normalize.extent`` re-normalizes. No alias: one key per array."""
     from ..plugin.params import _declares_size, _field_hints  # noqa: PLC0415

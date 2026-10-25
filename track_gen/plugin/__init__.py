@@ -32,7 +32,7 @@ restores the registry around a test (``scoped(fresh=True)`` also re-runs discove
 
 Loading. ``import track_gen`` loads nothing. The registry fills itself lazily on its
 first call (``get``, ``available``, ``describe``, ``add``, ``unregister``,
-``quarantined``, ``scoped()``, and the deprecated ``track_gen._src`` registry shims),
+``quarantined`` and ``scoped()``),
 once per process and under a lock:
 
 1. the built-ins, registered explicitly by ``track_gen._src.builtin_plugins.register``

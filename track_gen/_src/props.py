@@ -22,7 +22,7 @@ NaN-padded past ``count[e]``, in-place reuse of the output ``PropSet`` across
 ``sample()`` calls (use ``clone()`` for snapshots), and no host syncs, so
 ``sample()`` is CUDA-graph capturable as-is.
 
-Invalid envs (roadmap PR14): an env with ``valid[e] == 0`` reads like a poisoned one
+Invalid envs: an env with ``valid[e] == 0`` reads like a poisoned one
 (``count = 0``, ``step`` NaN, ``truncated = 0``, NaN slots), whatever the source's
 ``on_invalid``.
 """
@@ -115,7 +115,7 @@ def _scan_boundary_k(
     signature and snap semantics in sync. Arc lengths are the true 3D segment
     lengths of the (possibly lifted) polyline; on the flat z = 0 pipeline this
     is identical to the xy length (z contributes 0 to every sum). An invalid env
-    (``valid[e] == 0``, roadmap PR14) takes the degenerate branch, as if poisoned."""
+    (``valid[e] == 0``) takes the degenerate branch, as if poisoned."""
     e = wp.tid()
     m = count[e]
     if m > n_max:

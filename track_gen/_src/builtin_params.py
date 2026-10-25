@@ -138,7 +138,7 @@ def _shape_at_default(p, names, drawn) -> bool:
 
 
 def _size_field():
-    """The per-env ``size`` multiplier (roadmap PR13d): dynamic float32 in
+    """The per-env ``size`` multiplier: dynamic float32 in
     :data:`~track_gen.ops.constants.SIZE_BOUNDS`, default 1.0, declared LAST."""
     return dynamic(1.0, lo=SIZE_BOUNDS[0], hi=SIZE_BOUNDS[1],
                    doc="Per-env size multiplier of the plan view, applied after scale "
@@ -267,13 +267,13 @@ class _FlatParams(Params):
     def _instance_bounds(self) -> dict:
         """``field -> (lo, hi, reason)``: per-instance bounds narrower than a dynamic
         field's declared ones, checked by ``StageParams.set`` on a scalar and reported by
-        ``StageParams.bounds`` (roadmap PR13d); none by default."""
+        ``StageParams.bounds``; none by default."""
         return {}
 
     def _nominal_perimeter(self, scale: float, drawn: "Mapping[str, float]") -> \
             "float | None":
         """A nominal maximum raw-loop perimeter at ``size == 1`` for the planner's
-        truncation warning (roadmap PR13d), or ``None`` (not checked). ``drawn``: the
+        truncation warning, or ``None`` (not checked). ``drawn``: the
         largest initial value (a randomizer's ``hi``) of each field drawn per env."""
         return None
 
@@ -424,7 +424,7 @@ class PolarParams(_FlatParams):
 
 def _check_polar_jitters(p) -> None:
     """The polar jitters' bounds, with the 0.2.0.dev4 migration in the message (it
-    clamped a value outside to the bound; roadmap PR13c rejects it). Compared in
+    clamped a value outside to the bound rejects it). Compared in
     float32, like the generic bound check that follows; a bool or a non-number is left
     to it."""
     for name, hi in (("polar_radial_jitter", 0.85), ("polar_angular_jitter", 0.45)):

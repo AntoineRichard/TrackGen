@@ -11,16 +11,14 @@ the elevation profiles' altitude window and shape knobs (``z_min`` / ``z_max`` o
 ``warp_zprofile`` twins), ``normalize.extent``'s ``size`` and ``gate_frames.default``'s
 ``gate_width`` (the course size of the polar / voronoi / checkpoint gate generators
 and the per-env bar width).
-The stage hands its Params instance (or, for elevation, a namespace built from its
-static view) to the legacy wrappers as their ``config``
-argument, so the same values reach the same ``float()`` / ``int()`` conversions and the
-launches are unchanged.
+Stages bind their Params into preallocated arrays or construction-time scalars.
+Dynamic fields are read by pointer when the stage enqueues its work.
 
 ``validate()`` re-runs the ``TrackGenConfig.__post_init__`` rules of the class's own
 fields with the same messages: a spec made from a ``TrackGenConfig`` always passes; the
-rules exist for hand-built specs. The stage Params map the fields a config HAS
-(``from_legacy`` of a ``GateGenConfig`` leaves ``z_control_points`` and
-``check_crossing`` at their class defaults).
+rules also apply to hand-built specs. ``from_legacy`` maps only fields present on
+its input config; other fields keep their stage defaults. In particular, native gate
+elevation uses the gates as knots rather than a track's ``z_control_points`` setting.
 """
 from __future__ import annotations
 
@@ -231,7 +229,7 @@ def _warn_inert(p, ranges, knob: str, what: str) -> None:
 
 
 def _check_z_draws(params, ranges) -> None:
-    """Randomizers on ``z_min`` / ``z_max`` must not cross (roadmap PR13c): a run-time
+    """Randomizers on ``z_min`` / ``z_max`` must not cross: a run-time
     ``z_min > z_max`` gives draws in ``[z_max, z_min]`` (uniform) or ``z = z_max``
     (random_walk / noise: the clamp returns ``hi``). ``ranges``: ``field -> (lo, hi)``
     of the stage's drawn fields (empty when none)."""

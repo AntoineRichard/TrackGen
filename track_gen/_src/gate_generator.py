@@ -4,7 +4,7 @@
 plans and allocates a gate :class:`track_gen.pipeline.Program` once (and runs one real
 eager generation), while each generation refreshes the per-env effective seeds (rng
 seeds + epoch) and writes into the same ``GateSequence`` instance every call. The
-Program is built from ``legacy.to_gate_pipeline_spec(config)`` (roadmap PR11: the
+Program is built from ``legacy.to_gate_pipeline_spec(config)`` (the
 generator's anchors -> order -> [normalize] -> sphere relax -> [arc length ->
 elevation] -> lift -> tangents -> frames -> validity, byte-identical to 0.2.0.dev3's
 ``warp_gate._run_gate_pipeline``), or from any gate ``PipelineSpec``

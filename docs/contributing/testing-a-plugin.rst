@@ -477,7 +477,7 @@ the gate kinds, in the default gate pipeline of ``presets.gates``, built through
 
 With the stages of :ref:`writing-a-stage` and :ref:`writing-an-ordering` registered:
 
-.. snippet: group=stages requires=contributing/writing-a-stage#testing
+.. snippet: group=stages requires=reference/stage-contracts#testing
 
 .. code-block:: python
 

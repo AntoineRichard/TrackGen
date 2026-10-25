@@ -1,4 +1,4 @@
-"""The built-in stages of the gate pipeline (roadmap PR11).
+"""The built-in stages of the gate pipeline.
 
 A gate :class:`~track_gen.pipeline.Program` (``BatchSpec.max_gates`` set, e.g.
 :func:`track_gen.pipeline.presets.gates`) runs, by stage id::

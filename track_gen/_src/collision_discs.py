@@ -9,8 +9,7 @@ penetrating disc is reported per box.
 
 Disc validity: pass ``count`` (``[E]`` int32 real discs per env) OR rely on
 NaN-marked padding (slots with NaN centers are skipped) — GateSequence
-``left``/``right`` arrays interleaved as posts work out of the box. Per-env validity
-(roadmap PR14): pass ``valid`` (``[E]`` int32, e.g. the gates' ``valid``): an env with
+``left``/``right`` arrays interleaved as posts work out of the box. Per-env validity: pass ``valid`` (``[E]`` int32, e.g. the gates' ``valid``): an env with
 ``valid[e] == 0`` has no discs (``hit = 0``, ``disc = -1``, ``depth = 0``, NaN
 ``nearest``: the answer of a poisoned env).
 

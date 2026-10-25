@@ -1,4 +1,4 @@
-"""The built-in stages of the track pipeline (roadmap PR10a).
+"""The built-in stages of the track pipeline.
 
 Each stage wraps the EXISTING kernels and wrappers of ``warp_pipeline`` /
 ``warp_relax`` / ``warp_zprofile`` verbatim: the same launches, in the same order, with
@@ -498,7 +498,7 @@ class OffsetDefault(_Builtin):
 def _zcfg(b, profile: str, p):
     """The namespace the z-profile wrappers read (``num_envs``, ``device``,
     ``z_profile`` and the profile's ``z_*`` fields), built once. ``p`` is the static
-    view: a dynamic field (roadmap PR13c: ``z_min`` / ``z_max`` / ``z_max_step`` /
+    view: a dynamic field (``z_min`` / ``z_max`` / ``z_max_step`` /
     ``z_noise_amplitude``) holds the raising sentinel, so a missed ``dyn`` routing
     raises instead of reading a host copy."""
     fields = {f: getattr(p, f) for f in p.__dataclass_fields__}
@@ -542,7 +542,7 @@ class _ElevationKnots(_Builtin):
     """Knot-based profiles: K arc-spaced knots, then a periodic monotone cubic. On a
     gate pipeline (ports rewired to ``gates.*``) the profile is drawn per gate instead
     (the gates are already sparse, knot-like anchors), as 0.2.0.dev3 did. The
-    profile's ``z_*`` window / grade are dynamic (roadmap PR13c: per-env arrays, the
+    profile's ``z_*`` window / grade are dynamic (per-env arrays, the
     ``warp_zprofile`` twins)."""
 
     kind = "elevation"
@@ -590,7 +590,7 @@ class ElevationRandomWalk(_ElevationKnots):
 
 class ElevationNoise(_Builtin):
     """``elevation.noise``: periodic harmonic noise, per point (``z_min`` / ``z_max`` /
-    ``z_noise_amplitude`` dynamic, roadmap PR13c)."""
+    ``z_noise_amplitude`` dynamic)."""
 
     kind = "elevation"
     name = "noise"

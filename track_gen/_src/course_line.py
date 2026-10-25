@@ -11,7 +11,7 @@ construction.
 count[e] = samples_per_gate * gate_count[e]; N_max = samples_per_gate *
 max_gates. ``refresh()`` is two kernel launches, allocation-free and
 capture-safe; call it after every gate regeneration (the facade does). It also writes
-the centerline's own ``generation`` (roadmap PR14: the gates' ``generation``, 0 when they
+the centerline's own ``generation`` (the gates' ``generation``, 0 when they
 have none), so a ``TrackLocalizer`` on it self-resets with the gates.
 """
 
@@ -130,7 +130,7 @@ class CourseLine:
     Args:
         seq: The gates (any :class:`~track_gen.results.HasGates`: ``position``,
             ``count``, ``valid``; a ``GateSequence`` or a view of one). Its
-            ``generation`` is read when present (checked; roadmap PR14).
+            ``generation`` is read when present (checked).
         samples_per_gate: Centerline samples per gate (>= 2).
 
     Attributes:

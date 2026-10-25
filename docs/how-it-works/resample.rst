@@ -91,7 +91,6 @@ half_width=..., spacing=None)`` to derive it again for a replacement.
 **Size** ``N_max >= max(perimeter) / spacing + 1``: a track whose true count exceeds
 ``N_max`` is truncated (its closing segment would span the gap); the scan flags it in
 ``Track.truncated`` and it fails validity (:ref:`pipeline-fail-bits`,
-:ref:`tuning-size`). The fat-band regime of the relaxation benchmarks
-(``half_width=0.5``, ``spacing=0.30``, ``N_max=384``) left ample headroom in historical
-pre-0.3 measurements (mean about 160, max about 270 points per track). Remeasure the
-current seed mapping before choosing a capacity.
+:ref:`tuning-size`). Measure the largest perimeter at the upper end of your intended size/shape range,
+allow headroom for relaxation and check ``truncated`` after generation. Capacity is a
+storage budget, not a shape simplification target.

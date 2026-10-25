@@ -27,7 +27,7 @@ curvature-limited speed profile (steady-state ``sqrt(a_lat_max / |kappa|)``
 capped at ``v_cap``, then a forward acceleration pass and a backward braking
 pass over the closed loop). Without ``out=`` they ALLOCATE their results (call them
 after ``generate()``, outside capture regions); with ``out=`` (and ``scratch=`` /
-``kappa=``, roadmap PR14) they write caller-owned arrays: allocation-free, sync-free and
+``kappa=``) they write caller-owned arrays: allocation-free, sync-free and
 recordable into a capture.
 
 Layout follows the package conventions: flat ``[E * N_max]`` wp.arrays, NaN
@@ -36,7 +36,7 @@ past ``count[e]``, in-place reuse of the ``TrackFrame`` result across
 ``query()``/``reset()`` are CUDA-graph capturable as-is (fixed iteration
 bounds, no data-dependent host branches).
 
-Invalid envs (roadmap PR14): when the source has ``valid``, an env with ``valid[e] ==
+Invalid envs: when the source has ``valid``, an env with ``valid[e] ==
 0`` reads like a poisoned one: NaN ``s`` / ``n`` / ``n_up``, ``segment = -1`` (and its
 warm memory dropped), NaN curvature and speed rows. Generation-aware self-reset: a
 localizer whose source has ``generation`` drops an env's warm memory by itself when it

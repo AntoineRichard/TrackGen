@@ -399,7 +399,7 @@ one). Set the declaration as class attributes, or as instance attributes in
      - Set by ``attach``: the stable object ``step`` returns (its arrays reachable
        through fields, mapping values, tuple items or attributes).
 
-The built-in adapters also expose the legacy utility they wrap as ``utility``: an
+The built-in adapters also expose the standalone utility they wrap as ``utility``: an
 adapter attribute, not part of the contract.
 
 The lifecycle methods:
@@ -585,8 +585,9 @@ env. ``for_producer`` derives it from the plan, never from a batch:
 
 - ``N_max * spacing`` bounds the plan-view centerline of every env that is not truncated
   (a longer one is truncated and fails validity). The ``1.5`` covers the relax growth
-  and a constant-width boundary's extra ``2 pi * half_width``: **measured, not proven**
-  (at most 0.90 of ``N_max * spacing`` just below truncation; 0.21 to 0.35 at size 1).
+  and a constant-width boundary's extra ``2 pi * half_width``. This is an engineering
+  allowance, not a mathematical bound for arbitrary plugin geometry. Monitor sampler
+  truncation and set explicit capacities when your geometry needs more headroom.
 - ``dZ`` bounds the elevation's total variation from the elevation knobs' declared
   ``bounds()`` (never their current values, which are dynamic): ``0`` for
   ``elevation.flat``; ``K * (z_max_hi - z_min_lo)`` for ``uniform`` / ``random_walk``
@@ -721,7 +722,7 @@ purpose. The probe is a host flag set once and changes no launch: the one except
 The built-in adapters
 ---------------------
 
-Each adapter wraps one legacy utility (``adapter.utility``), which keeps every legacy name
+Each adapter wraps one standalone utility (``adapter.utility``), which retains its public query API
 and method; ``adapter.result`` is that utility's ``.result``.
 
 .. list-table::

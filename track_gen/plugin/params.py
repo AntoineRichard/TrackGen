@@ -19,7 +19,7 @@ deriving from :class:`Params`; every field needs a default::
 
 A field without :func:`static` / :func:`dynamic` metadata counts as static.
 
-Bounds of a dynamic ``float32`` field are checked in float32 (roadmap PR13c): a value is
+Bounds of a dynamic ``float32`` field are checked in float32: a value is
 in range iff ``f32(lo) <= f32(v) <= f32(hi)`` (the value the ``[E]`` array holds; NaN
 passes), at construction, by :meth:`StageParams.set` and on a randomizer's range.
 
@@ -389,7 +389,7 @@ def _f32(v) -> "float | None":
 
 def _out_of_range(v, lo, hi, f32: bool) -> bool:
     """``v < lo or v > hi`` (a ``None`` bound is open; a NaN passes, exactly like the
-    legacy comparisons); in float32 when ``f32`` (roadmap PR13c: a dynamic float32
+    legacy comparisons); in float32 when ``f32`` (a dynamic float32
     field is in range iff ``f32(lo) <= f32(v) <= f32(hi)``)."""
     if f32:
         v, lo, hi = _f32(v), _f32(lo), _f32(hi)
@@ -474,7 +474,7 @@ def _static_view(params):
     when the class has no dynamic field.
 
     A class that sets the private flag ``_poison_dynamic`` (the built-in flat Params,
-    roadmap PR13c) binds a :class:`_DynamicField` sentinel to each dynamic name instead:
+    ) binds a :class:`_DynamicField` sentinel to each dynamic name instead:
     ``getattr(view, name, default)`` returns it and its first use raises ``TypeError``.
     """
     cls = type(params)
@@ -672,7 +672,7 @@ class StageParams(_MappingABC):
 
     def _narrow(self, field: str, lo, hi, reason: str) -> None:
         """Add a per-instance bound ``(lo, hi, reason)`` to the dynamic ``field``: a
-        facade's own invariant (roadmap PR13d: ``Course`` gates mode keeps
+        facade's own invariant (``Course`` gates mode keeps
         ``gate_frames.gate_width > 0``), checked by :meth:`set` on a scalar and reported
         by :meth:`bounds`. Private."""
         self[field]
@@ -959,7 +959,7 @@ def _self_draw(params, field: str) -> "tuple[str, str] | None":
 
 def _instance_bounds(params) -> "dict[str, tuple]":
     """``field -> (lo, hi, reason)`` of the per-instance bounds of a stage's Params (the
-    private hook ``_instance_bounds()``, roadmap PR13d: bezier / hull's
+    private hook ``_instance_bounds()``: bezier / hull's
     ``min_num_points`` is at most ``max_num_points``); empty without one."""
     fn = getattr(params, "_instance_bounds", None)
     return dict(fn()) if params is not None and callable(fn) else {}

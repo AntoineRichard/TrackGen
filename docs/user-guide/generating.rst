@@ -368,7 +368,7 @@ What a spec holds
    (see :ref:`The default track stages <pipeline-stages-the-default-track-stages>`). It
    resolves the generator's parameters, and the ``relax_solver`` and ``z_profile`` names
    (see :ref:`flat-stage-shortcuts`), through ``registry``, and raises the
-   ``relax_solver``, ``smooth_finish`` and ``z_profile`` errors of
+   ``relax_solver`` and ``z_profile`` errors of
    ``TrackGenerator(config)``.
 
 ``legacy.to_gate_pipeline_spec(config, *, registry=None)``
@@ -563,9 +563,9 @@ Seeds, epochs and the generation counter
 
 Built-in random streams hash the effective seed with a fixed named salt. Repeated
 calls with the same seeds, epochs and configuration reproduce output on the same
-device and Warp version; seed mappings can change at a breaking release. See
-:ref:`ops-rng-keying` for the namespaces and :ref:`upgrading-0.3-rng` for the current
-migration. The public ops samplers retain a linear default for plugin callers.
+device and Warp version. :ref:`ops-rng-keying` describes the stream namespaces,
+formulas and index choices. The public ops samplers use a linear default for plugin
+callers unless hashed keying is requested explicitly.
 
 Each env is keyed by a pair ``(seed, epoch)``, held by the generator's
 :class:`~track_gen.seeds.SeedState` (``gen.seeds``):
@@ -815,8 +815,8 @@ raises a ``ValueError`` naming it (``stages[3] is missing 'kind'``), and so does
 format string ``from_dict`` does not know. ``require_caller_capturable`` is written only
 when it is set.
 
-``from_dict`` refuses older ``"track_gen.pipeline/1"`` dictionaries. Load and re-save
-them as ``/2`` using TrackGen 0.2 before upgrading (:ref:`upgrading-0.3-removals`).
+``from_dict`` validates the current ``"track_gen.pipeline/2"`` format and refuses
+other format identifiers.
 
 Inspecting a generator
 ----------------------

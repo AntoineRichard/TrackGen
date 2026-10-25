@@ -163,7 +163,7 @@ def sample_polar_controls_per_env(ctx: "LaunchContext", seeds: wp.array, K: int,
                                   radial_jitter: wp.array, angular_jitter: wp.array,
                                   out: wp.array, *,
                                   base_radius: float = BASE_RADIUS) -> None:
-    """the scalar control draw with per-env jitters (roadmap PR13c): ``[E]``
+    """the scalar control draw with per-env jitters: ``[E]``
     ``float32`` arrays, env ``e`` drawing with ``radial_jitter[e]`` /
     ``angular_jitter[e]``, each clamped at use to the polar generator's declared bounds
     (``[0, 0.85]`` / ``[0, 0.45]``, compared in float32; a NaN passes). With every
@@ -240,7 +240,7 @@ def _enqueue_polar(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
 
 class Polar(Stage):
     """``"polar"``: the periodic polar-knot track generator
-    as a ``kind="generator"`` Stage (roadmap PR13c). ``polar_radial_jitter`` /
+    as a ``kind="generator"`` Stage. ``polar_radial_jitter`` /
     ``polar_angular_jitter`` are dynamic: per-env arrays read by
     :func:`sample_polar_controls_per_env`, clamped to ``[0, 0.85]`` / ``[0, 0.45]`` at
     use."""

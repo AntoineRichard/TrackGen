@@ -157,11 +157,10 @@ regenerate the invalid envs:
    assert (count[~valid] == 0).all()
    assert np.isnan(center[~valid]).all()
 
-Historical measurements before the 0.3 seed switch found few invalid envs at these
-settings, with truncation rising at the default ``n_max=384``. Measure the current
-batch rather than relying on the old percentages. The fraction grows with settings
-that truncate the loop or thin the course. :ref:`invalid-envs` lists the checks, the measured
-rates and the knobs that lower them.
+Measure validity for your configuration and largest curriculum size. Thin roads,
+large loops and finer spacing can need more output capacity; ``fail_mask`` distinguishes
+truncation from geometric failures. :ref:`invalid-envs` lists the checks and the
+settings that address each cause.
 
 Track Figure
 ------------

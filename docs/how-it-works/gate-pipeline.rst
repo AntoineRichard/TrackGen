@@ -300,7 +300,7 @@ compute them and carries the provided values to the gate slots instead:
    * - ``"half_size"``, ``"roll"``
      - nothing
      - ``carry_half_size``, ``carry_roll``; ``gate_frames.posed`` instead of
-       ``.default``, and ``validity.gate_default(check_crossing="always")``
+       ``.default``; validity checks the resulting nonzero bars
 
 The ``carry`` stages copy by anchor index (padding ``0.0`` for ``z`` and ``roll``, NaN for
 the others), so they need the index-preserving ``order.raw``: a generator that provides
@@ -693,11 +693,9 @@ loop for a point-gate env changes no decision: the valid and fail bits are those
 kernel that checks every env. So a run-time bar width (``gate_frames.gate_width`` drawn or set
 from point gates, :ref:`gate-width-per-env`) is checked like a width built in, and the
 default point-gate pipelines pay nothing (one compare per real gate in an existing loop).
-``check_crossing`` (``"width"`` or ``"always"``) and ``validity.gate_default``'s
-``gate_width`` are **inert**: both values select the per-env check. They are kept so
-stored specs and dicts load, and go at 1.0 (:ref:`upgrading-removals`). Posed gates (a
-generator that provides ``half_size``) are checked the same way under either value, and
-the planner accepts ``gate_frames.posed`` with ``"width"``.
+``GateValidityParams`` accepts ``min_gates``, ``gate_radius`` and ``z_valid_grade``.
+Crossing is derived from the gate geometry, including provided poses; it has no separate
+width or crossing-mode setting.
 
 .. _pipeline-gate-commit:
 
@@ -761,7 +759,7 @@ own version.
        default poison commit also derives the final ``valid``
 
 These counts include the default poison policy and were remeasured with the current
-0.3 source on CPU. A non-flat elevation adds the ``gate_arclen`` launch and its latches (2 for ``uniform``,
+CPU pipeline. A non-flat elevation adds the ``gate_arclen`` launch and its latches (2 for ``uniform``,
 3 for ``random_walk`` / ``noise``); ``gate_solve_iters=0`` drops the separation launch.
 
 .. _pipeline-gate-plan-rules:
@@ -786,18 +784,16 @@ before allocating anything when:
   ``cl.<package>.<name>`` plugin channel, or an elevation port after the anchors
   producer stays on a ``cl.*`` channel without gate counterpart (`Two point domains`_,
   `Elevation on gates`_);
-- stages disagree on ``gate_width`` or ``gate_radius`` (``gate_frames`` holds the
-  initial bar width, ``gate_relax.spheres`` the separation target,
-  ``validity.gate_default`` a copy of each): one initial value per pipeline
-  (``validity.gate_default``'s ``gate_width`` is inert, and the per-env width starts
-  at ``gate_frames.default``'s);
+- stages disagree on ``gate_radius``: ``gate_relax.spheres`` and
+  ``validity.gate_default`` share one separation radius. Bar width belongs to
+  ``gate_frames.default`` or the provider's ``half_size`` channel;
 - a ``GateSequence`` field has no writer, or ``valid.fail`` does not start at
   ``validity.gate_default``.
 
 .. _pipeline-legacy-gates:
 
-Gate plugin migration
----------------------
+Gate plugin construction
+------------------------
 
-Gate generators use Stages. The removed function-based interface and its replacement
-are described in :ref:`upgrading-0.3` and :ref:`writing-a-gate-generator`.
+Gate generators use Stages. :ref:`writing-a-gate-generator` gives a complete example,
+including native anchors, supplied attributes, ordering and the conformance checks.

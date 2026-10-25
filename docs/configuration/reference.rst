@@ -24,8 +24,50 @@ that carry the same names. This page lists:
 - how ``generator_params`` resolves (:ref:`generator-params-config`);
 - each built-in generator's Params, with defaults and rules
   (:ref:`builtin-generator-params`);
-- when the generator-specific rules are checked (:ref:`generator-params-validation`);
-- removed fields and their replacements (:ref:`deprecated-config-fields`).
+- when the generator-specific rules are checked (:ref:`generator-params-validation`).
+
+Find a setting by its effect
+----------------------------
+
+Start with the picture that matches your goal, then use the exact defaults/types below.
+Every distance uses the same coordinate units as your geometry.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 43 33
+
+   * - Goal
+     - Main settings
+     - Visual explanation
+   * - Change the route family and its details
+     - ``generator``, family-specific ``generator_params``
+     - :ref:`generators-overview`
+   * - Resize a road or its storage
+     - ``size``, ``scale``, ``half_width``, ``spacing``, ``num_points``, ``n_max``
+     - :ref:`course-controls`
+   * - Repair spacing, bends and close approaches
+     - XPBD iteration, correction, margin, cache, acceleration and smoothing fields
+     - :ref:`relax-knobs`, :ref:`geometry-validity`
+   * - Shape altitude
+     - ``z_profile``, altitude bounds, steps, harmonics and control points
+     - :ref:`course-elevation`
+   * - Place and frame gates
+     - source/stations, count/capacity, ordering, radius, width and alignment
+     - :doc:`/tutorials/gate-sequences`, :doc:`/gates-3d`
+   * - Change live values or their distributions
+     - ``gen.params``, ``randomize``, bounds, seeds/epochs and regeneration masks
+     - :ref:`curricula`, :ref:`generating-seeds`
+   * - Read, retain or own the buffers
+     - batch/device/layout, ``on_invalid``, ``out``, views/copies and streams
+     - :ref:`results`, :ref:`result-contracts`
+   * - Trade collision query cost against approximation
+     - backend, SDF resolution/extent, footprint/obstacle dimensions
+     - :ref:`collision-backends`
+
+Static settings shape storage or execution and require a rebuild. Dynamic fields are
+per-environment arrays; the config supplies their initial values. The generator tables
+mark this distinction, and :ref:`reference-pipeline` lists shared stage Params including
+channel-based width and station spacing.
 
 .. _config-classes:
 
@@ -40,11 +82,10 @@ Config classes
 
 Both configs are frozen dataclasses. Build a replacement with ``dataclasses.replace``
 instead of assigning fields, and make dataclass subclasses frozen too. When changing
-``half_width``, pass ``spacing=None`` in the same replacement to derive spacing again
-(:ref:`upgrading-0.3-frozen`). ``on_invalid`` defaults to ``"poison"`` on both configs;
+``half_width``, pass ``spacing=None`` in the same replacement to derive spacing again. ``on_invalid`` defaults to ``"poison"`` on both configs;
 ``"keep"`` explicitly retains invalid geometry for diagnostics. Config-to-spec and
 spec-to-config conversion preserve this choice. A missing policy in a saved ``/2``
-spec defaults to ``"poison"`` (:ref:`upgrading-0.3-poison`).
+spec defaults to ``"poison"``.
 
 .. _gate-width-config:
 
@@ -161,7 +202,7 @@ the pipeline with :ref:`presets.track <pipeline-presets>` (``relax=("acme.taubin
 stages have no flat field: use the preset (``width=...``, ``checks=(...)``).
 
 The names are resolved when the generator is constructed, in the order
-``relax_solver``, ``smooth_finish``, ``z_profile``, after the generator and its
+``relax_solver``, then ``z_profile``, after the generator and its
 ``generator_params``:
 
 .. list-table::
@@ -355,11 +396,8 @@ before the stations, the default for ``"xyz"``). ``GateGenConfig`` has no such f
 its gate generators place their own gates. See :ref:`pipeline-stations-xyz`.
 
 A pipeline spec saved with ``to_dict()`` carries ``"format": "track_gen.pipeline/2"``.
-``PipelineSpec.from_dict`` still reads the ``/1`` dicts of earlier releases (gate specs
-included), migrating them (the
-``half_width`` keys of ``relax.xpbd``, ``offset.default`` and ``validity.default``
-removed, the width stage moved before ``relax``) with one ``DeprecationWarning``; see
-:ref:`pipeline-spec-format`.
+``PipelineSpec.from_dict`` accepts the current ``/2`` format and rejects other format
+identifiers. :ref:`pipeline-spec-format` describes serialization and validation.
 
 .. _config-relax-auto:
 
@@ -660,8 +698,7 @@ outside ``[0, 0.85]`` and ``polar_angular_jitter`` outside ``[0, 0.45]``;
 ``voronoi_radial_variation`` above ``0.85`` (no effect beyond it);
 ``voronoi_angular_jitter`` above ``pi``; ``checkpoint_angle_jitter`` outside ``[0, 1]``;
 ``checkpoint_turn_rate`` outside ``[0, pi]``; a ``bool`` for any dynamic field; ``size``
-outside ``[0.1, 10]``. :ref:`upgrading-bounds` lists the values earlier releases
-accepted, and the bound to use instead.
+outside ``[0.1, 10]``. Use the bounds in the tables below.
 
 Track generators
 ~~~~~~~~~~~~~~~~
@@ -1146,8 +1183,7 @@ checks. So:
 - **The parameter explorer reports these errors when it generates** (``generate_batch``)
   rather than when it builds the config.
 
-Earlier releases ran every generator's rules at config construction: see
-:ref:`upgrading-flat-config`. The generator-specific rules are those in the tables: the
+The generator-specific rules are those in the tables: the
 point-family rules of ``bezier`` and ``hull`` (track and gate),
 ``num_points_per_segment >= 2`` for ``bezier``, ``hull``, ``polar`` and ``voronoi``, and
 every ``voronoi_*``, ``repulsive_*`` and ``checkpoint_*`` rule. The errors of the
@@ -1178,12 +1214,3 @@ parameter checks, all at generator construction unless noted:
      - ``ValueError``
    * - A ``generator_params`` that is not ``None``, a mapping or a dataclass instance
      - ``TypeError``, at config construction
-
-.. _deprecated-config-fields:
-
-Removed config fields
----------------------
-
-Obsolete config and inert pipeline fields are no longer accepted. See
-:ref:`upgrading-0.3-removals` for the names and replacement settings. Gate width belongs
-on ``gate_frames.default``; ``validity.gate_default`` checks the resulting bars.

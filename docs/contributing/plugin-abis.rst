@@ -71,7 +71,7 @@ arrays in place. Parameters:
        Read-only.
    * - ``config``
      - The generator's own frozen copy of the configuration it was constructed with.
-       Config subclasses must be frozen dataclasses too (:ref:`upgrading-0.3-frozen`). With
+       Config subclasses must be frozen dataclasses too. With
        ``params=``, ``config.generator_params`` is the resolved, validated Params
        instance.
    * - ``out_centerline``
@@ -187,38 +187,10 @@ forms. The port is mechanical:
 
 The name, the entry point and the users' ``generator=`` strings stay the same.
 
-.. _legacy-src-helpers:
+Public geometric operations
+---------------------------
 
-Replacing private helpers
--------------------------
-
-Plugins import the public ``track_gen.plugin``, ``track_gen.exec`` and
-``track_gen.ops`` modules. Former ``track_gen._src`` compatibility helpers and registry
-modules have been removed. Their replacements are:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 45 55
-
-   * - Former operation
-     - Public replacement
-   * - Init and sync helpers
-     - Nothing: construction initializes Warp; hot paths use the launch context.
-   * - Fill kernels and device helpers
-     - ``ops.fill`` and ``ops.funcs``
-   * - Arc resampling and selected resampling
-     - ``ops.arc_resample`` with ``ops.ArcScratch`` and ``active=``
-   * - Self-intersections and turning number
-     - ``ops.self_intersections`` and ``ops.turning_number``
-   * - Uniform and constant-spacing resampling
-     - ``ops.resample_uniform`` and ``ops.resample_constant_spacing``
-   * - Corner or point sampling and sorting
-     - ``ops.sample_counts``, ``ops.grid_cells``, ``ops.sample_grid_points`` and
-       ``ops.angle_sort``
-   * - Gate ordering and normalization
-     - Gate pipeline order stages and ``preferred={"normalize": "extent"}``
-   * - Frozen built-in generation and elevation functions
-     - ``TrackGenerator``, ``GateGenerator`` or a pipeline preset
-
-Every op takes ``ctx`` first and writes preallocated arrays. See :ref:`generator-ops`
-and :ref:`upgrading-0.3` for the full removal inventory and migration steps.
+Use :ref:`generator-ops` to fill arrays, sample points, sort anchors, resample loops,
+compute turning and detect proper self-crossings. Operations take ``ctx`` first and
+write preallocated buffers. :ref:`reference-ops` lists signatures and scratch storage;
+:ref:`reference-plugin` specifies registration, loading and schema APIs.

@@ -1,0 +1,30 @@
+{
+  "source_version": "0.3.0rc1",
+  "command": "python -m viz.render_data_guide --out-dir OUT",
+  "schematics": [
+    "data-layout.png",
+    "data-lifecycle.png"
+  ],
+  "import": {
+    "input_count": 64,
+    "road_count": 267,
+    "gate_count": 12,
+    "valid": [
+      1,
+      1
+    ],
+    "road_config": {
+      "num_points": 128,
+      "n_max": 512,
+      "spacing": 0.04,
+      "half_width": 0.05
+    },
+    "gate_config": {
+      "source": "stations",
+      "num_points": 128,
+      "gates": 12,
+      "gate_width": 0.15
+    },
+    "input_formula": "x=2*(1+.12*cos(3t))*cos(t), y=1.25*(1+.12*cos(3t))*sin(t), t=2*pi*i/64"
+  }
+}

@@ -3,8 +3,7 @@
 API reference
 =============
 
-Every name documented in this reference is public API. Breaking changes and their
-replacements are listed in the upgrade guides. Private names (a leading underscore,
+Every name documented in this reference is public API. Private names (a leading underscore,
 anything under ``track_gen._src``) and the modules this reference does not list may
 change in any release.
 
@@ -138,8 +137,8 @@ Errors and warnings
 -------------------
 
 The exceptions and warnings TrackGen defines, with the usual cause and fix. Besides
-these, the library raises ``TypeError`` / ``ValueError`` for a bad argument (naming it),
-and emits ``DeprecationWarning`` for a deprecated name (attributed to your code).
+these, the library raises ``TypeError`` / ``ValueError`` for an invalid argument,
+with a message naming the setting or data that needs attention.
 
 .. list-table::
    :header-rows: 1

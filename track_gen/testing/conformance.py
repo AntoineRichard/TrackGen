@@ -541,7 +541,7 @@ def _seeded(spec) -> bool:
 
 
 def _layout_problems(gen) -> "list[str]":
-    """``output.shape``'s layout rules (roadmap PR13b): the result's ``layout`` is the
+    """``output.shape``'s layout rules: the result's ``layout`` is the
     Program's (canonical device) and the result validates."""
     from .._src.types import _fmt_layout, _layout_key  # noqa: PLC0415
 

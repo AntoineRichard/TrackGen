@@ -218,8 +218,7 @@ and NaN geometry, whatever the generator's ``on_invalid`` (a course and a
      - NaN rows
 
 Inactive box slots (a NaN box position) keep their own answer (``oob = 0`` / ``hit = 0``),
-checked before the env's validity. :ref:`upgrading-invalid-envs` lists what each of these
-read in 0.1.
+checked before the environment's validity.
 
 ``valid`` is the only invalid-env signal. ``ProgressEvents.dist_to_next`` is ``0`` for an
 invalid env and NaN for a VALID env with no checkpoints (a hand-built ``CheckpointSet``
@@ -268,7 +267,7 @@ Because the calls do not block the host, results are ordered by the stream, not 
 call returning. Reading them with ``.numpy()``, from later Warp launches, or from torch on
 its default stream is safe. A consumer on a DIFFERENT stream (for example a torch side
 stream) must order itself explicitly, e.g. with ``wp.synchronize_device()`` or a recorded
-``wp.Event`` (:ref:`upgrading-host-syncs`). Set ``TRACKGEN_DEBUG_SYNC=1`` to make every
+``wp.Event``. Set ``TRACKGEN_DEBUG_SYNC=1`` to make every
 library call block on its stream while debugging asynchronous CUDA errors. It is skipped
 while the stream (or a Warp capture on the device) is capturing; do not combine it with a
 foreign capture on another stream (e.g. a default ``torch.cuda.graph``), which it cannot

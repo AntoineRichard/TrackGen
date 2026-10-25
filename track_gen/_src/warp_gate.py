@@ -1,4 +1,4 @@
-"""The kernels of the gate pipeline (roadmap PR11: the stages live in
+"""The kernels of the gate pipeline (the stages live in
 :mod:`track_gen.stages.gates`).
 
 This module owns the gate kernels the stages launch (ordering, sphere relaxation, lift,

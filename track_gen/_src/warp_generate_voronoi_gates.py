@@ -1,11 +1,11 @@
-"""Gate-native Voronoi anchor sites (a ``gate_generator`` Stage, roadmap PR11).
+"""Gate-native Voronoi anchor sites (a ``gate_generator`` Stage).
 
 ``voronoi_control_points`` anchor sites selected from the Voronoi site field (the
 voronoi track generator's draw), in loop order (``anchors.xy``); the gate pipeline
 orders them (``order.ccw`` by default, ``order.raw`` keeps the loop order;
 ``order.random_pairs`` is excluded) and normalizes their extent
 (``preferred["normalize"] = "extent"``). The radial variation and angular jitter are
-dynamic (roadmap PR13c): per-env arrays read by
+dynamic: per-env arrays read by
 :func:`~track_gen._src.warp_generate_voronoi.select_voronoi_anchors_per_env`, clamped
 to the declared bounds at use.
 """

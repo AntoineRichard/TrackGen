@@ -11,8 +11,7 @@ describes that machinery for tracks: the stage kinds, how ``build()`` plans a sp
 commit, per-point attributes, taps and the :ref:`parameter latch <pipeline-latch>`.
 :ref:`generating` shows the user-facing side (presets, specs, Params); :ref:`gate-pipeline`
 lists what differs for gates; :doc:`cuda-graph` covers how a Program is recorded and
-replayed. Code written against an earlier development release of the pipeline API:
-:ref:`upgrading-preview` lists what changed.
+replayed.
 
 .. _pipeline-stage-kinds:
 
@@ -116,9 +115,9 @@ checks the spec before it allocates or launches anything, then allocates once:
    ``config.generator``. The other stages come from TrackGen's built-in catalogue.
 3. **Params.** Each stage's params are coerced to its :term:`Params` class and validated (the
    built-ins with the messages ``TrackGenConfig`` / ``GateGenConfig`` use for the same
-   fields). Every stage that has a ``half_width``, ``gate_width`` or ``gate_radius``
-   field must agree on its value (for ``gate_width``, a dynamic per-env field of
-   ``gate_frames.default``, on its initial value): for ``half_width``
+   fields). Stages with a shared ``half_width`` or ``gate_radius`` must agree on its
+   value. Bar width is owned by the dynamic ``gate_frames.default.gate_width`` field;
+   gate validity reads the resulting bars rather than a duplicate setting. For ``half_width``
    that binds ``width.constant`` and
    the plugin stages that keep such a field (the nominal width; the per-point width is
    ``cl.half_width``). In a gate pipeline each stage's ``Layout`` is derived from its
@@ -1404,43 +1403,24 @@ of ``lo`` and ``gate_width``), the size kernels append the ``[E]`` size array, a
 
 These counts include the default poison commit; explicit ``on_invalid="keep"``
 removes that launch when the default validity check is last. They were remeasured
-with the current 0.3 source on CPU.
+on the CPU pipeline.
 
 A masked generation runs the same latches as ``_latch_masked_*`` launches after the
 advance and the masked effective seed, and the hold comes right after them (index 6 of a
 default track generation, 4 of a default gate generation).
 
-Not open yet
-------------
+Current limits
+--------------
 
-What the pipeline does not do in this release:
+The pipeline supports closed loops. Capacity, buffer-shaping counts and execution
+structure are static. Only declared dynamic fields change per environment without
+rebuilding; uniform randomizers target dynamic float32 fields.
 
-- **More dynamic built-in knobs**: ``edgy``; a dynamic corner-count upper bound (the
-  corner axis only narrows toward ``max_num_points``); per-env knot, anchor, checkpoint
-  and gate counts (they size buffers). Other distributions than uniform, ``int32`` and
-  categorical draws, and a public sampler API for plugins. A ``size=`` on further public
-  ops (``ops.closed_catmull_rom``).
-- **Results and inputs**: open topology (``closed=False``) in any stage or utility, and a
-  ``closed`` argument to the kernels; ``build(inputs=)`` binding caller arrays as a
-  Program's inputs; ``declare()`` for gate generators; gate ingestion (a ``GateSequence``
-  from caller arrays); ``Track.capabilities()``; a ready-made mixed-batch producer (a
-  ``Course`` drives any object with the ``track_gen.pipeline.Producer`` surface, so a
-  mixed batch of ``out=`` views can be wrapped by hand: :ref:`producer-protocol`).
-- **Channels**: carries by plugin stations stages (a public ``StageBuilder.carried()``);
-  carried channels written by a stage rather than the generator (``interp=`` on stage
-  writes); an order that publishes its permutation, so attributes reach the gates through
-  any order; ``ops.arc_resample(tables=)``; a public constant declaration for width
-  stages; an arc-fraction attribute policy; renaming on ``export=``; per-env attributes;
-  ``GateGenConfig.spacing_metric``; an elevation on the raw loop (``"xyz"`` with
-  ``source="stations"`` needs a ``z`` provider); a dynamic ``width.constant``.
-- **Gates**: composite generators, provided attributes other than ``z`` from
-  ``stations`` (``tangent``, ``half_size``, ``roll``), ``roll`` on
-  ``gate_frames.default``, ``preferred`` hints of track generators for the gate stages
-  (they declare ``"relax"`` only), and split gate checks.
-- Opening ``resample``, ``frames``, ``offset`` and ``lift`` to plugins; split built-in
-  checks (``validity.turning``, ...); an aliasing in-place write form; a
-  segmented ``Course`` (over a generator with a
-  ``HOST`` stage, ``Course.regenerate()`` runs eagerly).
+Plugin extension kinds are generator, gate generator, relaxation, width, elevation,
+validity, ordering and stations. The remaining structural stages are built in.
+Provided gate attributes require index-preserving raw order. A ``Course`` with a host
+stage regenerates eagerly rather than recording that host work into a CUDA graph.
+See :ref:`stage-capture-classes` and :ref:`generator-provides` for these contracts.
 
 Reference compositions
 ----------------------

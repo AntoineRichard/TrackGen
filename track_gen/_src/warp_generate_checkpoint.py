@@ -14,9 +14,10 @@ grammar/hull ports did:
    target index when within ``lookahead_frac*R`` (a per-step int-counter increment — capturable,
    no host branch).
 3. ``close_heading_ramp`` (the default closure): per-edge heading, wrapped increments, ADD a
-   constant drift ``(2*pi - net_turn)/N`` so the net turn is exactly 2*pi (turning number 1,
-   no inner loops) WITHOUT rescaling local curvature; rebuild headings, gap-distribute the
-   displacement (subtract the mean edge), cumsum to positions, recenter.
+   constant drift ``(2*pi - net_turn)/N`` targeting a full heading turn without rescaling
+   local curvature; rebuild headings, subtract the mean edge to distribute the closure
+   gap, cumsum to positions and recenter. Final turning and self-intersection validity
+   remain separate checks; closure does not guarantee a simple loop.
 4. best-of-K: generate K decorrelated candidates per env, keep the fewest-self-intersection one
    (deterministic argmin, ties -> lowest k). Replaces the reject-retry.
 5. OPT-IN single-crossing clip (``config.checkpoint_clip_fallback``, default off, like the
@@ -470,7 +471,7 @@ def sample_checkpoint_rings_per_env(ctx: "LaunchContext", seeds: wp.array, K: in
                                     radius_min_frac: wp.array, angle_jitter: wp.array,
                                     out: wp.array, *,
                                     base_radius: float = BASE_RADIUS) -> None:
-    """the scalar control draw with per-env knobs (roadmap PR13c): ``[E]``
+    """the scalar control draw with per-env knobs: ``[E]``
     ``float32`` arrays, every candidate ring of env ``e`` drawn with
     ``radius_min_frac[e]`` / ``angle_jitter[e]``, each clamped at use to the checkpoint
     generator's declared bounds (``[0, 1]``, compared in float32; a NaN passes). With
@@ -593,7 +594,7 @@ def _enqueue_checkpoint(seeds_wp, config, out_centerline, out_valid_wp, scratch,
 
 class Checkpoint(Stage):
     """``"checkpoint"``: the checkpoint-steering track generator
-     as a ``kind="generator"`` Stage (roadmap PR13c).
+     as a ``kind="generator"`` Stage.
     ``checkpoint_radius_min_frac`` / ``checkpoint_angle_jitter`` / ``checkpoint_turn_rate``
     are dynamic: per-env arrays read by :func:`sample_checkpoint_rings_per_env` and
     :func:`_steer_dyn_k`, clamped to ``[0, 1]`` / ``[0, 1]`` / ``[0, pi]`` at use."""

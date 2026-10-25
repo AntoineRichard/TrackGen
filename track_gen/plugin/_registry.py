@@ -4,8 +4,8 @@ One registry holds every pluggable spec, keyed by ``(kind, name)``. Kinds are an
 set of strings: ``"generator"`` (:class:`~track_gen.plugin.GeneratorSpec` or a
 :class:`~track_gen.plugin.Stage`), ``"gate_generator"`` (a gate generator
 :class:`~track_gen.plugin.Stage`, ``output="anchors"``), and the pipeline Stage kinds ``"relax"``,
-``"width"``, ``"elevation"``, ``"validity"`` (roadmap PR10b), ``"order"`` and
-``"stations"`` (roadmap PR11; their built-ins are registered with the generators).
+``"width"``, ``"elevation"``, ``"validity"``, ``"order"`` and
+``"stations"`` (; their built-ins are registered with the generators).
 Other kinds hold any object with a ``name`` (``registry.add(spec, kind=...)``).
 
 Loading (built-ins, then the ``"track_gen.plugins"`` entry points), the

@@ -4,7 +4,7 @@ A ``Course`` drives one producer (a ``TrackGenerator``, a ``GateGenerator``, a b
 ``Program``, or any object with the :class:`track_gen.pipeline.Producer` surface) and an
 ordered list of components (:mod:`track_gen.tools`: checkpoints, progress, collision,
 localization, bakes, your own), and owns the orchestration invariants that are otherwise
-the caller's burden (roadmap PR15). Three front doors build one:
+the caller's burden. Three front doors build one:
 
 - ``Course(generator, components)``: any producer, any components (sorted by their
   ``after`` / ``source`` dependencies);
@@ -756,8 +756,8 @@ class Course:
     @classmethod
     def from_config(cls, config: "CourseConfig") -> "Course":
         """The 0.x course of a :class:`CourseConfig` (``Course(config)`` is an alias):
-        the generator and the components the config selects. For what changed since
-        0.1 (invalid envs, the default checkpoint capacity), see :ref:`upgrading-course`.
+        the generator and components selected by the config. See :ref:`courses` for
+        component presets, validity handling and checkpoint capacity.
 
         Raises:
             TypeError: ``config`` is not a ``CourseConfig``.
@@ -1908,7 +1908,7 @@ def _gate_width_value(source) -> "float | None":
 
 def _gate_width_check(source) -> None:
     """``gate_frames.gate_width > 0`` before anything is built: when a randomizer draws
-    the width every generation (roadmap PR13d), its construction ``lo`` must be ``> 0``
+    the width every generation, its construction ``lo`` must be ``> 0``
     (the construction width is never used); otherwise the construction width."""
     for ref in _stage_refs(source):
         p = ref.params
@@ -1930,7 +1930,7 @@ def _gate_width_check(source) -> None:
 
 
 def _narrow_gate_width(gen) -> None:
-    """Refuse a later scalar ``set`` of ``gate_frames.gate_width <= 0`` (roadmap PR13d:
+    """Refuse a later scalar ``set`` of ``gate_frames.gate_width <= 0`` (
     the width is per env; an array written later is not range-checked: a value ``<= 0``
     is used as 0, and those envs' gates can never be passed)."""
     params = getattr(gen, "params", None)

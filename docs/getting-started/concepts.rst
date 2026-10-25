@@ -52,7 +52,13 @@ record a whole sim step into your own CUDA graph (a :term:`capture`); with
 :term:`conditional nodes <conditional node>`, a masked regeneration with nothing to do is
 skipped on the device.
 
-The :doc:`quickstart` shows each step in code.
+.. figure:: ../assets/racing/data-lifecycle.png
+   :alt: Stable result buffers link generation and simulator steps, with independent snapshots for retained geometry.
+
+   Construct once, reuse storage, and regenerate selected environments when needed.
+
+The :doc:`quickstart` and :doc:`gates` show the first generation in code;
+:ref:`results` shows the data layout.
 
 Glossary
 --------
@@ -115,8 +121,9 @@ Glossary
       ``grade`` and ``truncation``.
 
    invalid env
-      An env with ``valid[e] == 0``. By default its geometry stays in the result, but every
-      runtime utility answers for it as for an env with no track (off the road, no
+      An env with ``valid[e] == 0``. By default its count is zero and its geometry is poisoned with NaNs; explicit
+      ``on_invalid="keep"`` retains it for diagnosis. Every runtime utility answers
+      for it as for an env with no track (off the road, no
       checkpoints, frozen progress). Gate rewards, observations and episode ends on
       ``valid``, and give the env a new course with a masked regeneration
       (:ref:`invalid-envs`).

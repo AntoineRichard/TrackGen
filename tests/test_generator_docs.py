@@ -45,7 +45,10 @@ _REGISTER = re.compile(r"^def register\(reg\):\n(?:(?:    .*)?\n)*", flags=re.M)
 
 
 def _guide_block(marker: str, guide: pathlib.Path = _GUIDE) -> str:
-    blocks = [textwrap.dedent(b) for b in _BLOCK.findall(guide.read_text())]
+    paths = [guide]
+    if guide == _GUIDE:
+        paths.append(_DOCS / "reference" / "generator-contracts.rst")
+    blocks = [textwrap.dedent(b) for path in paths for b in _BLOCK.findall(path.read_text())]
     hits = [b for b in blocks if marker in b]
     assert len(hits) == 1, f"expected one python block containing {marker!r}"
     return hits[0]
@@ -133,7 +136,7 @@ def test_guide_stage_example_runs_and_matches_its_schema(stage_guide_module):
         assert not np.array_equal(before, np.nan_to_num(after.center.numpy()))
         assert gen.generate(advance=True).valid.numpy().any()
         schema = registry.describe("generator", "acme.wobble").params_schema
-    printed = [json.loads(textwrap.dedent(b)) for b in _JSON_BLOCK.findall(_GUIDE.read_text())]
+    printed = [json.loads(textwrap.dedent(b)) for b in _JSON_BLOCK.findall((_DOCS / "reference" / "generator-contracts.rst").read_text())]
     assert [b for b in printed if b.get("title") == "WobbleParams"] == [schema]
 
 

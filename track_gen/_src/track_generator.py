@@ -3,7 +3,7 @@
 Runs the pure-Warp track pipeline (generation -> resample -> relax -> inflate, all
 NVIDIA Warp kernels) and returns a fully-populated :class:`~track_gen.results.Track`.
 The pipeline is a :class:`track_gen.pipeline.Program` built from
-``legacy.to_pipeline_spec(config)`` (roadmap PR10a): the ordered built-in stages,
+``legacy.to_pipeline_spec(config)``: the ordered built-in stages,
 byte-identical to the 0.2.0.dev2 composition ``warp_pipeline._run_pipeline``. The public
 dataclasses ``TrackGenConfig`` and ``Track`` live in the dependency-free leaf module
 ``types.py``; this facade re-exports ``TrackGenerator`` as the package's top-level entry
@@ -99,8 +99,8 @@ class TrackGenerator:
     :func:`track_gen.pipeline.presets.track` with plugin relax / width / elevation /
     validity stages); :attr:`program` is the built pipeline.
 
-    ``relax_solver`` and ``z_profile`` name any registered relax / elevation stage;
-    ``smooth_finish=True`` is not supported (construction raises ``ValueError``).
+    ``relax_solver`` and ``z_profile`` select registered relax and elevation stages.
+    Post-solve smoothing is controlled by the XPBD relaxation parameters.
     """
 
     def __init__(self, config, rng=None, *, seeds=None,
@@ -174,8 +174,7 @@ class TrackGenerator:
                 the generator's device).
             ValueError: if ``config.relax_solver`` is not a registered relax stage
                 (the oracle-only ``"energy"`` / ``"tp_sobolev"`` included), if
-                ``config.z_profile`` is not a registered elevation stage, or if
-                ``config.smooth_finish`` is ``True``.
+                ``config.z_profile`` is not a registered elevation stage.
             track_gen.pipeline.PlanError: an invalid ``PipelineSpec``.
             track_gen.exec.CaptureError: if the resolved stream or Warp's current
                 stream is capturing (construction allocates and runs a real warm-up

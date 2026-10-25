@@ -1,10 +1,10 @@
-"""Gate-native checkpoint sampling (a ``gate_generator`` Stage, roadmap PR11).
+"""Gate-native checkpoint sampling (a ``gate_generator`` Stage).
 
 One ring of ``checkpoint_count`` radial checkpoints (the checkpoint track generator's
 draw), in loop order (``anchors.xy``); the gate pipeline orders them (``order.ccw`` by
 default, ``order.raw`` keeps the loop order; ``order.random_pairs`` is excluded) and
 normalizes their extent (``preferred["normalize"] = "extent"``). The radius fraction and
-angle jitter are dynamic (roadmap PR13c): per-env arrays drawn by
+angle jitter are dynamic: per-env arrays drawn by
 :func:`~track_gen._src.warp_generate_checkpoint.sample_checkpoint_rings_per_env`,
 clamped to the declared bounds at use.
 """

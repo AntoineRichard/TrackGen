@@ -13,7 +13,7 @@ NaN for inactive slots, in-place reuse of the output ``BoxContact`` across
 ``query()`` calls (use ``clone()`` for snapshots), and no host syncs, so
 ``query()``/``bake()`` are CUDA-graph capturable as-is.
 
-Invalid envs (roadmap PR14): when the source has ``valid``, an env with ``valid[e] ==
+Invalid envs: when the source has ``valid``, an env with ``valid[e] ==
 0`` reads like a poisoned (degenerate) one with both backends: every active box gets
 ``oob = 1``, NaN ``distance`` / ``nearest`` / ``normal`` and ``boundary = -1`` (the SDF
 bake writes NaN phi, ``bid = -1`` and the box ``(-1, -1)-(1, 1)``); inactive slots (NaN

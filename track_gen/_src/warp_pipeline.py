@@ -482,7 +482,7 @@ def offset(center, Nrm, half_width, out_outer, out_inner, area_a, area_b, count,
     Args:
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
-        hw_out: optional [E*n_max] float32 (``Track.half_width``, roadmap PR13a):
+        hw_out: optional [E*n_max] float32 (``Track.half_width``):
             ``half_width`` on real points, NaN padding. ``None`` (default): nothing is
             stored and nothing allocated (a null array is passed to the kernel).
 

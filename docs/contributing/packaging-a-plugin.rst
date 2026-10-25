@@ -175,7 +175,7 @@ without a dot still registers, with a one-time ``UserWarning``. Built-in names
 
 A name is part of your users' code and data: it is the ``generator=`` (or ``relax=``,
 ``order=``, ...) string in their configs and in the specs they save
-(:ref:`generating-saving`). Renaming a plugin (adding the dot to a 0.1 name, say) breaks
+(:ref:`generating-saving`). Renaming a plugin breaks
 both; register the old name too, as a second ``reg.add`` of a renamed copy, for as long
 as you support it.
 

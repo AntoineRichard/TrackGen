@@ -362,7 +362,7 @@ def _done_schedule(i: int, E: int) -> list:
 def _caller_chain(ctx, run, program, done, flag, *, reset: bool,
                   skip: bool = False) -> bool:
     """The chain the capture checks record, as a ``Course`` records its regeneration and
-    step (roadmap PR15): ``any_set(done)`` into ``flag``, then, under
+    step: ``any_set(done)`` into ``flag``, then, under
     ``ctx.skip_unless(flag, ...)`` (a CUDA conditional node where the capture allows
     one), the producer's masked advancing generation, the chain's ``on_generate(done)``
     and (``reset``) ``reset(done)``; then the chain's ``step``.

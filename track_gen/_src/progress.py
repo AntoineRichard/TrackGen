@@ -18,7 +18,7 @@ preallocated with stable pointers.
 
 Reset contract: ``reset(mask)`` clears state where ``mask[e] == 1`` and arms
 the NaN previous-position sentinel, so the first update after a reset (or
-after construction) can never emit a spurious crossing. Since roadmap PR14 the
+after construction) can never emit a spurious crossing. Since  the
 tracker also resets an env BY ITSELF (the same writes, on device, before reading the
 state) when the set's ``generation`` changes: a ``CheckpointSampler`` set changes it at
 ``sample()`` (so an ``update()`` between a regeneration and the resample does not reset
@@ -28,7 +28,7 @@ bare ``rng.set_seeds_warp`` changes nothing), and ``reset_epoch()`` followed by 
 number of advances leaves it equal (ABA): callers that reseed or roll epochs back must
 still ``reset(mask)`` (``Course`` does). A set without ``generation`` never self-resets.
 
-Invalid envs (roadmap PR14): an env whose set has ``valid[e] == 0`` is FROZEN: its
+Invalid envs: an env whose set has ``valid[e] == 0`` is FROZEN: its
 state is kept (``next_checkpoint`` / ``laps`` / ``progress`` report it), ``passed = 0``,
 ``checkpoint_passed = -1``, ``wrong_way = 0``, ``wrong_checkpoint = -1``,
 ``dist_to_next = 0``, and the previous position is re-armed (NaN), so the env cannot

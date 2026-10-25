@@ -99,7 +99,7 @@ trackgen_nitpick_allowlist = _read_allowlist(_HERE / "_tools" / "nitpick_allowli
 # upgrading/*; "report" (local triage only) logs them as docscheck: ... lines and in
 # <doctreedir>/docscheck.txt without failing. Missing data files always warn.
 trackgen_docscheck = "error"
-trackgen_jargon_exclude = ("upgrading/",)
+trackgen_jargon_exclude = ()
 # Public names that are deliberately not documented, with the reason.
 trackgen_api_exempt = {
     # The library's own constructors call it to refuse construction inside a capture
@@ -150,6 +150,15 @@ trackgen_api_exempt = {
 
 html_theme = "furo"
 html_static_path = ["_static"]
+# Short generator-construction clips are copied verbatim; rendering stays optional.
+html_extra_path = [
+    "assets/racing/generator-bezier-construction.mp4",
+    "assets/racing/generator-hull-construction.mp4",
+    "assets/racing/generator-polar-construction.mp4",
+    "assets/racing/generator-voronoi-construction.mp4",
+    "assets/racing/generator-checkpoint-construction.mp4",
+    "assets/racing/generator-repulsive-growth.mp4",
+]
 html_title = "TrackGen"
 
 linkcheck_timeout = 30

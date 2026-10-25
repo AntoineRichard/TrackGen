@@ -390,15 +390,14 @@ generator cannot fill well is rejected by writing fewer anchors than the pipelin
 finished gates is a validity stage that reads gate channels and owns bits from 16 on
 (:ref:`stage-validity-check`, "On gates").
 
-Porting a function-based gate plugin
-------------------------------------
+Gate stages in a pipeline
+--------------------------
 
-Gate plugins use the anchors Stage contract described on this page. Move scratch
-allocation into ``build`` and ``b.scratch``, replace the former output staging object
-with ``b.write`` ports, declare ``capacity`` and let the pipeline order and normalize
-the anchors. A generator that already emits ordered gates can write ``gates.xy`` and
-``gates.count`` and declare ``provides={"order"}``, preserving its own ordering and
-normalization. :ref:`upgrading-0.3` describes the removed interface.
+Register a ``gate_generator`` Stage with ``output="anchors"``. Write anchor positions
+and real counts, then declare the orderings it accepts. A generator that provides its
+own gate poses or attributes uses index-preserving raw order and declares those provided
+channels; the downstream pipeline carries them into the result. See
+:ref:`gate-generator-stage` for the complete contract.
 
 Testing a gate generator
 ------------------------

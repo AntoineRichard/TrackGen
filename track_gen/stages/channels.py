@@ -7,7 +7,7 @@ generator's capacity), ``"cl"`` is ``[E * N_max]``, ``"anchors"`` is ``[E * A]``
 the ``capacity()["gates"]`` of the stage that writes the anchors: a gate generator or a
 ``stations`` stage) and ``"gates"`` is ``[E * max_gates]`` (``BatchSpec.max_gates``).
 ``interp`` records how a per-point
-channel is carried through a resample (roadmap PR13a: ``raw.z`` / ``raw.half_width``
+channel is carried through a resample (``raw.z`` / ``raw.half_width``
 and the generators' ``raw.<package>.<name>`` attributes are carried to the centerline,
 see :data:`CARRIED_CATALOGUE`). Besides these channels, a plugin may read and write its
 own namespaced channels ``<domain>.<package>.<name>`` (:data:`PLUGIN_CHANNEL`; the

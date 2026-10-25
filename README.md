@@ -10,7 +10,7 @@ native.**
 ![Warp](https://img.shields.io/badge/warp--lang-%E2%89%A5%201.18-76b900)
 
 > [!NOTE]
-> **The `v3` branch develops 0.3.** Read [Upgrading from 0.2](https://antoinerichard.github.io/TrackGen/upgrading/from-0.2.html)
+> **The `v3` branch develops 0.3.** Read [Upgrading from 0.2](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc1/docs/upgrading/from-0.2.rst)
 > before updating: legacy APIs are removed, built-in seeds produce new geometry,
 > invalid results default to poison, configs are frozen, and Track/GateSequence storage
 > must be complete. The rc and downstream validation are still pending.
@@ -35,7 +35,7 @@ seeds[E] ─► generator ─► resample ─► XPBD relax ─► road band ─
 | **Pipelines as data** | Each generator runs a pipeline of stages described by a spec: start from a preset, swap or add stages, save and reload it | [Generating](https://antoinerichard.github.io/TrackGen/user-guide/generating.html) |
 | **Relaxation & inflation** | XPBD-relaxed centerlines inflated into constant-width road bands — index-aligned outer/center/inner borders with tangent/normal frames | [How it works](https://antoinerichard.github.io/TrackGen/how-it-works/inflation.html) |
 | **Gate sequences** | Batched gate courses with gate poses and collision-solved spacing | [Tutorial](https://antoinerichard.github.io/TrackGen/tutorials/gate-sequences.html) |
-| **Checked results** | Every env is checked (self-crossings, thickness, truncation, ...): `valid[e]` and fail bits on every result | [Invalid envs](https://antoinerichard.github.io/TrackGen/user-guide/results.html#invalid-envs) |
+| **Checked results** | Every env is checked (self-crossings, thickness, truncation, ...): `valid[e]` and fail bits on every result | [Invalid envs](https://antoinerichard.github.io/TrackGen/reference/result-contracts.html#invalid-envs) |
 | **Out-of-bounds collision** | Oriented boxes vs the drivable band — exact segment scan or baked SDF — plus disc obstacles (gate posts, cones) | [Collision](https://antoinerichard.github.io/TrackGen/utilities/collision.html) |
 | **Boundary props** | Cone lines and wall pieces along any boundary, seam-free, for instanced rendering | [Props](https://antoinerichard.github.io/TrackGen/utilities/props.html) |
 | **Checkpoints & progress** | Ordered goals from gates *or* subsampled centerlines; pass/lap events and `dist_to_next` rewards | [Progress](https://antoinerichard.github.io/TrackGen/utilities/progress.html) |
@@ -111,7 +111,7 @@ if done.any():                               # a host read: only when an episode
 An env whose course failed a check (`valid[e] == 0`) reads `oob = 1` and
 frozen progress: gate rewards and observations on `res.valid` and give it a
 new course
-([invalid envs](https://antoinerichard.github.io/TrackGen/user-guide/results.html#invalid-envs)).
+([invalid envs](https://antoinerichard.github.io/TrackGen/reference/result-contracts.html#invalid-envs)).
 On the `cpu` device (or with a generator that has a step that runs on the
 host), `regenerate(mask=...)` runs a full generation even with an all-zero
 mask, hence the `if`. On `cuda` it replays the course's own CUDA graph, which
@@ -128,7 +128,7 @@ More: [quickstart](https://antoinerichard.github.io/TrackGen/getting-started/qui
 | | |
 |---|---|
 | [Getting started](https://antoinerichard.github.io/TrackGen/getting-started/quickstart.html) | install, quickstart, concepts and terms, parameter explorer |
-| [Upgrading from 0.2](https://antoinerichard.github.io/TrackGen/upgrading/from-0.2.html) | every 0.3 break and its replacement; [historical 0.1 → 0.2 guide](https://antoinerichard.github.io/TrackGen/upgrading/from-0.1.html) |
+| [Upgrading from 0.2](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc1/docs/upgrading/from-0.2.rst) | every 0.3 break and its replacement; [historical 0.1 → 0.2 guide](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc1/docs/upgrading/from-0.1.rst) |
 | [Generating tracks and gates](https://antoinerichard.github.io/TrackGen/user-guide/generating.html) | presets, specs, params, seeds; [results](https://antoinerichard.github.io/TrackGen/user-guide/results.html); [curricula](https://antoinerichard.github.io/TrackGen/user-guide/curricula.html); [choosing a generator](https://antoinerichard.github.io/TrackGen/tutorials/choosing-a-generator.html) |
 | [Generators](https://antoinerichard.github.io/TrackGen/generators/overview.html) | the six families, quality benchmarks |
 | [Courses, simulators and RL](https://antoinerichard.github.io/TrackGen/utilities/course.html) | courses, [CUDA graphs in a sim](https://antoinerichard.github.io/TrackGen/tutorials/cuda-graph-in-a-sim.html), [RL auto-reset](https://antoinerichard.github.io/TrackGen/user-guide/rl-auto-reset.html), [runtime utilities](https://antoinerichard.github.io/TrackGen/utilities/overview.html) |

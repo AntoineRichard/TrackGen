@@ -453,8 +453,7 @@ capturing. Do not combine it with a foreign capture on another stream (e.g. a de
 Rules for recording into your graph
 -----------------------------------
 
-These rules hold for every generator, course and utility (:ref:`upgrading-capture` lists
-what changed from 0.1).
+These rules hold for every generator, course and utility.
 
 - **Build outside, record inside.** Generators, courses and utilities are constructed
   outside any capture (construction allocates and runs a real pass; inside a capture it

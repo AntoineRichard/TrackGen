@@ -160,7 +160,7 @@ class TrackGenConfig:
         ``[0, 1)``.  The CarRacing canonical value 0.33 gives the inlets.  Dynamic
         (per env): ``set`` and ``randomize=`` accept the declared bound ``1.0``
         (every checkpoint on the outer radius), and a per-env array value is clamped
-        to ``[0, 1]``; the configured value keeps the legacy ``[0, 1)`` rule.
+        to ``[0, 1]``; construction requires a configured value in ``[0, 1)``.
     checkpoint_angle_jitter : float
         Angular jitter as a fraction of the per-checkpoint angular slot
         (``slot = 2*pi/C``).  Must be in ``[0, 1]`` (dynamic, per env); below 1 each
@@ -285,7 +285,8 @@ class TrackGenConfig:
     repulsive_tau : float
         *Repulsive generator only.*  Normalized flow step size.
     repulsive_w_len : float
-        *Repulsive generator only.*  Weight of the small inert length regularizer.
+        *Repulsive generator only.*  Weight of the secondary target-length gradient.
+        Hard growth/length enforcement is separate from this soft correction.
     repulsive_stages : tuple of int
         *Repulsive generator only.*  Coarse-to-fine resolution schedule ``N = 64 →
         128 → 256``.  Must be non-empty, strictly increasing, and each a positive
@@ -345,8 +346,8 @@ class TrackGenConfig:
         (default) applies Chebyshev semi-iterative acceleration (Macklin et al.
         2014): after ``relax_cheby_start`` plain warmup sweeps, each sweep blends
         the Jacobi update with the current and previous iterates using a
-        host-precomputed omega recurrence, converging ~3x faster per sweep.
-        ``"none"`` runs plain damped Jacobi (the legacy behaviour).
+        host-precomputed omega recurrence. Its benefit depends on the constraint system;
+        ``"none"`` runs plain damped Jacobi.
     relax_cheby_rho : float
         Chebyshev spectral-radius estimate of the underlying Jacobi iteration.
         Must be in ``[0, 1)``.  Default 0.98.  Larger values accelerate the
@@ -383,8 +384,7 @@ class TrackGenConfig:
         narrowphase still runs every sweep on cached candidates.  Default 20: the
         broadphase is built at sweep 0 and refreshed only at multiples of this
         interval, so runs shorter than ``relax_sep_every`` sweeps never refresh it
-        mid-solve — the cadence dropped from 40 alongside the ``relax_iters``
-        150 -> 50 default so the accelerated solve still refreshes mid-solve.
+        mid-solve. Choose the cadence and skin together to retain candidate contacts.
     relax_sep_cache_slots : int
         Broadphase candidate cache capacity per bead.  0 disables the cache (uses
         the dense cadenced scan).  When > 0, each bead stores up to this many
@@ -417,7 +417,7 @@ class TrackGenConfig:
         constant-spacing step.  Default 256.  The constant-spacing resampler then
         derives ``count[e] = floor(perimeter / spacing) + 1`` real points per env.
     spacing : float or None
-        Constant arc-length step (m) between adjacent output points.  ``None``
+        Constant arc-length step in coordinate units between adjacent output points.  ``None``
         (default) auto-couples to ``0.6 * half_width`` — the relaxation-friendly
         value; a fixed default would be wrong as ``half_width`` varies.  Must
         resolve to > 0 after auto-coupling.
@@ -425,10 +425,9 @@ class TrackGenConfig:
         Output buffer width: maximum constant-spacing points per track.  Tracks
         whose true ``count[e]`` exceeds ``N_max`` are truncated, flagged in
         ``Track.truncated`` and fail validity.
-        Default 384: ample headroom at ``half_width = 0.1`` (spacing ≈ 0.06,
-        ~141 max points), full coverage to ``half_width ≈ 0.05`` (~281 max), and
-        ~98% of the ``half_width = 0.03`` regime (~468 max).  Raise ``N_max`` or
-        coarsen ``spacing`` for finer/larger-scale regimes.
+        Default 384. Budget at least ``floor(max_perimeter / spacing) + 1``
+        slots, with headroom for the largest size and post-relaxation perimeter.
+        Raise ``N_max`` or coarsen ``spacing`` for finer or larger courses.
 
     turning_tol : float
         Absolute angular tolerance in radians for the turning-number validity gate.
@@ -440,10 +439,11 @@ class TrackGenConfig:
         geometry that passes the global thickness check.
     validity_border_check : bool
         When ``True``, an explicit border self-intersection check is added to the
-        validity gate.  Default ``False``.  Redundant with the thickness/separation
-        gate (a self-crossing fat band drives
-        ``separation_min → 0 → thickness < half_width → invalid``), so the default
-        saves two ``O(N²)`` passes with no change to the valid mask.
+        validity gate. Default ``False``. It tests proper nonadjacent segment
+        crossings within each inner/outer border, adding two ``O(N²)`` passes.
+        Thickness uses sampled bead distances and local curvature; it is not an
+        exact segment-separation proof, so the optional check can add rejections.
+        It does not test crossings between the inner and outer loops.
 
     z_profile : str
         Per-point altitude (Z) profile: the name of a registered ``elevation``
@@ -737,7 +737,7 @@ class GateGenConfig:
         Gate output ordering: any registered ``order`` stage the generator supports
         (``track_gen.plugin.registry.available("order")``; checked at
         ``GateGenerator`` construction).  Built-ins: ``"ccw"`` (an angle sort around
-        the env's anchor centroid, clockwise in a y-up frame; the name is historical),
+        the env's anchor centroid, clockwise in a y-up frame),
         ``"raw"`` (the generator's own order) and ``"random_pairs"`` (random gate pairs
         for training objectives).  ``None`` (default): the generator's default order,
         resolved at ``GateGenerator`` (hence ``Course``) construction by
@@ -745,8 +745,8 @@ class GateGenConfig:
         and the conformance kit: its ``preferred["order"]`` when it accepts it, else
         ``"ccw"`` when it accepts it, else the first order it accepts.  That is
         ``"ccw"`` for the five built-ins, and ``"raw"`` for a generator that provides
-        per-anchor attributes.  The generator's run config (what a legacy
-        ``GateGeneratorSpec`` receives) holds the resolved name, never ``None``.
+        per-anchor attributes. The pipeline selects the resolved ordering Stage
+        before building the gate generator's downstream stages.
 
     min_num_points : int
         Minimum corner-anchor count per env for the bezier/hull point sampler.
@@ -853,7 +853,7 @@ class GateGenConfig:
         normalization target).  It scales the gate layout's plan view only:
         ``gate_radius``, ``gate_width`` and the ``z_*`` fields stay absolute.  Not the
         batch size (``num_envs``).  In ``[0.1, 10]``, default 1.0; a pipeline with no
-        stage declaring ``size`` (a legacy gate generator) refuses a value other
+        stage declaring ``size`` refuses a value other
         than 1.
 
     generator_params : Params, Mapping or None
@@ -1630,7 +1630,8 @@ class GateSequence:
         NaN-padded past ``count[e]``.
     orientation : wp.array
         Flat ``[E * max_gates]`` ``quatf`` gate poses (``wp.quatf(x, y, z, w)``):
-        the roll-free frame with local x = gate forward, y = left, z = up.
+        local x = gate forward, y = left, z = up. Default frames are roll-free;
+        ``gate_frames.posed`` additionally applies the generator-provided roll.
         NaN-padded past ``count[e]``.
     half_size : wp.array
         Flat ``[E * max_gates]`` ``float32`` square-opening half-extents

@@ -1,4 +1,4 @@
-"""The built-in components (roadmap PR14): one thin adapter per legacy utility.
+"""The built-in components: one thin adapter per legacy utility.
 
 Each adapter validates its configuration in ``__init__`` (the legacy constructor's
 checks, early), builds its legacy utility in :meth:`~track_gen.tools.Component.attach`

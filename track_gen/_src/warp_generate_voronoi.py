@@ -302,7 +302,7 @@ def select_voronoi_anchors_per_env(ctx: "LaunchContext", seeds: wp.array,
                                    box_size: float, radial_variation: wp.array,
                                    angular_jitter: wp.array, out_selected: wp.array,
                                    used: wp.array) -> None:
-    """the scalar control draw with per-env knobs (roadmap PR13c): ``[E]``
+    """the scalar control draw with per-env knobs: ``[E]``
     ``float32`` arrays, env ``e`` selecting with ``radial_variation[e]`` /
     ``angular_jitter[e]``, each clamped at use to the voronoi generator's declared
     bounds (``[0, 0.85]`` / ``[0, pi]``, compared in float32; a NaN passes). With every
@@ -383,7 +383,7 @@ def _enqueue_voronoi(seeds_wp, config, out_centerline, out_valid_wp, scratch, ct
 
 class Voronoi(Stage):
     """``"voronoi"``: the Voronoi / graph-cycle track generator
-     as a ``kind="generator"`` Stage (roadmap PR13c).
+     as a ``kind="generator"`` Stage.
     ``voronoi_radial_variation`` / ``voronoi_angular_jitter`` are dynamic: per-env
     arrays read by :func:`select_voronoi_anchors_per_env`, clamped to ``[0, 0.85]`` /
     ``[0, pi]`` at use."""
