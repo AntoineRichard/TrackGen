@@ -1,11 +1,14 @@
 """Analytic barriers and accepted-step regressions for Repulsive growth."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 import warp as wp
 
-from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
+from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator, ops
 from track_gen._src import warp_generate_repulsive as rep
 from tests.conftest import DEVS
 from track_gen.exec import LaunchContext
@@ -293,20 +296,72 @@ def test_near_circle_length_projection_retains_positive_metric(dev):
 
 
 @pytest.mark.parametrize('on_invalid', ['keep', 'poison'])
-def test_high_growth_raw_success_does_not_bypass_finished_band_rejection(on_invalid):
-    # CPU integration repro: this target reaches a feasible raw loop, then the
-    # shared tail pushes its width band into a disc. Optimizer trajectories may
-    # differ by device; deterministic finished-band fixtures cover DEVS directly.
+def test_high_growth_raw_success_does_not_bypass_finished_band_rejection(on_invalid, monkeypatch):
+    # Replay the generator boundary, not its host-sensitive optimizer trajectory.
+    # The captured raw loop is feasible at its final target; the real shared tail
+    # moves its finished width band into a disc. This is an input fixture, not a
+    # byte oracle for either optimizer or finished output.
+    fixture = json.loads((Path(__file__).parent / 'fixtures' /
+                          'repulsive_high_growth_raw.json').read_text())
+    raw = np.asarray(fixture['raw'], dtype=np.float32)
+    centers = np.asarray(fixture['disc_centers'], dtype=np.float32)
+    radii = np.asarray(fixture['disc_radii'], dtype=np.float32)
+    exact = raw.astype(np.float64)
+    width = fixture['half_width']
+    assert abs(np.linalg.norm(np.roll(exact, -1, axis=0) - exact, axis=1).sum()
+               - fixture['target_length']) < 1e-6
+    assert fixture['domain_radius'] - np.linalg.norm(exact, axis=1).max() - width > .1
+    for center, radius in zip(centers.astype(np.float64), radii.astype(np.float64)):
+        if radius > 0.:
+            assert _segment_distances(exact, center).min() - radius - width > 2e-5
+
     dev = 'cpu'
+    raw_wp = wp.array(raw, dtype=wp.vec2f, device=dev)
+    centers_wp = wp.array(centers, dtype=wp.vec2f, device=dev)
+    radii_wp = wp.array(radii, dtype=wp.float32, device=dev)
+    target_wp = wp.array([fixture['target_length']], dtype=wp.float64, device=dev)
+
+    def replay(seeds, config, out_centerline, out_valid, scratch, ctx, size, barriers=None):
+        assert config.num_envs == 1 and scratch.Nmax == len(raw)
+        assert scratch.K == len(radii)
+        assert np.float32(scratch.r_dom) == np.float32(fixture['domain_radius'])
+        ctx.copy(scratch.center, raw_wp)
+        ctx.copy(scratch.disc_centers, centers_wp)
+        ctx.copy(scratch.disc_radii, radii_wp)
+        ctx.copy(scratch.L_final, target_wp)
+        ctx.launch(rep._clearance_margin_k, 1, [size, scratch.half_width, scratch.margin])
+        ops.fill(ctx, scratch.metric_failed, 0)
+        # Prove raw success with the production clearance/length certificate;
+        # do not simply force gen.valid=1 to make the final check run.
+        ctx.launch(rep._finish_valid_k, 1,
+                   [scratch.center, len(raw), scratch.disc_centers, scratch.disc_radii,
+                    scratch.K, scratch.r_dom, scratch.margin, scratch.L_final,
+                    scratch.metric_failed, out_valid])
+        ctx.launch(rep._copy_sized_k, len(raw), [scratch.center, len(raw), size, out_centerline])
+        ctx.launch(rep.publish_barriers_k, 1,
+                   [scratch.disc_centers, scratch.disc_radii, scratch.K, scratch.r_dom, size, barriers])
+
+    monkeypatch.setattr(rep, '_generate_repulsive', replay)
     cfg = TrackGenConfig(generator='repulsive', device=dev, num_envs=1,
+                         half_width=width, spacing=.06, N_max=384,
+                         relax_iters=50, relax_smooth_passes=5, relax_smooth_spacing_iters=10,
                          repulsive_grow_mult_min=3., repulsive_grow_mult_max=3.5,
                          on_invalid=on_invalid)
     seeds = wp.array(np.array([7], np.int32), dtype=wp.int32, device=dev)
     gen = TrackGenerator(cfg, PerEnvSeededRNG(seeds=seeds, num_envs=1, device=dev))
     track = gen.generate()
     assert gen.program.tap('gen.valid').numpy().tolist() == [1]
+    # The private 2D band survives poison. Independently prove the finished
+    # outer boundary intersects a disc, rather than trusting the fail bit alone.
+    finished = gen.program.tap('band.outer2').numpy().astype(np.float64)
+    finished = finished[np.isfinite(finished).all(axis=1)]
+    assert len(finished) >= 3
+    assert min(_segment_distances(finished, center).min() - radius
+               for center, radius in zip(centers.astype(np.float64), radii.astype(np.float64))
+               if radius > 0.) < -1e-3
     assert track.valid.numpy().tolist() == [0]
-    assert int(track.fail_mask.numpy()[0]) & 256
+    # No generator or generic validity failure may make this test vacuous.
+    assert track.fail_mask.numpy().tolist() == [256]
     if on_invalid == 'poison':
         assert np.isnan(track.center.numpy()).all()
         assert track.count.numpy().tolist() == [0]
