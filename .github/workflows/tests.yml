@@ -67,7 +67,7 @@ jobs:
         # amplifies last-ulp libm / codegen differences); every other field is compared.
         env:
           TRACKGEN_SKIP_HOST_SENSITIVE_GOLDENS: "1"
-        run: pytest -x -vv 'tests/test_doc_snippets.py::test_snippets_cpu[how-it-works/cuda-graph.rst::unconditional]' --durations=10 -ra
+        run: pytest -x -vv -s 'tests/test_doc_snippets.py::test_snippets_cpu[how-it-works/cuda-graph.rst::unconditional]' --durations=10 -ra
 
   # GPU lane: needs a self-hosted runner with an NVIDIA GPU, so it is OFF by default.
   # To enable it, register a runner with the labels below and set the repository
