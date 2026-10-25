@@ -184,3 +184,20 @@ paired registry now records this illustration source explicitly. Strict Sphinx
 with the default enforced registry passed again, and all243 labels checked.
 The current complete CPU lane and CUDA-default-host media checks validate the
 new renderer while the frozen numerical suite continues atd33cf89.
+
+Final ten-point acceptance is complete. The current full CPU lane passed3750 tests
+with four optional UI skips and836 deselections in559.09s. On a CUDA-default
+spark-home environment, all48 current renderer/observer checks passed in65.97s.
+The strict site and all243 labels pass, and all164 served media hashes agree.
+Both final Bezier clips fully decode144frames at1696x954 with matching posters;
+other80 media records and all eight other movies are unchanged fromd33cf89.
+
+A final playback probe found that the original loopback SimpleHTTP server lacked
+byte-range support. It has been replaced by a localhost-only range-capable preview
+server over identical build files (no repository runtime change). Earlier immediate
+metadata/seek assertions are superseded by settled checks that await !seeking and
+readyState>=2, then an additional200ms. Playing2.205745s retains playback/time/rate
+through dark-theme reload; paused2.231496s stays exactly paused at that time after
+light-theme reload. Stable decoded12s screenshots, desktop/mobile themes, actual
+hashed downloads,206 exact/suffix and416 range responses all pass. This is the
+final seek/playback acceptance evidence rather than the earlier metadata-only probe.
