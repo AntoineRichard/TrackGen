@@ -8,7 +8,7 @@ import pytest
 from viz.racing_theme import get_palette, plotting_theme, geometry_digest
 
 
-@pytest.mark.parametrize('producer', ['data', 'course', 'xpbd-frame'])
+@pytest.mark.parametrize('producer', ['data', 'course', 'xpbd-frame', 'xpbd-gate-frame'])
 def test_renderer_dark_canvas_uses_real_theme_without_changing_input(producer,tmp_path):
     p=get_palette('dark');data=None;before=None
     with plotting_theme('dark'):
@@ -26,12 +26,17 @@ def test_renderer_dark_canvas_uses_real_theme_without_changing_input(producer,tm
             data=dict(center=center,outer=1.1*center,inner=.9*center,
                       count=np.array([16]),valid=np.array([1]),fail_mask=np.array([0]),
                       phase='sweep',iteration=3)
+            gates=producer=='xpbd-gate-frame'
+            if gates:data.update(position=center,left=.9*center,right=1.1*center)
             before=geometry_digest(data);path=tmp_path/'frame.png'
-            _frame(path,data,[0],[(np.array([-1.5,-1.5]),np.array([1.5,1.5]))],
-                   {'seed_start':0},False)
+            frame_size=_frame(path,data,[0],[(np.array([-1.5,-1.5]),np.array([1.5,1.5]))],
+                              {'seed_start':0},gates)
+            assert frame_size==list(Image.open(path).size)
     corner=np.asarray(Image.open(path).convert('RGB'))[0,0]
     np.testing.assert_array_equal(corner,np.rint(np.array(to_rgb(p.background))*255))
-    if data is not None:assert geometry_digest(data)==before
+    if data is not None:
+        assert geometry_digest(data)==before
+        assert Image.open(path).size==(1216,684)
 
 
 def test_paired_data_cli_reuses_capture_and_records_identical_geometry(tmp_path):

@@ -6,6 +6,7 @@ Prefixes explain the order of operations; they do not simulate elapsed runtime.
 from __future__ import annotations
 
 import dataclasses
+from functools import lru_cache
 from pathlib import Path
 import textwrap
 
@@ -15,11 +16,46 @@ from matplotlib.patches import Rectangle
 import numpy as np
 import warp as wp
 
-from .racing_theme import apply_plot_theme, get_palette, plotting_theme, save_figure
+from .racing_theme import (apply_plot_theme, get_palette, plotting_theme, save_figure,
+                           video_canvas_size)
 
 
 _CACHE = '_bezier_hull_storyboard'
 _FALLBACK_SEEDS = {'bezier': 97, 'hull': 23}
+_BEZIER_EXAMPLE_SETTINGS = dict(min_num_points=4, max_num_points=4, min_point_distance=.25)
+
+
+@lru_cache(maxsize=1)
+def _calm_bezier_example():
+    from .render_generator_guide import sample_batch
+
+    sample = sample_batch('bezier', seeds=[112], overrides=_BEZIER_EXAMPLE_SETTINGS)[0]
+    data = capture(sample)
+    distinct = len(data['grid_ids']) == len(set(data['grid_ids'])) == 4
+    inside = bool(((data['offset_vectors'] >= 0)
+                   & (data['offset_vectors'] < data['grid_pitch'])).all())
+    finite = all(np.isfinite(data[key]).all() for key in
+                 ('sampled', 'raw', 'final_center', 'final_inner', 'final_outer'))
+    if not (distinct and inside and finite and data['final_valid']):
+        raise AssertionError('the declared calm Bezier example no longer meets its selection policy')
+    sample['example_selection'] = dict(
+        selected_seed=112, seed_search=dict(start=0, stop_exclusive=2048, step=1),
+        first_matching_seed=True, four_distinct_cells=distinct, sampled_inside_cells=inside,
+        settings=dict(_BEZIER_EXAMPLE_SETTINGS),
+        policy='First ascending seed with four distinct grid addresses, every actual sampled '
+               'point inside [origin, origin+pitch), finite raw/final geometry and a valid road.',
+        offset_distribution='Unchanged independent U[-0.5,0.5) offsets before scale and size; '
+                            'the within-cell property belongs only to this selected sample.')
+    return sample
+
+
+def select_construction_sample(sample):
+    """Use the declared calm Bezier teaching example; retain every other input.
+
+    Only render() calls this selection boundary. capture() and draw_step() continue
+    to expose the actual sample supplied by their caller, including default jitter.
+    """
+    return _calm_bezier_example() if sample['config']['generator'] == 'bezier' else sample
 
 
 def _finite(points):
@@ -208,6 +244,13 @@ def construction_stages(sample):
         ('If it crosses, replace the whole loop', f'A separate default seed {_FALLBACK_SEEDS[name]} shows the automatic branch: reject the smooth loop and choose its entire polygon. No local spline edit or user toggle.'),
         ('Produce fixed-count raw samples', 'The generator stops at num_points raw samples. The shared spacing, XPBD and uniform stages determine the finished road and bead count.'),
     ])
+    if sample.get('example_selection'):
+        stages[0] = ('Choose grid addresses',
+                     'Selected seed 112 uses four corners and min_point_distance=0.25: '
+                     'a 2 × 2 grid with pitch 0.50. This example keeps one corner in each cell.')
+        stages[1] = ('Add the actual random offsets',
+                     'The selected real seed 112 keeps its sampled points inside their cells. '
+                     'The generator still draws offsets in [-0.5, 0.5); no jitter rule is changed.')
     smooth_stage = 3 if name == 'bezier' else 4
     return [dict(title=title, explanation=explanation, progressive_curve=i == smooth_stage)
             for i, (title, explanation) in enumerate(stages)]
@@ -276,8 +319,10 @@ def draw_step(ax, sample, stage, progress, theme='light'):
             if count:
                 i = count-1
                 dx, dy = data['offset_vectors'][i]
-                ax.text(.02, .02, f"Point {i}: Δx={dx:+.3f}, Δy={dy:+.3f}\n"
-                        f"Offsets may cross grid-cell boundaries (bound ±{data['offset_bound']:.2f}).",
+                note = ('This selected sample stays inside its displayed cells.'
+                        if sample.get('example_selection') else
+                        f"Offsets may cross grid-cell boundaries (bound ±{data['offset_bound']:.2f}).")
+                ax.text(.02, .02, f"Point {i}: Δx={dx:+.3f}, Δy={dy:+.3f}\n" + note,
                         transform=ax.transAxes, color=p.ink, fontsize=10)
     elif stage == 2:
         center = data['ordered'].astype(np.float64).mean(axis=0)
@@ -383,13 +428,16 @@ def _result_axes(raw_ax, road_ax, data, p):
 
 def _frame(sample, theme):
     p, data = get_palette(theme), capture(sample)
-    fig = plt.figure(figsize=(14, 8), facecolor=p.background)
+    fig = plt.figure(figsize=video_canvas_size(14, dpi=120), facecolor=p.background)
     grid = fig.add_gridspec(2, 3, width_ratios=(1, 1, .9), left=.06, right=.97,
                            bottom=.15, top=.80, hspace=.25, wspace=.22)
     ax = fig.add_subplot(grid[:, :2])
     _result_axes(fig.add_subplot(grid[0, 2]), fig.add_subplot(grid[1, 2]), data, p)
     heading = fig.text(.5, .95, '', ha='center', color=p.ink, fontsize=18)
     explanation = fig.text(.5, .875, '', ha='center', va='center', color=p.ink, fontsize=12)
+    if sample.get('example_selection'):
+        fig.text(.5, .915, 'Selected seed 112 · min_num_points=max_num_points=4 · min_point_distance=0.25 · pitch 0.50',
+                 ha='center', color=p.ink, fontsize=10)
     fig.text(.5, .055, 'Recorded geometry; staged explanation, not elapsed runtime.\n'
              'Shared tail: fixed-distance targets → XPBD → same-count uniform redistribution (see the spacing guide).',
              ha='center', color=p.ink, fontsize=10)
@@ -400,6 +448,7 @@ def render(out_dir, sample, movies=True, theme='light', writer_factory=None):
     """Render a 24-second explanation and one readable representative poster."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    sample = select_construction_sample(sample)
     data, stages = capture(sample), construction_stages(sample)
     name = data['name']
     frames, fps = 144, 6
@@ -429,9 +478,12 @@ def render(out_dir, sample, movies=True, theme='light', writer_factory=None):
         save_figure(fig, out_dir/f'generator-{name}-construction.png', theme=theme, dpi=120)
         plt.close(fig)
     from .render_generator_guide import _record
-    return dict(kind='progressive construction drawing of recorded geometry', sample=_record(sample),
+    record = dict(kind='progressive construction drawing of recorded geometry', sample=_record(sample),
                 stage_titles=[stage['title'] for stage in stages], stages=len(stages),
                 frames=frames if movies else 0, duration_seconds=frames/fps if movies else 0,
+                frame_size=[int(round(x*120)) for x in video_canvas_size(14, dpi=120)],
+                poster_frame_size=[int(round(x*120)) for x in video_canvas_size(14, dpi=120)],
+                aspect_ratio='16:9',
                 geometry_interpolated=False, elapsed_runtime=False, theme=theme,
                 raw_count=len(data['raw']), final_count=data['final_count'],
                 observation_preserves_outputs=data['observation_preserves_outputs'],
@@ -440,3 +492,6 @@ def render(out_dir, sample, movies=True, theme='light', writer_factory=None):
                                       proper_crossings=data['fallback']['smooth_crossings'],
                                       automatic_whole_loop=True, settings='current defaults'),
                 output=f'generator-{name}-construction.' + ('mp4' if movies else 'png'))
+    if sample.get('example_selection'):
+        record['example_selection'] = dict(sample['example_selection'])
+    return record

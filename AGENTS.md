@@ -53,10 +53,11 @@ The separate auto-spacing review finding #4 remains deferred.
   excluded `docs/library-readiness/archive/`; keep internal design/handoff/roadmap
   records. The public site explains current racing usage, all six generators, Course,
   collision/intersections, API/data and extension workflows. Centerlines remain prominent.
-- All 80 published media files have true light/dark counterparts. The Bezier/Hull/Polar
+- Published media files have true light/dark counterparts. The Bezier/Hull/Polar
   storyboards explain actual selection/jitter, splines, whole-loop crossing fallback
   and sampling; a shared clip distinguishes raw count, target spacing, XPBD movement and
-  final same-count arc redistribution. Nine movies include actual solver convergence.
+  final same-count arc redistribution. All nine movies and their video posters use native 16:9 canvases; solver clips show
+  actual convergence.
   Committed per-asset provenance distinguishes the full capture from selective corrections.
   The Sphinx media registry verifies both files and hashes; never relabel old captures.
 - Render sources before generating final media; see `contributing/rendering-assets.rst`.

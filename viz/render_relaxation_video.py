@@ -27,7 +27,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from viz.racing_theme import (save_figure, get_palette, geometry_digest,
-                              rendered_geometry, render_variants)
+                              rendered_geometry, render_variants, video_canvas_size)
 import numpy as np
 import warp as wp
 
@@ -160,7 +160,7 @@ def _limits(states,envs,gates):
 
 
 def _frame(path,data,envs,limits,metadata,gates):
-    fig,axs=plt.subplots(1,len(envs),figsize=(12,4.6),dpi=100,facecolor="white")
+    fig,axs=plt.subplots(1,len(envs),figsize=video_canvas_size(12,100),dpi=100,facecolor="white")
     axs=np.atleast_1d(axs)
     for ax,e,(lo,hi) in zip(axs,envs,limits):
         n=data["count"][e]
@@ -198,7 +198,9 @@ def _frame(path,data,envs,limits,metadata,gates):
     fig.text(.5,.015,footer,ha="center",fontsize=9,color="#344253")
     fig.subplots_adjust(left=.05,right=.99,top=.79,bottom=.14,wspace=.25)
     save_figure(fig, path,facecolor="white")
+    frame_size=list(fig.canvas.get_width_height())
     plt.close(fig)
+    return frame_size
 
 
 def _ffmpeg(explicit=None):
@@ -264,8 +266,12 @@ def main(argv=None):
         with tempfile.TemporaryDirectory(prefix="trackgen-video-") as tmp:
             tmp=Path(tmp)
             idx=0
+            frame_size=None
             for i,s in enumerate(states):
-                _frame(tmp/f"frame_{idx:04d}.png",s,envs,limits,meta,args.gates)
+                size=_frame(tmp/f"frame_{idx:04d}.png",s,envs,limits,meta,args.gates)
+                if frame_size is not None and size!=frame_size:
+                    raise AssertionError("iteration frames changed their native canvas size")
+                frame_size=size
                 idx+=1
                 if i==0:
                     for _ in range(fps):
@@ -280,6 +286,7 @@ def main(argv=None):
                             "-pix_fmt","yuv420p","-movflags","+faststart",str(target)],check=True)
             shutil.copyfile(target,out/target.name)
         variant_meta.update(encoded_frames=idx,duration_seconds=idx/fps,
+                            frame_size=frame_size,poster_frame_size=frame_size,aspect_ratio="16:9",
                             theme=get_palette().name,geometry_sha256=capture_hash,
                             render_geometry=rendered_geometry())
         (out/f"{stem}-manifest.json").write_text(json.dumps(variant_meta,indent=2)+"\n")

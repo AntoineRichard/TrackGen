@@ -128,7 +128,7 @@ This clip follows one actual Polar seed-7 loop through the shared track pipeline
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:5/3;object-fit:contain" poster="../_images/pipeline-sampling.png" aria-label="Fixed-count raw samples, target-distance samples, XPBD movement and final same-count uniform redistribution.">
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:contain" poster="../_images/pipeline-sampling.png" aria-label="Fixed-count raw samples, target-distance samples, XPBD movement and final same-count uniform redistribution.">
      <source src="../pipeline-sampling.mp4" type="video/mp4">
      Fixed-count raw samples, target-distance samples, XPBD movement and final same-count uniform redistribution.
    </video>

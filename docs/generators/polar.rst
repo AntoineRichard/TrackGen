@@ -113,7 +113,7 @@ How it is constructed
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:30/19;object-fit:contain" poster="../generator-polar-construction-poster.png" aria-label="Polar angular slots, independent radii, angular jitter, spline, actual arc samples and normalization.">
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:contain" poster="../generator-polar-construction-poster.png" aria-label="Polar angular slots, independent radii, angular jitter, spline, actual arc samples and normalization.">
      <source src="../generator-polar-construction.mp4" type="video/mp4">
      Polar angular slots, independent radii, angular jitter, spline, actual arc samples and normalization.
    </video>

@@ -47,6 +47,11 @@ revision. The generator and native UI capture commands enforce this requirement.
      - Main iterations, separation margin and smoothing budgets
      - Isolated same-seed comparisons with actual counts, validity, fail bits and measured shape changes
 
+To refresh only the seven generator and sampling clips, use
+``render_generator_guide --animations-only --source-manifest MANIFEST --theme light``
+and repeat with the matching dark manifest. This preserves the setting galleries
+and their original capture provenance.
+
 The manifest records source version, settings, seeds or fixture coordinates, sample
 selection and checks. A selected gallery sample is not a yield estimate. To show a
 failed candidate, use ``on_invalid="keep"`` explicitly and retain its validity/failure
@@ -72,6 +77,11 @@ smoothing and spacing-polish phases. Each frame still passes through final resam
 and inflation: it is not a raw bead-buffer capture. The gate clip shows actual round
 budgets. Captions and overlays state the chosen seeds, counts, validity and phase.
 A visually settled shape can still fail checks.
+
+All movies and their video posters use a native 16:9 canvas. Use
+``viz.racing_theme.video_canvas_size`` before placing axes or labels; it returns
+encoder-safe even pixel dimensions. Keep the separate static construction diagrams
+at the aspect ratio their labels need.
 
 Videos use a fixed view and a short final hold. Keep a poster and a nearby written
 explanation, use player controls, and avoid autoplay. The generator MP4 files are copied

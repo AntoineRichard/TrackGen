@@ -119,6 +119,9 @@ def test_static_storyboard_uses_six_steps_and_actual_output_counts(sample, tmp_p
     assert record["frames"] == 0 and record["duration_seconds"] == 0
     assert record.get("poster") == "generator-polar-construction-poster.png"
     poster = mpimg.imread(tmp_path / record["poster"])
-    assert poster.shape[:2] == (912, 1440)
+    height, width = poster.shape[:2]
+    assert width * 9 == height * 16
+    assert record['aspect_ratio'] == '16:9'
+    assert record['frame_size'] == record['poster_frame_size'] == [width, height]
     pixels = mpimg.imread(tmp_path / "generator-polar-construction.png")
     np.testing.assert_allclose(pixels[0, 0, :3], to_rgb(get_palette(theme).background), atol=1/255)

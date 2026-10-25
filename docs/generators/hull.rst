@@ -126,7 +126,7 @@ How it is constructed
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:7/4;object-fit:contain" poster="../_images/generator-hull-construction.png" aria-label="Grid selection, offsets, angle ordering, midpoint displacement, Catmull-Rom and whole-loop fallback.">
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:contain" poster="../_images/generator-hull-construction.png" aria-label="Grid selection, offsets, angle ordering, midpoint displacement, Catmull-Rom and whole-loop fallback.">
      <source src="../generator-hull-construction.mp4" type="video/mp4">
      Grid selection, offsets, angle ordering, midpoint displacement, Catmull-Rom and whole-loop fallback.
    </video>

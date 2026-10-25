@@ -133,3 +133,47 @@ def test_geometry_audit_covers_3d_collections_before_draw(artist_kind, monkeypat
         artist.set_3d_properties([1., 0.], zdir='z')
     assert theme.figure_geometry_digest(fig) != before
     plt.close(fig)
+
+
+@pytest.mark.parametrize('width,dpi,expected', [(14,120,(1696,954)),(12,120,(1440,810)),(12,100,(1216,684))])
+def test_video_canvas_is_natively_exact_widescreen_with_encoder_safe_dimensions(tmp_path,width,dpi,expected):
+    from PIL import Image
+    theme=_theme()
+    assert hasattr(theme,'video_canvas_size'), 'Movie canvases need a shared native 16:9 sizing rule'
+    size=theme.video_canvas_size(width,dpi)
+    fig=plt.figure(figsize=size,dpi=dpi)
+    fig.text(.5,.5,'Native canvas',ha='center')
+    path=tmp_path/'frame.png';fig.savefig(path)
+    actual=Image.open(path).size
+    assert actual==expected==fig.canvas.get_width_height()
+    assert actual[0]*9==actual[1]*16
+    assert actual[0]%32==actual[1]%2==0
+    assert actual[0]>=width*dpi and actual[0]-width*dpi<32
+    plt.close(fig)
+
+
+@pytest.mark.parametrize('width,dpi', [(0,120),(12,0),(-1,100),(float('nan'),100),(12,float('inf'))])
+def test_video_canvas_rejects_nonpositive_or_nonfinite_dimensions(width,dpi):
+    theme=_theme()
+    assert hasattr(theme,'video_canvas_size')
+    with pytest.raises(ValueError,match='positive.*finite|finite.*positive'):
+        theme.video_canvas_size(width,dpi)
+
+
+@pytest.mark.parametrize('depth',[1,2])
+def test_geometry_audit_traverses_child_and_grandchild_axes_without_drawing(depth,monkeypatch):
+    theme=_theme();fig,ax=plt.subplots();ax.set(xlim=(0,1),ylim=(0,1))
+    child=ax
+    for _ in range(depth):
+        child=child.inset_axes([.1,.1,.7,.7]);child.set(xlim=(0,1),ylim=(0,1))
+    line,=child.plot([0.,1.],[0.,1.])
+    def no_draw(*args,**kwargs):
+        raise AssertionError('Coordinate audits must not force rendering')
+    monkeypatch.setattr(fig.canvas,'draw',no_draw)
+    before=theme.figure_geometry_digest(fig)
+    line.set_ydata([1.,0.])
+    after=theme.figure_geometry_digest(fig)
+    assert after!=before
+    ax.child_axes.append(child)
+    assert theme.figure_geometry_digest(fig)==after  # one identity, even through two paths
+    plt.close(fig)

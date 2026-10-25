@@ -98,12 +98,14 @@ def test_posters_keep_actual_sample_and_fallback_selection(example, tmp_path):
         record = story.render(target, example, movies=False, theme=theme)
         name = example['config']['generator']
         assert (target / f'generator-{name}-construction.png').is_file()
-        assert record['sample']['seed'] == 7
+        selected = story.select_construction_sample(example)
+        assert record['sample']['seed'] == (112 if name == 'bezier' else 7)
+        assert example['seed'] == 7
         assert record['fallback_example']['seed'] == (97 if name == 'bezier' else 23)
         assert record['fallback_example']['proper_crossings'] == 2
         assert record['fallback_example']['automatic_whole_loop']
         assert record['raw_count'] == len(example['raw'])
-        assert record['final_count'] == example['count']
+        assert record['final_count'] == selected['count']
         assert record['theme'] == theme
         assert record['geometry_interpolated'] is False
         assert record['elapsed_runtime'] is False
@@ -122,3 +124,56 @@ def test_explicit_generator_params_drive_grid_and_handles_instead_of_flat_defaul
                     + 3*u*u*(1-u)*p2 + u**3*p3)
         np.testing.assert_allclose(data['smooth_dense'][i*9:(i+1)*9], expected,
                                    atol=3e-7, rtol=0.)
+
+
+def test_calm_bezier_render_selection_is_actual_and_does_not_change_default_example():
+    story = _story()
+    default = guide.sample_batch('bezier', seeds=[7])[0]
+    before = default['raw'].tobytes(), default['center'].tobytes()
+    chosen = story.select_construction_sample(default)
+    assert chosen['seed'] == 112
+    assert chosen['config']['min_num_points'] == chosen['config']['max_num_points'] == 4
+    assert chosen['config']['min_point_distance'] == .25
+    actual = story.capture(chosen)
+    assert len(set(actual['grid_ids'])) == 4
+    assert ((actual['offset_vectors'] >= 0) & (actual['offset_vectors'] < actual['grid_pitch'])).all()
+    assert actual['final_valid'] and actual['smooth_crossings'] == 0
+    canonical = guide.sample_batch('bezier', seeds=[112], overrides={
+        'min_num_points': 4, 'max_num_points': 4, 'min_point_distance': .25})[0]
+    np.testing.assert_array_equal(chosen['raw'], canonical['raw'])
+    np.testing.assert_array_equal(chosen['center'], canonical['center'])
+    assert before == (default['raw'].tobytes(), default['center'].tobytes())
+    assert default['seed'] == 7 and default['config']['min_point_distance'] == .05
+    assert 'example_selection' not in default
+
+
+def test_calm_bezier_poster_records_selection_and_displays_actual_settings(tmp_path):
+    from PIL import Image
+    story = _story()
+    default = guide.sample_batch('bezier', seeds=[7])[0]
+    record = story.render(tmp_path, default, movies=False)
+    selection = record['example_selection']
+    assert selection['seed_search'] == {'start': 0, 'stop_exclusive': 2048, 'step': 1}
+    assert selection['selected_seed'] == 112
+    assert selection['first_matching_seed']
+    assert selection['four_distinct_cells'] and selection['sampled_inside_cells']
+    assert selection['settings'] == {'min_num_points': 4, 'max_num_points': 4,
+                                     'min_point_distance': .25}
+    chosen = story.select_construction_sample(default)
+    explanations = ' '.join(x['explanation'] for x in story.construction_stages(chosen))
+    assert '0.25' in explanations and '112' in explanations
+    assert 'inside' in explanations and 'selected' in explanations.lower()
+    with Image.open(tmp_path/'generator-bezier-construction.png') as image:
+        assert image.width * 9 == image.height * 16
+        assert record['frame_size'] == record['poster_frame_size'] == [image.width, image.height]
+        assert record['aspect_ratio'] == '16:9'
+
+
+def test_point_family_movie_and_poster_use_the_same_native_widescreen_canvas(example):
+    story = _story()
+    selected = story.select_construction_sample(example)
+    fig, *_ = story._frame(selected, 'light')
+    width, height = (np.rint(fig.get_size_inches() * 120)).astype(int)
+    assert width * 9 == height * 16
+    assert width % 32 == 0 and height % 2 == 0
+    plt.close(fig)

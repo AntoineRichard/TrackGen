@@ -158,6 +158,8 @@ html_extra_path = [
     "assets/racing/generator-hull-construction.mp4",
     "assets/racing/generator-polar-construction.mp4",
     "assets/racing/generator-polar-construction-poster.png",
+    "assets/racing/generator-voronoi-construction-poster.png",
+    "assets/racing/generator-checkpoint-construction-poster.png",
     "assets/racing/pipeline-sampling.mp4",
     "assets/racing/generator-voronoi-construction.mp4",
     "assets/racing/generator-checkpoint-construction.mp4",

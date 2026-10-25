@@ -26,7 +26,7 @@ import numpy as np
 import warp as wp
 from matplotlib.animation import FFMpegWriter
 
-from viz.racing_theme import get_palette, plotting_theme, save_figure, apply_plot_theme, geometry_digest, render_variants, rendered_geometry
+from viz.racing_theme import get_palette, plotting_theme, save_figure, apply_plot_theme, geometry_digest, render_variants, rendered_geometry, video_canvas_size
 
 from track_gen import TrackGenConfig, TrackGenerator
 from track_gen._version import __version__
@@ -235,8 +235,10 @@ def _style(ax, *, ticks=False):
     ax.set_facecolor(get_palette().background)
 
 
-def _save(fig, path):
-    save_figure(fig, path, theme=get_palette().name, dpi=150, bbox_inches="tight", pad_inches=.15)
+def _save(fig, path, *, video=False):
+    options = dict(dpi=120, bbox_inches=None, pad_inches=0) if video else dict(
+        dpi=150, bbox_inches="tight", pad_inches=.15)
+    save_figure(fig, path, theme=get_palette().name, **options)
     plt.close(fig)
 
 
@@ -590,35 +592,45 @@ def render_construction(out_dir, sample, *, movies=True, theme=None):
 
 
 def _render_simple_construction(out_dir, sample, *, movies=True):
-    """Family-specific progressive drawings and a still four-step storyboard."""
+    """Progressive movie, its actual final-frame poster, and a detailed still."""
     name = sample["config"]["generator"]
     if name == "repulsive":
         return
     stages = construction_stages(sample)
     footer = ("Illustrative drawing of recorded geometry: stage order is algorithm order, not elapsed runtime.\n"
               "Construction view uses pre-normalization coordinates; raw/final views at right use output coordinates.")
-    if movies:
-        fig = plt.figure(figsize=(12, 7.2))
-        grid = fig.add_gridspec(2, 3, width_ratios=(1, 1, 1), left=.025, right=.98,
-                               bottom=.13, top=.86, wspace=.14, hspace=.18)
-        ax = fig.add_subplot(grid[:, :2])
-        _construction_result_axes(fig.add_subplot(grid[0, 2]), fig.add_subplot(grid[1, 2]), sample)
-        heading = fig.text(.34, .95, "", ha="center", fontsize=17)
-        explanation = fig.text(.34, .9, "", ha="center", fontsize=10)
-        fig.text(.5, .035, footer, ha="center", fontsize=10)
-        writer = _writer()
-        with writer.saving(fig, str(out_dir / f"generator-{name}-construction.mp4"), dpi=120):
-            for i, stage in enumerate(stages):
-                heading.set_text(f"{name.capitalize()} · {i+1}/{len(stages)} · {stage['title']}")
-                explanation.set_text(textwrap.fill(stage["explanation"], width=93))
-                for progress in [*np.linspace(.02, 1, 18), *([1]*6)]:
-                    ax.clear()
-                    draw_construction_step(ax, sample, i, progress)
-                    if i == 3 and sample["construction"].get("crossings", 0):
-                        ax.text(.02, .02, f"Polygon fallback: {sample['construction']['crossings']} smooth crossings",
-                                transform=ax.transAxes, color=RED, fontsize=11)
-                    apply_plot_theme(fig, get_palette().name)
-                    writer.grab_frame(facecolor=get_palette().background)
+    fig = plt.figure(figsize=video_canvas_size(12, dpi=120))
+    grid = fig.add_gridspec(2, 3, width_ratios=(1, 1, 1), left=.025, right=.98,
+                           bottom=.13, top=.86, wspace=.14, hspace=.18)
+    ax = fig.add_subplot(grid[:, :2])
+    _construction_result_axes(fig.add_subplot(grid[0, 2]), fig.add_subplot(grid[1, 2]), sample)
+    heading = fig.text(.34, .95, "", ha="center", fontsize=17)
+    explanation = fig.text(.34, .9, "", ha="center", fontsize=10)
+    fig.text(.5, .035, footer, ha="center", fontsize=10)
+
+    def show(i, progress):
+        stage = stages[i]
+        heading.set_text(f"{name.capitalize()} · {i+1}/{len(stages)} · {stage['title']}")
+        explanation.set_text(textwrap.fill(stage["explanation"], width=93))
+        ax.clear()
+        draw_construction_step(ax, sample, i, progress)
+        if i == 3 and sample["construction"].get("crossings", 0):
+            ax.text(.02, .02, f"Polygon fallback: {sample['construction']['crossings']} smooth crossings",
+                    transform=ax.transAxes, color=RED, fontsize=11)
+        apply_plot_theme(fig, get_palette().name)
+
+    poster = f"generator-{name}-construction-poster.png"
+    try:
+        if movies:
+            writer = _writer()
+            with writer.saving(fig, str(out_dir / f"generator-{name}-construction.mp4"), dpi=120):
+                for i in range(len(stages)):
+                    for progress in [*np.linspace(.02, 1, 18), *([1]*6)]:
+                        show(i, progress)
+                        writer.grab_frame(facecolor=get_palette().background)
+        show(len(stages)-1, 1)
+        _save(fig, out_dir / poster, video=True)
+    finally:
         plt.close(fig)
     fig, axes = plt.subplots(2, 3, figsize=(12, 7.6))
     for i, stage in enumerate(stages):
@@ -629,12 +641,30 @@ def _render_simple_construction(out_dir, sample, *, movies=True):
     fig.suptitle(f"{name.capitalize()} construction · actual geometry, illustrative drawing", fontsize=16)
     fig.text(.5, .025, footer, ha="center", fontsize=10)
     fig.tight_layout(rect=(0, .08, 1, .93))
+    if name == "checkpoint":
+        # Detailed grid panels need room for both their outer stage title and the
+        # candidate labels. Keep these pixel-layout choices out of the movie view.
+        for parent in axes[1, :2]:
+            box = parent.get_position()
+            for i, child in enumerate(parent.child_axes):
+                column, row = i % 2, i // 2
+                child.set_axes_locator(None)
+                child.set_position([box.x0 + (.025 + .5*column)*box.width,
+                                    box.y0 + (.5 if row == 0 else .1)*box.height,
+                                    .45*box.width, .28*box.height])
+                child.title.set_fontsize(9)
+            for text in parent.texts:
+                if text.get_text().startswith("Enlarged closed-candidate views"):
+                    text.set_text("Closed candidates · shared fixed axes")
+                    text.set_fontsize(10)
     _save(fig, out_dir / f"generator-{name}-construction.png")
     return dict(kind="progressive construction drawing of recorded geometry", sample=_record(sample),
                 stage_titles=[s["title"] for s in stages], stages=len(stages),
                 frames=96 if movies else 0, duration_seconds=16 if movies else 0,
-                geometry_interpolated=False, elapsed_runtime=False,
-                output=f"generator-{name}-construction." + ("mp4" if movies else "png"))
+                geometry_interpolated=False, elapsed_runtime=False, aspect_ratio="16:9",
+                frame_size=[round(x*120) for x in video_canvas_size(12, dpi=120)],
+                poster_frame_size=[round(x*120) for x in video_canvas_size(12, dpi=120)],
+                poster=poster, output=f"generator-{name}-construction." + ("mp4" if movies else "png"))
 
 
 def _writer():
@@ -767,7 +797,7 @@ def capture_repulsive(sample):
 
 def render_growth(out_dir, sample, *, movies=True):
     frames, matches = capture_repulsive(sample)
-    fig, (ax, final_ax) = plt.subplots(1, 2, figsize=(12, 6.5), gridspec_kw={"width_ratios": (1.55, 1)})
+    fig, (ax, final_ax) = plt.subplots(1, 2, figsize=video_canvas_size(12, dpi=120), gridspec_kw={"width_ratios": (1.55, 1)})
     samples = sample["construction"]["force_samples"]
     draw_repulsive_forces(ax, samples)
     ax.legend(loc="upper left", fontsize=8, framealpha=.95)
@@ -807,11 +837,14 @@ def render_growth(out_dir, sample, *, movies=True):
                 writer.grab_frame(facecolor=get_palette().background)
     draw(frames[-1])
     view_bounds = dict(xlim=list(ax.get_xlim()), ylim=list(ax.get_ylim()))
-    _save(fig, out_dir / "generator-repulsive-growth.png")
+    _save(fig, out_dir / "generator-repulsive-growth.png", video=True)
     return dict(kind="captured solver states", iterations=sorted({f["iteration"] for f in frames}),
                 seed=sample["seed"], final_matches_generator=matches, geometry_interpolated=False,
                 frame_count=len(frames), encoded_frame_count=len(frames)+12 if movies else 0, fps=6,
-                view_bounds=view_bounds, output="generator-repulsive-growth." + ("mp4" if movies else "png"),
+                view_bounds=view_bounds, aspect_ratio="16:9",
+                frame_size=[round(x*120) for x in video_canvas_size(12, dpi=120)],
+                poster_frame_size=[round(x*120) for x in video_canvas_size(12, dpi=120)],
+                output="generator-repulsive-growth." + ("mp4" if movies else "png"),
                 sample=_record(sample), soft_shaping_forces=True, hard_collision_obstacles=True,
                 width_reservation=samples["half_width"], n_wall=samples["n_wall"], n_disc=samples["n_disc"],
                 force_states=[{k: f.get(k, False) for k in ("iteration", "n", "target", "target_final",
@@ -1082,10 +1115,7 @@ def render_construction_animations(out_dir: Path, source_manifest: Path):
     for name in FAMILIES[:-1]:
         old = manifest["animations"][name]["sample"]
         overrides = _current_overrides(old["config"])
-        pool = sample_batch(name, seeds=manifest["families"][name]["seed_pool"], overrides=overrides)
-        sample = pool[old["env"]]
-        if sample["seed"] != old["seed"]:
-            raise AssertionError("construction seed-pool selection changed")
+        sample = sample_batch(name, seeds=[old["seed"]], overrides=overrides)[0]
         record = render_construction(out_dir, sample)
         record["source"] = _family_source(source, name)
         record["command"] = ("python -m viz.render_generator_guide --construction-only "
@@ -1176,12 +1206,34 @@ def render_repulsive_assets(out_dir: Path, source_manifest: Path, *, movies=True
     return manifest
 
 
+
+def render_all_animations(out_dir: Path, source_manifest: Path):
+    """Refresh seven generator/sampling clips without regenerating setting galleries."""
+    render_construction_animations(out_dir, source_manifest)
+    current = out_dir / "generators-manifest.json"
+    manifest = render_repulsive_animation(out_dir, current)
+    from viz import storyboard_spacing
+    source = _family_source(_source_record(), "polar")
+    record = storyboard_spacing.render(out_dir, theme=get_palette().name, writer_factory=_writer)
+    command = ("python -m viz.render_generator_guide --animations-only --source-manifest MANIFEST"
+               " --out-dir DIR --theme " + get_palette().name)
+    record.update(source=source, command=command)
+    manifest["animations"]["sampling"] = record
+    manifest["animation_capture_source"] = _source_record()
+    _register_refreshed_assets(manifest, [out_dir / ("pipeline-sampling"+suffix)
+                                        for suffix in (".png", ".mp4")], source, command)
+    current.write_text(json.dumps(manifest, indent=2, sort_keys=True)+"\n")
+    return manifest
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir",type=Path,default=Path("docs/assets/racing"))
     parser.add_argument("--no-movies",action="store_true",help="render posters only (no ffmpeg needed)")
     parser.add_argument("--theme", choices=("light", "dark", "both"), default="light")
     selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--animations-only", action="store_true",
+                           help="refresh all seven generator/sampling clips and posters")
     selection.add_argument("--construction-only", action="store_true",
                         help="refresh the five construction movies/posters using recorded manifest selections")
     selection.add_argument("--repulsive-only", action="store_true",
@@ -1195,7 +1247,11 @@ def main():
     if dirty:
         parser.error("commit runtime and visual sources before a final media capture; use drawing APIs for previews")
     def render_selected(out_dir):
-        if args.repulsive_assets_only:
+        if args.animations_only:
+            if args.no_movies:
+                parser.error("--animations-only includes movies; omit --no-movies")
+            return render_all_animations(out_dir, args.source_manifest)
+        elif args.repulsive_assets_only:
             return render_repulsive_assets(out_dir, args.source_manifest, movies=not args.no_movies)
         elif args.repulsive_only:
             if args.no_movies:

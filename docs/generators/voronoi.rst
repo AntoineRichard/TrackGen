@@ -131,7 +131,7 @@ road pipeline complete the course.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-voronoi-construction.png" aria-label="Progressive drawing of sampled sites, selected anchor order, Chaikin corner cuts and curve sampling, from actual voronoi geometry.">
+   <video controls preload="none" style="width:100%;max-width:100%" poster="../generator-voronoi-construction-poster.png" aria-label="Progressive drawing of sampled sites, selected anchor order, Chaikin corner cuts and curve sampling, from actual voronoi geometry.">
      <source src="../generator-voronoi-construction.mp4" type="video/mp4">
      Progressive drawing of sampled sites, selected anchor order, Chaikin corner cuts and curve sampling, from actual voronoi geometry.
    </video>

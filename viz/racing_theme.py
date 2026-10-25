@@ -11,6 +11,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import matplotlib as mpl
@@ -54,6 +55,19 @@ _PALETTES = {
 }
 _ACTIVE = ContextVar('trackgen_plot_theme', default='light')
 _RENDERED = ContextVar('trackgen_rendered_geometry', default=None)
+
+
+def video_canvas_size(width_inches, dpi=120):
+    """Native 16:9 figure size, with encoder-safe even pixels and no raster padding.
+
+    Round the requested pixel width upward to a multiple of 32. Its 9/16 height
+    is then an even integer, suitable for H.264 yuv420p without cropping.
+    """
+    width_inches, dpi = float(width_inches), float(dpi)
+    if not all(math.isfinite(value) and value > 0 for value in (width_inches, dpi)):
+        raise ValueError("video width and dpi must be positive and finite")
+    width = 32 * math.ceil(width_inches * dpi / 32)
+    return width / dpi, (width * 9 // 16) / dpi
 
 
 def get_palette(theme=None) -> Palette:
@@ -224,8 +238,17 @@ def geometry_digest(value) -> str:
 
 def figure_geometry_digest(fig) -> str:
     """Hash the plotted data before styling, excluding colors and pixel layout."""
-    axes = []
+    axes, ordered, seen = [], [], set()
+    def collect(ax):
+        if id(ax) in seen:
+            return
+        seen.add(id(ax))
+        ordered.append(ax)
+        for child in ax.child_axes:
+            collect(child)
     for ax in fig.axes:
+        collect(ax)
+    for ax in ordered:
         row = dict(limits=[ax.get_xlim(), ax.get_ylim()], lines=[], collections=[],
                    patches=[], images=[])
         if hasattr(ax, 'get_zlim'):

@@ -87,3 +87,44 @@ Relative to the GPU runtime-test tree `23fea40`, the only library file changed i
 `track_gen/_version.py`. Subsequent implementation changes are maintenance renderers,
 reader documentation and their tests. Final Linux platform CI and exact-candidate
 spark-home validation remain release gates; no final release approval is implied.
+
+## Calmer sample and common movie aspect
+
+The user requested a calmer Bezier construction example and the same height/width
+ratio for every video. Bezier now uses real seed112 with four corners and
+min_point_distance=.25. It is the first valid, four-distinct-cell example with all
+sampled points inside their displayed cells in the declared0..2047 pool. The
+sampler/distribution and default galleries are unchanged. Settings are visible;
+the default97 fallback remains a separately labelled real example.
+
+All nine movies and their video posters use native16:9 canvases. The common helper
+rounds pixel width to a multiple of32 and derives an even9/16 height before placing
+artists, with no raster cropping/padding. Previews encoded/decoded successfully at
+1696x954 (Bezier/Hull),1440x810 (other generator/shared clips) and1216x684 (XPBD).
+Generic Voronoi/Checkpoint players gain actual-frame posters; their detailed static
+diagrams stay separate. Checkpoint inset titles/captions were adjusted for clarity.
+The resulting reader inventory has82 original media files plus82 dark counterparts.
+
+A final audit mutation exposed missing child-axis coordinates. Geometry hashing
+now walks child/grandchild axes in stable order with identity deduplication and no
+forced draw. Both mutations failed first, then passed. Animation refresh also
+replays its own explicit seed/config rather than borrowing the gallery pool;
+the seed112-vs-gallery regression failed before the fix. Per-file provenance
+allows honest selective capture sources while requiring identical runtime hashes.
+The integrated media/source checks passed101 tests in57.03s. Final clean-source
+captures, registry hashes, browser checks and combined release gates follow.
+
+## Portable finished-band regression
+
+The full spark-home run at23fea40 passed4517 tests and exposed two host-sensitive
+seeded preconditions (four optional UI skips). On Mac, seed7/growth3..3.5 reaches
+its raw target then the tail meets a disc. On Linux ARM its raw length6.2434 misses
+target8.27986; finalfail257 correctly includes generator and disc rejection.
+Independent double-precision geometry confirms both outcomes are correctly rejected.
+
+Commit6413222 replaces optimizer branch assumptions with captured raw input/discs
+and target, then calls the real raw certificate and unchanged shared tail. It
+independently proves raw target/width clearance, final disc penetration, exact
+fail256 and keep/poison behavior. Disabling final barrier validation makes both
+cases fail, and independent review found no issues. All70 related CPU/CUDA tests
+passed on spark-home without skips. Numerical runtime and golden values are unchanged.

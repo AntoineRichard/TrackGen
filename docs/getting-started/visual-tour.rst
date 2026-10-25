@@ -87,7 +87,7 @@ growth clip records actual solver iterations. A gallery sample is not a yield es
 
       .. raw:: html
 
-         <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-voronoi-construction.png" aria-label="Select sites, order the cycle and round its corners.">
+         <video controls preload="none" style="width:100%;max-width:100%" poster="../generator-voronoi-construction-poster.png" aria-label="Select sites, order the cycle and round its corners.">
            <source src="../generator-voronoi-construction.mp4" type="video/mp4">
            Select sites, order the cycle and round its corners.
          </video>
@@ -98,7 +98,7 @@ growth clip records actual solver iterations. A gallery sample is not a yield es
 
       .. raw:: html
 
-         <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-checkpoint-construction.png" aria-label="Steer a bounded-turn path and select a closed candidate.">
+         <video controls preload="none" style="width:100%;max-width:100%" poster="../generator-checkpoint-construction-poster.png" aria-label="Steer a bounded-turn path and select a closed candidate.">
            <source src="../generator-checkpoint-construction.mp4" type="video/mp4">
            Steer a bounded-turn path and select a closed candidate.
          </video>
@@ -125,7 +125,7 @@ same-count redistribution explain why final chord lengths need not equal it.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:5/3;object-fit:contain" poster="../_images/pipeline-sampling.png" aria-label="Raw fixed-count samples become target-spaced beads, move in XPBD and are redistributed uniformly.">
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:contain" poster="../_images/pipeline-sampling.png" aria-label="Raw fixed-count samples become target-spaced beads, move in XPBD and are redistributed uniformly.">
      <source src="../pipeline-sampling.mp4" type="video/mp4">
      Raw fixed-count samples become target-spaced beads, move in XPBD and are redistributed uniformly.
    </video>

@@ -47,6 +47,9 @@ def test_selective_refresh_updates_current_sources_hashes_and_extra_posters(monk
         manifest['asset_provenance'][name]=stale
         if name.endswith('.png'):
             manifest['plotted_geometry_sha256'][name]='old-plotted-hash'
+    if mode == 'construction':
+        # Animation selection may differ from the family's default gallery pool.
+        manifest['animations']['polar']['sample']['seed'] = 112
     source_manifest=tmp_path/'previous.json';source_manifest.write_text(json.dumps(manifest))
     out=tmp_path/'new';out.mkdir()
     retired='generator-repulsive-retired.png'
@@ -62,6 +65,7 @@ def test_selective_refresh_updates_current_sources_hashes_and_extra_posters(monk
     def movie(name):
         (out/name).write_bytes(b'new encoded video')
     def construction(target,sample):
+        assert sample['seed'] == 112
         png('generator-polar-construction.png');movie('generator-polar-construction.mp4')
         png('generator-polar-construction-poster.png')
         return dict(poster='generator-polar-construction-poster.png')

@@ -138,7 +138,7 @@ closure is a construction step; it is not an exact simplicity guarantee.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-checkpoint-construction.png" aria-label="Progressive drawing of radial targets, the actual open walk, closed candidates and crossing-score selection, from actual checkpoint geometry.">
+   <video controls preload="none" style="width:100%;max-width:100%" poster="../generator-checkpoint-construction-poster.png" aria-label="Progressive drawing of radial targets, the actual open walk, closed candidates and crossing-score selection, from actual checkpoint geometry.">
      <source src="../generator-checkpoint-construction.mp4" type="video/mp4">
      Progressive drawing of radial targets, the actual open walk, closed candidates and crossing-score selection, from actual checkpoint geometry.
    </video>

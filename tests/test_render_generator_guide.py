@@ -134,7 +134,13 @@ def test_committed_manifest_has_nonvacuous_comparisons_and_provenance():
     assert all(state["inner_forces_active"] and state["wall_forces_active"]
                and state["hard_barriers_active"] for state in growth["force_states"])
     repulsive = manifest["families"]["repulsive"]
-    assert repulsive["source"]["git_commit"] == growth["source"]["git_commit"]
+    # A selective movie capture must retain the older gallery's true provenance.
+    assert repulsive["source"]["generator_source_sha256"] == growth["source"]["generator_source_sha256"]
+    assert repulsive["source"]["repulsive_dependency_sha256"] == growth["source"]["repulsive_dependency_sha256"]
+    assert growth["source"]["source_tree_dirty"] is False
+    for suffix in (".png", ".mp4"):
+        asset_source = manifest["asset_provenance"]["generator-repulsive-growth"+suffix]["source"]
+        assert asset_source == growth["source"]
     assert repulsive["source"]["source_tree_dirty"] is False
     assert {"repulsive_clearance.py", "repulsive_barrier_energy.py", "repulsive_tangent_energy.py",
             "repulsive_parallel_energy.py", "repulsive_parallel_proposals.py"} <= set(

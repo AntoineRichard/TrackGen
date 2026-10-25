@@ -382,7 +382,7 @@ def render(out_dir, sample, movies=True, theme="light", writer_factory=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from viz.racing_theme import apply_plot_theme, plotting_theme, save_figure
+    from viz.racing_theme import apply_plot_theme, plotting_theme, save_figure, video_canvas_size
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -391,7 +391,7 @@ def render(out_dir, sample, movies=True, theme="light", writer_factory=None):
     footer = ("Construction explanation, not execution timing. Radius/angle reference views use the same seeded draws.\n"
               "No point morph is implied; the shared spacing/relaxation guide explains the finished road.")
     with plotting_theme(theme) as palette:
-        fig = plt.figure(figsize=(12, 7.6))
+        fig = plt.figure(figsize=video_canvas_size(12, dpi=120))
         grid = fig.add_gridspec(2, 3, width_ratios=(1, 1, 1), left=.045, right=.98,
                                bottom=.15, top=.79, wspace=.20, hspace=.25)
         ax = fig.add_subplot(grid[:, :2])
@@ -444,7 +444,9 @@ def render(out_dir, sample, movies=True, theme="light", writer_factory=None):
                 frames=144 if movies else 0, duration_seconds=24 if movies else 0,
                 geometry_interpolated=False, elapsed_runtime=False, theme=theme,
                 output="generator-polar-construction."+("mp4" if movies else "png"),
-                poster="generator-polar-construction-poster.png", frame_size=[1440, 912],
+                poster="generator-polar-construction-poster.png", aspect_ratio="16:9",
+                frame_size=[round(x*120) for x in video_canvas_size(12, dpi=120)],
+                poster_frame_size=[round(x*120) for x in video_canvas_size(12, dpi=120)],
                 raw_count=len(data["raw"]), final_count=data["final_count"],
                 references_are_counterfactual=True, controls_replay_equal=data["controls_replay_equal"],
                 raw_replay_equal=data["raw_replay_equal"], geometry_digest=data["signature"])

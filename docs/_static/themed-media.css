@@ -6,3 +6,5 @@ video.themed-media-video { max-width: 100%; height: auto; }
   picture.themed-media-picture,
   video.themed-media-video { break-inside: avoid; }
 }
+
+video.themed-media-video { aspect-ratio: 16 / 9; object-fit: contain; }

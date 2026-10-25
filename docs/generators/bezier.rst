@@ -144,21 +144,26 @@ How it is constructed
    :align: center
 
    Grey squares are selected grid addresses; orange arrows end at the actual sampled
-   corners. Primary seed 7 uses a smooth curve. The movie separately shows the
-   crossing/fallback case and preserves the source geometry at every step.
+   corners. For a calm introduction, primary seed 112 uses four corners and
+   ``min_point_distance=.25``: a 2 × 2 grid with pitch ``.50``. Its actual sampled
+   points stay inside their selected cells. It is the first valid example with four
+   distinct cells and within-cell points among seeds 0–2047, selected for clarity;
+   the generator's offset distribution is unchanged. The movie separately shows
+   default seed 97's crossing/fallback case and preserves the source geometry.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:7/4;object-fit:contain" poster="../_images/generator-bezier-construction.png" aria-label="Grid addresses, random offsets, angle ordering, cubic handles, whole-loop fallback and raw resampling.">
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:contain" poster="../_images/generator-bezier-construction.png" aria-label="Grid addresses, random offsets, angle ordering, cubic handles, whole-loop fallback and raw resampling.">
      <source src="../generator-bezier-construction.mp4" type="video/mp4">
      Grid addresses, random offsets, angle ordering, cubic handles, whole-loop fallback and raw resampling.
    </video>
 
 :download:`Download the animation <../assets/racing/generator-bezier-construction.mp4>`.
 
-**Text alternative:** Start with the selected grid addresses, then follow each
-orange offset vector to its sampled corner. Connect the angle-sorted corners,
-inspect both handles, and draw the actual dense cubic. A labelled seed-97 inset
+**Text alternative:** With ``min_num_points=max_num_points=4``,
+``min_point_distance=.25`` and selected seed 112, start with the four grid
+addresses, then follow each actual orange offset vector to its sampled corner.
+Connect the angle-sorted corners, inspect both handles, and draw the actual dense cubic. A labelled seed-97 inset
 marks the rejected smooth crossings and the selected entire polygon. Finish with
 256 raw samples and the separate finished-road count.
 

@@ -16,7 +16,7 @@ import warp as wp
 from track_gen import ops
 from track_gen.exec import LaunchContext
 from track_gen.testing.capture import result_arrays
-from viz.racing_theme import get_palette, plotting_theme, save_figure, apply_plot_theme, geometry_digest
+from viz.racing_theme import get_palette, plotting_theme, save_figure, apply_plot_theme, geometry_digest, video_canvas_size
 
 STAGES = (
     ("Raw curve: a fixed number of samples", "The generator returns 256 raw samples. This is a point-count choice."),
@@ -146,7 +146,7 @@ def render(out_dir, *, movies=True, theme="light", writer_factory=None):
     footer = ("Actual Polar seed 7 pipeline taps · explanation stages, not elapsed solve time.\n"
               "Equal arc positions on a source curve do not imply equal straight-line chords across bends.")
     with plotting_theme(theme):
-        fig = plt.figure(figsize=(12, 7.2))
+        fig = plt.figure(figsize=video_canvas_size(12, dpi=120))
         grid = fig.add_gridspec(2, 2, width_ratios=(1.6, 1), height_ratios=(1, 1),
                                left=.06, right=.96, top=.83, bottom=.15, wspace=.22, hspace=.35)
         ax = fig.add_subplot(grid[:, 0]); ruler = fig.add_subplot(grid[0, 1])
@@ -174,12 +174,14 @@ def render(out_dir, *, movies=True, theme="light", writer_factory=None):
                     for progress in [*np.linspace(.03, 1., 24), *([1.]*12)]:
                         frame(stage, progress); writer.grab_frame()
         frame(3, 1.)
-        save_figure(fig, out_dir/"pipeline-sampling.png", theme=theme, dpi=150)
+        save_figure(fig, out_dir/"pipeline-sampling.png", theme=theme, dpi=120, bbox_inches=None)
         plt.close(fig)
     return dict(kind="shared sampling-tail explanation", theme=theme, geometry_sha256=data["geometry_sha256"],
                 stage_titles=[title for title, _ in STAGES], frames=144 if movies else 0,
                 duration_seconds=24 if movies else 0, raw_count=data["raw_count"], final_count=data["count"],
                 spacing=data["spacing"], nominal_uniform_step=data["nominal_uniform_step"],
                 constant_spacing_replay_equal=True, uniform_replay_equal=True,
-                geometry_interpolated=False, elapsed_runtime=False,
+                geometry_interpolated=False, elapsed_runtime=False, aspect_ratio="16:9",
+                frame_size=[round(x*120) for x in video_canvas_size(12, dpi=120)],
+                poster_frame_size=[round(x*120) for x in video_canvas_size(12, dpi=120)],
                 output="pipeline-sampling.mp4" if movies else "pipeline-sampling.png")
