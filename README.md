@@ -10,10 +10,10 @@ native.**
 ![Warp](https://img.shields.io/badge/warp--lang-%E2%89%A5%201.18-76b900)
 
 > [!NOTE]
-> **The `v3` branch develops 0.3.** Read [Upgrading from 0.2](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc1/docs/upgrading/from-0.2.rst)
+> **These examples target the `v0.3.0rc1` release candidate.** Read [Upgrading from 0.2](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc1/docs/upgrading/from-0.2.rst)
 > before updating: legacy APIs are removed, built-in seeds produce new geometry,
 > invalid results default to poison, configs are frozen, and Track/GateSequence storage
-> must be complete. The rc and downstream validation are still pending.
+> must be complete. The candidate is ready for downstream racing-repository validation.
 
 Given a batch of per-environment seeds, TrackGen generates `E` closed-loop
 tracks (or gate sequences) in parallel — and then keeps working at sim
@@ -52,12 +52,12 @@ Python ≥ 3.10; `numpy` and `warp-lang` ≥ 1.18 are the only runtime deps. The
 wheels); the `cpu` device runs anywhere.
 
 ```bash
-uv add "git+https://github.com/AntoineRichard/TrackGen.git@v0.2.0"                    # a release (recommended)
-pip install "track_gen @ git+https://github.com/AntoineRichard/TrackGen.git@v0.2.0"   # or with pip
-uv add "git+https://github.com/AntoineRichard/TrackGen.git@main"                      # or the latest main
+uv add "git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc1"                     # the release candidate
+pip install "track_gen @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc1"    # or with pip
+uv add "track_gen[ui] @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc1"      # with the UI extra
 ```
 
-From a checkout: `uv venv --python 3.12 && uv pip install -e ".[dev]"`.
+From a checkout of `v0.3.0rc1`: `uv venv --python 3.12 && uv pip install -e ".[dev]"`.
 Extras: `dev` (tests, torch, matplotlib) · `ui` (Gradio parameter explorer)
 · `docs` (Sphinx). Details:
 [installation](https://antoinerichard.github.io/TrackGen/getting-started/installation.html).
