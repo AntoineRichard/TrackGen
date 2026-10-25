@@ -280,7 +280,26 @@ def test_repulsive_default_yield_and_shape_cuda():
     valid = to_t(track.valid).bool()
     yield_frac = float(valid.float().mean())
     assert yield_frac > 0.5, f"post-tail yield {yield_frac:.3f} <= 0.5 (design contract)"
-    assert int(valid.sum()) >= 58, f"yield {int(valid.sum())}/64 below the default-yield regression gate"
+    # The former 58/64 gate counted roads that crossed the sampled discs:
+    # an independent rc2 reference found only 1 of 64 actually clear. For the
+    # permanent full-road contract, require at least 75% on this fixed batch
+    # (measured 53/64) AND independently verify every reported-valid road.
+    assert int(valid.sum()) >= 48, f"yield {int(valid.sum())}/64 below the 75% regression gate"
+    from tests._repulsive_geometry_reference import minimum_band_gaps
+    sc = {key.rsplit("/", 1)[-1]: value for key, value in gen._scratch.gen.scratch.items()}
+    centers = sc["disc_centers"].numpy().reshape(E, -1, 2)
+    radii = sc["disc_radii"].numpy().reshape(E, -1)
+    radius = float(np.float32(rep._RepulsiveScalars(cfg).r_dom))
+    outer = track.outer.numpy().reshape(E, cfg.N_max, 3)[..., :2]
+    inner = track.inner.numpy().reshape(E, cfg.N_max, 3)[..., :2]
+    counts = track.count.numpy()
+    for e in np.flatnonzero(valid.cpu().numpy()):
+        n = int(counts[e])
+        assert 3 <= n <= cfg.N_max
+        disc_gap, wall_gap = minimum_band_gaps(outer[e, :n], inner[e, :n],
+                                               centers[e], radii[e], radius)
+        assert disc_gap > 1e-5, f"reported-valid env {e} overlaps a disc: gap {disc_gap}"
+        assert wall_gap > 1e-5 * max(1., radius), f"reported-valid env {e} escapes the wall"
 
     N = int(cfg.num_points)
     gen_center = to_t(gen._scratch.gen_centerline).cpu().numpy().reshape(E, N, 2)

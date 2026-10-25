@@ -1081,6 +1081,7 @@ _CONSTRUCTION_ONLY = {
         '_check_param_writers',
         '_check_provided',
         '_check_renormalized_size',
+        '_check_repulsive_clearance',  # planner port/ordering checks, before hot calls
         '_check_result_out',
         '_check_seeds',
         '_check_size_truncation',

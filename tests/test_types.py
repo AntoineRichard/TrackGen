@@ -56,10 +56,10 @@ def test_config_overrides_round_trip():
 
 
 def test_repulsive_config_defaults():
-    # Defaults construct clean (the spike's tuned config).
+    # Supported defaults reserve room for the complete road band.
     cfg = TrackGenConfig()
-    assert cfg.repulsive_grow_mult_min == 4.5
-    assert cfg.repulsive_grow_mult_max == 5.5
+    assert cfg.repulsive_grow_mult_min == 2.0
+    assert cfg.repulsive_grow_mult_max == 3.0
     assert cfg.repulsive_domain_frac == 0.35
     assert cfg.repulsive_domain_init_ratio == 4.0
     assert cfg.repulsive_obstacle_count_min == 8
