@@ -629,7 +629,7 @@ class StageParams(_MappingABC):
     (:attr:`drawn`) is a single array OWNED by its randomizer and written by it every
     generation: ``self[field]`` returns it (observable), :meth:`set` raises (set the
     randomizer's ``lo`` / ``hi`` instead), and a direct write is overwritten by the next
-    draw. A stage may also draw its own fields, reported under the stage's own id.
+    draw.
 
     Curriculum bookkeeping: :meth:`in_effect` returns the ``[E]`` values
     the stage READ for the current rows of each env (the latched working copy, or the
@@ -658,7 +658,7 @@ class StageParams(_MappingABC):
         self._E = int(num_envs)
         self._device = device
         self._default_stream = default_stream
-        self._drawn = dict(drawn or {})   # field -> the drawing stage's id (maybe its own)
+        self._drawn = dict(drawn or {})   # field -> the randomizer stage's id
         # field -> (lo, hi, reason): bounds narrower than the field's own (a randomizer's
         # lo / hi take the declared range of the field it draws; roadmap PR13d: bezier /
         # hull's min_num_points is at most max_num_points), checked by set() on a scalar.
@@ -680,11 +680,11 @@ class StageParams(_MappingABC):
 
     @property
     def drawn(self) -> Mapping[str, str]:
-        """``field -> id of the stage that draws it`` every generation: a
-        ``randomize.*`` stage targeting this stage, or :attr:`stage_id` itself for a
-        field the stage draws itself. Every value
-        is a key of ``gen.params``; empty when nothing draws this
-        stage's fields."""
+        """``field -> id of the randomize.* stage that draws it`` every generation.
+
+        Every value is a key of ``gen.params``; empty when no randomizer targets
+        this stage's fields.
+        """
         return MappingProxyType(dict(self._drawn))
 
     @property
@@ -701,13 +701,8 @@ class StageParams(_MappingABC):
         return self._params
 
     def _drawn_text(self, field: str) -> str:
-        """Who draws ``field``, for ``repr``: the randomizer's id (``'randomize.x'``) or,
-        for a field the stage draws itself, the sampling rule and range field."""
-        writer = self._drawn[field]
-        own = _self_draw(self._params, field) if writer == self._stage_id else None
-        if own is not None:
-            return f"the generator's {own[0]} ({own[1]})"
-        return repr(writer)
+        """The randomizer's id for ``repr``."""
+        return repr(self._drawn[field])
 
     def __repr__(self) -> str:
         if self._drawn:
@@ -739,8 +734,7 @@ class StageParams(_MappingABC):
         latched field the stage's working copy (the latch writes it
         at the start of every generation, for every env or only the masked ones, so an
         env left out of a masked regeneration keeps the value its rows were built with);
-        for a drawn field (a ``randomize.*`` target, or a knob bezier's
-        draws) the drawn array itself. Same dtype as ``self[field]``.
+        for a drawn field (a ``randomize.*`` target) the drawn array itself. Same dtype as ``self[field]``.
 
         Values read, not values used: an array written out of range is returned as
         written; a built-in stage clamps it to :meth:`bounds` where it reads it, so the
@@ -748,7 +742,7 @@ class StageParams(_MappingABC):
         ``in_effect`` for every in-range write, scalar :meth:`set` and randomizer
         draw). Exceptions: ``width.from_channel`` reads its ``scale`` / ``lo`` / ``hi``
         as written (it clamps its output), a randomizer its ``lo`` / ``hi`` (it clamps
-        its draw), a stage's own draws are not bounded, and ``Course``
+        its draw), and ``Course``
         gates mode's floor ``gate_frames.gate_width > 0`` is checked by :meth:`set` on
         a scalar only (an array value is clamped to the declared ``0``).
 
@@ -851,8 +845,7 @@ class StageParams(_MappingABC):
                 (compared in float32 for a float32 field; for a randomizer's ``lo`` /
                 ``hi``: outside the declared range of the field it draws; for bezier /
                 hull's ``min_num_points``: above ``max_num_points``; see
-                :meth:`bounds`); a field drawn every generation (by a randomizer, or by
-                the stage itself).
+                :meth:`bounds`); a field drawn every generation by a randomizer.
 
         An array is not range-checked: a built-in stage clamps each value to the
         field's declared bounds where it reads it.
@@ -860,12 +853,6 @@ class StageParams(_MappingABC):
         arr = self[field]
         writer = self._drawn.get(field)
         if writer is not None:
-            own = _self_draw(self._params, field) if writer == self._stage_id else None
-            if own is not None:              # drawn by the stage itself
-                how, rng = own
-                raise ValueError(f"{self._stage_id}.{field} is drawn every generation by "
-                                 f"the generator's {how} ({rng}); set {rng}=None to set "
-                                 f"it")
             raise ValueError(f"{self._stage_id}.{field} is drawn every generation by stage "
                              f"{writer!r}; set its bounds: params[{writer!r}].set('lo' | "
                              f"'hi', ...)")
@@ -940,21 +927,6 @@ class ParamTable(_MappingABC):
     def set(self, stage_id: str, field: str, value, *, stream=None) -> None:
         """``self[stage_id].set(field, value, stream=stream)``."""
         self[stage_id].set(field, value, stream=stream)
-
-
-def _self_drawn(params) -> "dict[str, str]":
-    """``field -> range field`` of the dynamic fields a stage draws itself every
-    generation (the private Params hook ``_self_drawn()``); empty without one."""
-    fn = getattr(params, "_self_drawn", None)
-    return dict(fn()) if params is not None and callable(fn) else {}
-
-
-def _self_draw(params, field: str) -> "tuple[str, str] | None":
-    """``(switch, range field)`` when the stage draws ``field`` itself, else ``None``."""
-    rng = _self_drawn(params).get(field)
-    if rng is None:
-        return None
-    return (str(getattr(type(params), "_self_draw_switch", "sampling")), str(rng))
 
 
 def _instance_bounds(params) -> "dict[str, tuple]":

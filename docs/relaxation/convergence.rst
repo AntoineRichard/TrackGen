@@ -5,6 +5,26 @@ Use a fixed set of seeds, inspect failure bits, and change one setting at a time
 A solver budget is a fixed amount of work; it is not a promise that every course
 converges or remains valid after smoothing and resampling.
 
+.. _relax-iteration-comparison:
+
+.. figure:: ../assets/racing/relaxation-iterations.png
+   :alt: Seed 14 at zero, ten and fifty XPBD sweeps. The raw and ten-sweep roads
+         fail sampled thickness; the fifty-sweep road passes the configured checks.
+
+   Only ``relax_iters`` changes. Both tail budgets are zero to isolate main-solve
+   work, with half-width ``0.5``, scale ``10``, spacing ``0.30`` and capacity ``384``.
+   The counts and axes stay fixed; the ten-sweep road has visibly moved but
+   still fails sampled thickness. Fifty sweeps accept this selected result, without
+   proving a general iteration budget or clearance guarantee.
+
+Use :ref:`the margin comparison <relax-margin-comparison>` to distinguish requesting
+more separation from running more sweeps, and
+:ref:`the smoothing comparison <relax-smoothing-comparison>` to inspect the tail
+separately. Reproduce these stills with
+``python -m viz.render_relaxation_guide --out-dir DIR``; their
+:download:`manifest <../assets/racing/relaxation-manifest.json>` records the explicit
+``keep`` policy, seeds, settings, source and measured diagnostics.
+
 .. raw:: html
 
    <video controls loop muted playsinline width="100%" poster="../_static/relaxation-iterations-poster.png" aria-label="Track relaxation through raw, solve, Taubin and spacing-polish phases">

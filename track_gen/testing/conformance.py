@@ -780,7 +780,6 @@ class _DeviceRun:
         self.results: list = []
         self.snap_b: "_Snapshot | None" = None
         self.capturable = bool(info.capturable)
-        self.accepts_ctx = bool(info.accepts_ctx)
         # The unit's bounded loops with active= (seen during its first generation).
         self.loops: list = []
         self.gen_spec = None            # the bound generator spec (seeded=, ...)
@@ -895,10 +894,7 @@ class _DeviceRun:
         self.gen_spec = gen.program._binding.spec
         # The Program decides: a pipeline with a HOST stage is not caller-capturable.
         self.capturable = bool(gen.program.capturable)
-        if self.stage is not None:
-            self.accepts_ctx = True
-        self.add("construct", True, details={"capturable": self.capturable,
-                                             "accepts_ctx": self.accepts_ctx})
+        self.add("construct", True, details={"capturable": self.capturable})
         out_names = [n for n in names if n.startswith("output.") and n != "output.view"]
         self.guarded(out_names, lambda: self.output_checks(snap, gen))
         self.guarded(["output.view"], lambda: [self.output_view(gen)])

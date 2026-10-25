@@ -69,9 +69,9 @@ def test_builtin_grid_streams_match_hashed_ops(name, salts):
     ctx = LaunchContext.for_call("cpu")
     cells, cell_size = ops.grid_cells(cfg.min_point_distance)
     ops.sample_counts(ctx, seed, salts[0], 0, cfg.min_num_points, cfg.max_num_points,
-                      count, keying="hashed")
+                      count)
     ops.sample_grid_points(ctx, seed, salts[1], 0, cfg.max_num_points, cells, cell_size,
-                           cfg.scale, used, points, keying="hashed")
+                           cfg.scale, used, points)
     assert gen.program.tap("anchors.count").numpy().tobytes() == count.numpy().tobytes()
     assert gen.program.tap("anchors.xy").numpy().tobytes() == points.numpy().tobytes()
 

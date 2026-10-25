@@ -287,19 +287,10 @@ def _run_pipeline(
 ) -> "Track":
     """Execute the owned pure-Warp pipeline into pre-allocated buffers. Zero alloc.
 
-    Composes: generate_centerline_warp -> resample_constant_spacing -> band/L0 ->
-    xpbd_solve_inplace -> _inflate_warp. All buffers are pre-allocated in scratch/out.
-    Safe to call inside a wp.ScopedCapture region (no host syncs, no allocations).
-
-    PR9 composition, kept as the byte-identity reference (``tests/test_pipeline_parity``)
-    and for out-of-tree callers: ``TrackGenerator`` runs a :class:`track_gen.pipeline.
-    Program` of the same stages instead. Removed once the parity tests carry a frozen
-    copy (roadmap 1.0).
-
-    Every stage runs on ``ctx``'s stream. A generator whose spec sets ``accepts_ctx``
-    gets ``ctx=ctx``; a legacy generator runs inside ``ctx.scope()`` so the
-    ``warp_pipeline`` helpers it calls inherit the stream (its own direct
-    ``wp.launch`` calls still use Warp's current stream).
+    Frozen PR9 composition: generate the centerline, resample, relax, and inflate
+    into preallocated buffers. Every generator receives ``ctx=ctx`` and every stage
+    runs on that context's stream. The live facades run a pipeline ``Program``;
+    this test utility retains the independent composition as its byte reference.
 
     Args:
         config:       TrackGenConfig.

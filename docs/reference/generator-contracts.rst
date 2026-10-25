@@ -306,7 +306,7 @@ Five rules hold for the ``enqueue`` of every Stage whose capture class is not ``
    with the Warp RNG from the env's effective seed. A Stage takes its salts from
    ``b.salt`` (:ref:`stage-salts`); a ``GeneratorSpec`` chooses constants of its own.
    Mix each salt through ``ops.rng.init`` or ``init_at``. For the public ops samplers,
-   request ``keying="hashed"`` and give each independent stream its own salt/index
+   give each independent stream its own uint32 salt and int32 index
    (:ref:`ops-rng-keying`). Existing plugin streams can retain their own formulas.
    CPU and CUDA results may differ, as elsewhere in TrackGen.
 
@@ -414,16 +414,17 @@ an unsigned 32-bit integer computed from the stage id and the stream name only (
 id is ``"generator"`` for every generator). The formula is frozen for plugin API version
 1, so a plugin's outputs stay reproducible across TrackGen releases. Key each env's
 stream on the effective seed and the salt with :func:`track_gen.ops.rng.init`.
-It is equivalent to the quick start's explicit hash:
+Use the same shared initializer as the quick start:
 
 .. snippet: skip=fragment
 
 .. code-block:: python
 
-   key = hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)
-   state = wp.rand_init(wp.int32(key))
+   from track_gen.ops import rng
 
-``hash32`` is ``track_gen.ops.funcs.hash32``. Hashing retains the salt's effect at
+   state = rng.init(seed[e], salt)
+
+The shared initializer retains the salt's effect at
 seed 0, avoiding the systematic collapse of linear ``seed * salt + offset`` keying.
 The finite 31-bit keys can still collide. Use one stream name per independent draw.
 Asking for the same name again returns the same salt, and two names whose salts
@@ -492,8 +493,8 @@ loop, and a half-width profile that a width stage can read (:ref:`stage-width`):
        t = wp.tid()                                  # one thread per raw point
        e = t // n
        i = t - e * n
-       key = hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)
-       phase = 6.2831853 * wp.randf(wp.rand_init(wp.int32(key)))
+       state = rng.init(seed[e], salt)
+       phase = 6.2831853 * wp.randf(state)
        theta = 6.2831853 * float(i) / float(n)
        rr = r * (1.0 + 0.2 * wp.sin(3.0 * theta + phase))
        xy[t] = wp.vec2f(rr * wp.cos(theta), rr * wp.sin(theta))
@@ -605,8 +606,8 @@ lap:
                      z: wp.array(dtype=wp.float32)):
        t = wp.tid()
        e = t // n
-       key = hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)
-       phase = 6.2831853 * wp.randf(wp.rand_init(wp.int32(key)))
+       state = rng.init(seed[e], salt)
+       phase = 6.2831853 * wp.randf(state)
        theta = 6.2831853 * float(t - e * n) / float(n)
        xy[t] = wp.vec2f(r * wp.cos(theta + phase), r * wp.sin(theta + phase))
        z[t] = height * wp.sin(3.0 * theta)
@@ -1229,10 +1230,10 @@ an explicit argument. Every op:
 
    * - Op
      - What it does
-   * - ``sample_counts(ctx, seeds, salt, offset, lo, hi, out, *, keying="linear")``
+   * - ``sample_counts(ctx, seeds, salt, offset, lo, hi, out)``
      - One integer in ``[lo, hi]`` per env (how many corners, points or gates).
    * - ``sample_grid_points(ctx, seeds, salt, offset, num, num_cells, cell_size, scale,
-       used, out, *, size=None, keying="linear")``, ``grid_cells(min_point_distance)``
+       used, out, *, size=None)``, ``grid_cells(min_point_distance)``
      - ``num`` jittered points per env on distinct cells of a grid where possible (the
        ``bezier`` and ``hull`` sampler). The jitter is an absolute ``[-0.5, 0.5)``, so
        the points lie in ``[-0.5, (num_cells-1)*cell_size + 0.5) * scale`` and have no
@@ -1457,13 +1458,10 @@ generators reuse the matching track generator's names.
 ``randomize.uniform`` uses hashed keying with its Stage ID's ``b.salt``.
 The other built-in stages draw no random numbers.
 
-Public ``sample_counts`` and ``sample_grid_points`` use their
-``keying="linear"`` default: ``wp.rand_init(seeds[e] * salt + offset)`` in
-int32 wrap-around arithmetic. Explicit ``keying="hashed"`` uses
+Public ``sample_counts`` and ``sample_grid_points`` use
 ``init_at(seeds[e], salt, offset)``. A plugin can use ``b.salt`` as the uint32 salt
-and pick an int32 index for each stream. Keep the same keying to preserve an
-existing plugin's draws. Use hashed keying for independent seed/salt/index streams; there is no built-in
-configuration switch for a different RNG formula.
+and pick an int32 index for each stream. All public samplers use this hashed
+initialization for independent seed/salt/index streams.
 
 Gate generators
 ---------------

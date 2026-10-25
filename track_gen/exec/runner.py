@@ -245,7 +245,6 @@ class GraphRunner:
         :class:`~track_gen.exec.NotCapturableError` inside a capture."""
         return self._capturable
 
-
     @property
     def default_stream(self) -> "wp.Stream | None":
         """The stream used when a call passes none and no ambient context applies
@@ -273,13 +272,29 @@ class GraphRunner:
         return ensure_not_capturing(self._device, default_stream=self._default_stream,
                                     label=self._name)
 
-
     # -- execution --------------------------------------------------------------
     def prepare(self, enqueue) -> None:
-        """Run one real warm-up outside capture, loading every hot-path kernel.
+        """Run ``enqueue`` once, for real, outside any capture, and block until
+        it finished.
 
-        Wait on allocations made on Warp's current stream, then synchronize the
-        resolved stream. Bounded loops use every window during warm-up.
+        Launching for real loads every module / kernel overload / block-dim
+        variant the hot path uses (``force_module_load`` and ``load_module``
+        miss launch-time overloads), so later recordings never load modules
+        while capturing. The pass leaves a valid result in the producer's
+        buffers.
+
+        When the resolved stream is not Warp's current stream (a
+        ``default_stream`` or an ambient scope), it first waits on the current
+        stream, where the producer's buffers were just allocated and zeroed.
+        The host then blocks on the resolved stream (a cold, construction-time
+        cost), so the result is complete for any later stream or readback.
+
+        Every ``LaunchContext.bounded_loop`` of the pass runs all its windows
+        (forced unrolled lowering), so every kernel a window can emit is loaded.
+
+        Raises:
+            CaptureError: if the resolved stream or Warp's current stream is
+                capturing, or torch is capturing in the calling thread.
         """
         ctx = self.context()
         ensure_not_capturing(self._device, default_stream=self._default_stream,
@@ -293,11 +308,39 @@ class GraphRunner:
 
     def run(self, enqueue, *, stream=None, policy: str = "auto",
             sync: bool = False, key=None) -> LaunchContext:
-        """Run the body on the resolved stream under record/eager/self-graph policy.
+        """Run ``enqueue`` once under the execution policy; returns the call's
+        resolved :class:`LaunchContext`.
 
-        ``key`` identifies a stable body and its buffer pointers. Non-default keys
-        require prior preparation; at most MAX_KEYED_GRAPHS are cached. A segmented
-        body runs HOST parts eagerly and replays the capturable parts in order.
+        A non-capturable runner refuses a caller's capture (RECORD) and a CPU graph
+        capture (``wp.ScopedCapture("cpu")``) with
+        :class:`~track_gen.exec.NotCapturableError`, before any launch (see
+        :meth:`check_record`). Outside a
+        capture it runs a plain body eagerly; a segmented body (one part per
+        ``Program`` segment) runs its HOST parts eagerly and replays the other parts'
+        self-graphs on CUDA (SEGMENTED, see the module docstring).
+
+        Args:
+            enqueue: the producer's body, ``enqueue(ctx) -> None`` (or a segmented
+                body built by a ``Program``).
+            stream: optional ``wp.Stream`` (or ``"torch"``) for this call.
+            policy: ``"auto"`` (record / self-graph / eager as above) or
+                ``"eager"`` (record when capturing, otherwise run the body
+                directly; never self-graph).
+            sync: block the host on the resolved stream afterwards; skipped
+                when recording, and while torch is capturing in the calling
+                thread.
+            key: hashable self-graph cache key identifying WHICH body
+                ``enqueue`` is (e.g. ``(advance, mask.ptr)``). The self-graph
+                of a key is captured on its first SELF-GRAPH call and replayed
+                by every later call with an equal key, so equal keys must mean
+                identical bodies (same launches, same buffer pointers).
+                ``None`` (default) is the producer's default body
+                (:attr:`graph`). A non-``None`` key requires :meth:`prepare` to
+                have run (a keyed body may not be idempotent, so it is never
+                used as a warm-up pass). Ignored when recording or eager. At most
+                ``MAX_KEYED_GRAPHS`` (16) non-``None`` keys get a self-graph;
+                calls with a further new key run eagerly (with a one-time
+                ``RuntimeWarning``).
         """
         if policy not in _POLICIES:
             raise ValueError(f"policy must be one of {_POLICIES}, got {policy!r}")
@@ -329,7 +372,8 @@ class GraphRunner:
         return ctx
 
     def _run_segmented(self, body: "_SegmentedBody", ctx: LaunchContext, key) -> None:
-        """Replay capturable parts and run HOST parts on the call's stream."""
+        """SEGMENTED: capture every non-HOST part once per key, then run the HOST parts
+        eagerly and replay the others' graphs, in order, on ``ctx.stream``."""
         graphs = self._seg_graphs.get(key)
         if graphs is None and key is not None and self._keyed_full():
             self._run_eager(body, ctx)
@@ -393,12 +437,10 @@ class GraphRunner:
             return
         _compat.stream_synchronize(ctx.stream)
 
-
     def _run_eager(self, enqueue, ctx: LaunchContext) -> None:
         """Run the body on the resolved launch context."""
         with ctx.scope():
             enqueue(ctx)
-
 
     def _capture(self, enqueue, key=None) -> "wp.Graph":
         """Capture the self-graph of ``key`` once (thread-safe; retried once on

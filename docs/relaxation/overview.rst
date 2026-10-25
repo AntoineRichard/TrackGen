@@ -21,6 +21,11 @@ sweeps. The camera stays fixed and each panel reports its actual validity and mi
 nonlocal bead distance. These examples demonstrate motion; they do not estimate yield.
 The :doc:`convergence` page explains the frame construction and limitations.
 
+For one-control comparisons, start with :ref:`sweep budget <relax-iteration-comparison>`,
+:ref:`separation margin <relax-margin-comparison>` and
+:ref:`smoothing passes <relax-smoothing-comparison>`. They hold seed and other settings
+fixed, so changes in the solver's request, work budget and tail remain distinguishable.
+
 Try a different budget
 -----------------------
 

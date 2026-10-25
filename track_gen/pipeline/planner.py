@@ -1543,30 +1543,15 @@ def _plugin_params(slot) -> bool:
     return not slot.builtin
 
 
-def _self_drawn(slots) -> list:
-    """``[(slot, field, range field)]`` of the dynamic fields a stage draws itself every
-    generation (``Params._self_drawn()``): one unlatched array each,
-    reported in ``StageParams.drawn`` as drawn by the stage's own id."""
-    from ..plugin.params import _self_drawn as drawn_by_itself  # noqa: PLC0415
-
-    out = []
-    for s in slots:
-        if getattr(s.cls, "_param_writer", False):
-            continue
-        out.extend((s, name, rng) for name, rng in drawn_by_itself(s.params).items())
-    return out
-
-
 def _check_param_writers(slots) -> list:
     """The ``randomize.*`` rules (host side, before any allocation): each draws a DYNAMIC
-    float32 field of a later, existing, non-randomizer stage, at most one per field (a
-    field the stage draws itself counts as drawn),
+    float32 field of a later, existing, non-randomizer stage, at most one per field,
     with an initial range inside the field's declared ``lo`` / ``hi`` (compared in
     float32), and the target's cross-field draw rules
     (``Params._check_draws``: e.g. elevation randomizers whose ``z_min`` / ``z_max``
     can cross; run for every stage that has the hook, randomized or not). Returns
     ``[(writer slot, target slot, field)]``."""
-    from ..plugin.params import _f32, _fields, _self_draw  # noqa: PLC0415
+    from ..plugin.params import _f32, _fields  # noqa: PLC0415
 
     def dynamic_f32(s):
         if s.params is None or getattr(s.cls, "_param_writer", False):
@@ -1585,8 +1570,6 @@ def _check_param_writers(slots) -> list:
         return f" ({h})" if h else ""
     drawable = [f"{s.id}.{f.name}" for s in slots for f in dynamic_f32(s)]
     out, seen = [], {}
-    for t, name, _ in _self_drawn(slots):
-        seen[(t.id, name)] = t.id                # drawn by the stage itself
     for w in writers:
         target_id, name = str(w.params.stage), str(w.params.field)
         t = by_id.get(target_id)
@@ -1621,11 +1604,6 @@ def _check_param_writers(slots) -> list:
             raise PlanError(f"{what} is {fld.dtype.__name__}: randomize.uniform draws "
                             f"float32 fields in 0.x")
         if (t.id, name) in seen:
-            own = _self_draw(t.params, name) if seen[(t.id, name)] == t.id else None
-            if own is not None:
-                how, rng = own
-                raise PlanError(f"{what} is drawn by the generator's {how} ({rng}): set "
-                                f"{rng}=None to randomize it")
             raise PlanError(f"stages {seen[(t.id, name)]!r} and {w.id!r} both draw {what}; "
                             f"at most one randomizer per field")
         seen[(t.id, name)] = w.id
@@ -1644,7 +1622,7 @@ def _check_draws(draws, slots) -> None:
     """Each stage's cross-field draw rules (the private Params hook ``_check_draws(
     params, ranges, randomized)``), for EVERY stage whose Params class
     defines it, drawn or not: ``ranges`` maps every drawn field of the stage (a
-    randomizer's initial ``(lo, hi)``, or a self-drawn field's range; empty when none)
+    randomizer's initial ``(lo, hi)``; empty when none)
     and ``randomized`` names the randomized ones (e.g. the elevation's inert-window
     warning needs the static window and the knob's drawn range alike). A
     ``ValueError`` becomes a ``PlanError`` naming the stage."""
@@ -1657,10 +1635,6 @@ def _check_draws(draws, slots) -> None:
         entry = targets.setdefault(t.id, (t, {}, set()))
         entry[1][fld.name] = (float(w.params.lo), float(w.params.hi))
         entry[2].add(fld.name)
-    for t, name, rng_field in _self_drawn(slots):
-        rng = getattr(t.params, rng_field, None)
-        if t.id in targets and rng is not None:
-            targets[t.id][1][name] = (float(rng[0]), float(rng[1]))
     for t, ranges, randomized in targets.values():
         hook = getattr(type(t.params), "_check_draws", None)
         if hook is None:
@@ -1756,8 +1730,8 @@ def _check_size_truncation(spec, slots, draws) -> None:
     ``(n_max - 1) * spacing / L_nom``, ``L_nom`` the generator's nominal maximum raw
     perimeter at size 1 (the built-ins' private ``_nominal_perimeter(scale, drawn)``:
     repulsive exact from its params, the others the measured longest loop at their
-    default shape knobs, scaled by bezier / hull's corner capacity, hull's displacement
-    and bezier's style ``scale_range``; ``None`` where a shape knob it does not model
+    default shape knobs, scaled by bezier / hull's corner capacity and hull's
+    displacement; ``None`` where a shape knob it does not model
     differs from its default, and for a generator without one: not checked). Truncated
     envs fail validity (fail-closed); ``set()`` curricula and caller-graph writes are
     not checked. A heuristic: a warning, never an error."""
@@ -1904,13 +1878,6 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
         f_lo = -float("inf") if fld.lo is None else float(fld.lo)
         f_hi = float("inf") if fld.hi is None else float(fld.hi)
         drawn_for[w.id] = (arr, f_lo, f_hi)
-    # A field the stage draws itself: one
-    # [E] array too, written by the stage every generation (unlatched).
-    for t, name, _ in _self_drawn(slots):
-        arr = wp.full(E, float(getattr(t.params, name)), dtype=wp.float32, device=dev)
-        drawn.setdefault(t.id, {})[name] = arr
-        drawn_by.setdefault(t.id, {})[name] = t.id      # drawn by the stage itself
-
     # -- 7: build every stage, in order ------------------------------------------------
     enqueues, pairs, scratch, salts = [], [], {}, {}
     inputs = {"regen_mask": regen_mask}

@@ -1,7 +1,12 @@
 {
   "animations": {
     "bezier": {
-      "kind": "illustrative reveal of recorded construction buffers",
+      "command": "python -m viz.render_generator_guide --construction-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
+      "duration_seconds": 16,
+      "elapsed_runtime": false,
+      "frames": 96,
+      "geometry_interpolated": false,
+      "kind": "progressive construction drawing of recorded geometry",
       "output": "generator-bezier-construction.mp4",
       "sample": {
         "config": {
@@ -105,10 +110,32 @@
         "smooth_raw_crossings": 0,
         "valid": true
       },
-      "stages": 3
+      "source": {
+        "device": "cpu",
+        "generator_source_sha256": "c8a3e7d3493b3d79f2edb5580d6a43a3a7f352665b5865d291734216195240ea",
+        "git_commit": "6bbe3894750e1abdd57cc0f44ec1b8331f41c159",
+        "matplotlib_version": "3.11.2",
+        "numpy_version": "2.5.4",
+        "renderer_sha256": "21aa82b062bb0a80a2f5a6e34040f48a4057f6fed6f26513d6a338b7aa1e3913",
+        "trackgen_version": "0.3.0rc2",
+        "warp_version": "1.18.0",
+        "worktree_dirty": true
+      },
+      "stage_titles": [
+        "Sample corners",
+        "Order around the centroid",
+        "Draw each cubic with two handles",
+        "Resample and choose the raw loop"
+      ],
+      "stages": 4
     },
     "checkpoint": {
-      "kind": "illustrative reveal of recorded construction buffers",
+      "command": "python -m viz.render_generator_guide --construction-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
+      "duration_seconds": 16,
+      "elapsed_runtime": false,
+      "frames": 96,
+      "geometry_interpolated": false,
+      "kind": "progressive construction drawing of recorded geometry",
       "output": "generator-checkpoint-construction.mp4",
       "sample": {
         "config": {
@@ -210,10 +237,32 @@
         "seed": 7,
         "valid": true
       },
-      "stages": 3
+      "source": {
+        "device": "cpu",
+        "generator_source_sha256": "f208864a14e20cb5b258100d03900388b7c6be95de2d65974665b73f010f8c97",
+        "git_commit": "6bbe3894750e1abdd57cc0f44ec1b8331f41c159",
+        "matplotlib_version": "3.11.2",
+        "numpy_version": "2.5.4",
+        "renderer_sha256": "21aa82b062bb0a80a2f5a6e34040f48a4057f6fed6f26513d6a338b7aa1e3913",
+        "trackgen_version": "0.3.0rc2",
+        "warp_version": "1.18.0",
+        "worktree_dirty": true
+      },
+      "stage_titles": [
+        "Sample the selected candidate's targets",
+        "Trace the bounded-turn walk",
+        "Close each candidate",
+        "Choose the fewest crossings"
+      ],
+      "stages": 4
     },
     "hull": {
-      "kind": "illustrative reveal of recorded construction buffers",
+      "command": "python -m viz.render_generator_guide --construction-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
+      "duration_seconds": 16,
+      "elapsed_runtime": false,
+      "frames": 96,
+      "geometry_interpolated": false,
+      "kind": "progressive construction drawing of recorded geometry",
       "output": "generator-hull-construction.mp4",
       "sample": {
         "config": {
@@ -317,10 +366,32 @@
         "smooth_raw_crossings": 0,
         "valid": true
       },
-      "stages": 3
+      "source": {
+        "device": "cpu",
+        "generator_source_sha256": "e4f6400cfc0f0534c8139f92056a8651d99d3d3b629222d3e39a32969d69f5a4",
+        "git_commit": "6bbe3894750e1abdd57cc0f44ec1b8331f41c159",
+        "matplotlib_version": "3.11.2",
+        "numpy_version": "2.5.4",
+        "renderer_sha256": "21aa82b062bb0a80a2f5a6e34040f48a4057f6fed6f26513d6a338b7aa1e3913",
+        "trackgen_version": "0.3.0rc2",
+        "warp_version": "1.18.0",
+        "worktree_dirty": true
+      },
+      "stage_titles": [
+        "Sample anchors",
+        "Order around the centroid",
+        "Displace inserted midpoints",
+        "Join and check the curve"
+      ],
+      "stages": 4
     },
     "polar": {
-      "kind": "illustrative reveal of recorded construction buffers",
+      "command": "python -m viz.render_generator_guide --construction-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
+      "duration_seconds": 16,
+      "elapsed_runtime": false,
+      "frames": 96,
+      "geometry_interpolated": false,
+      "kind": "progressive construction drawing of recorded geometry",
       "output": "generator-polar-construction.mp4",
       "sample": {
         "config": {
@@ -422,7 +493,24 @@
         "seed": 7,
         "valid": true
       },
-      "stages": 3
+      "source": {
+        "device": "cpu",
+        "generator_source_sha256": "0cbf662125aeca8bf5add5115874d23f1f320f0180974fa02834fc940f5c2920",
+        "git_commit": "6bbe3894750e1abdd57cc0f44ec1b8331f41c159",
+        "matplotlib_version": "3.11.2",
+        "numpy_version": "2.5.4",
+        "renderer_sha256": "21aa82b062bb0a80a2f5a6e34040f48a4057f6fed6f26513d6a338b7aa1e3913",
+        "trackgen_version": "0.3.0rc2",
+        "warp_version": "1.18.0",
+        "worktree_dirty": true
+      },
+      "stage_titles": [
+        "Keep the angular slots ordered",
+        "Sample radial and angular jitter",
+        "Join the periodic spline",
+        "Arc-resample, then normalize"
+      ],
+      "stages": 4
     },
     "repulsive": {
       "final_matches_generator": true,
@@ -485,7 +573,12 @@
       "seed": 7
     },
     "voronoi": {
-      "kind": "illustrative reveal of recorded construction buffers",
+      "command": "python -m viz.render_generator_guide --construction-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR",
+      "duration_seconds": 16,
+      "elapsed_runtime": false,
+      "frames": 96,
+      "geometry_interpolated": false,
+      "kind": "progressive construction drawing of recorded geometry",
       "output": "generator-voronoi-construction.mp4",
       "sample": {
         "config": {
@@ -589,31 +682,48 @@
         "smooth_raw_crossings": 0,
         "valid": true
       },
-      "stages": 3
+      "source": {
+        "device": "cpu",
+        "generator_source_sha256": "5833c2714fa6262b28bdc22024e7adfab4656b56c067ff1d816c77fd619fa331",
+        "git_commit": "6bbe3894750e1abdd57cc0f44ec1b8331f41c159",
+        "matplotlib_version": "3.11.2",
+        "numpy_version": "2.5.4",
+        "renderer_sha256": "21aa82b062bb0a80a2f5a6e34040f48a4057f6fed6f26513d6a338b7aa1e3913",
+        "trackgen_version": "0.3.0rc2",
+        "warp_version": "1.18.0",
+        "worktree_dirty": true
+      },
+      "stage_titles": [
+        "Sample the site field",
+        "Select sites in anchor order",
+        "Cut each anchor corner",
+        "Join and check the curve"
+      ],
+      "stages": 4
     }
   },
   "assets": {
-    "generator-bezier-construction.mp4": 132998,
-    "generator-bezier-construction.png": 147788,
+    "generator-bezier-construction.mp4": 303566,
+    "generator-bezier-construction.png": 193145,
     "generator-bezier-controls-more.png": 583289,
     "generator-bezier-controls.png": 589644,
     "generator-bezier-examples.png": 227535,
     "generator-bezier-sampling.png": 254108,
     "generator-checkpoint-candidates.png": 98923,
-    "generator-checkpoint-construction.mp4": 147199,
-    "generator-checkpoint-construction.png": 161373,
+    "generator-checkpoint-construction.mp4": 302431,
+    "generator-checkpoint-construction.png": 236580,
     "generator-checkpoint-controls-more.png": 460231,
     "generator-checkpoint-controls.png": 455257,
     "generator-checkpoint-examples.png": 216387,
     "generator-checkpoint-fallback.png": 150610,
-    "generator-hull-construction.mp4": 152865,
-    "generator-hull-construction.png": 169197,
+    "generator-hull-construction.mp4": 281763,
+    "generator-hull-construction.png": 203940,
     "generator-hull-controls-more.png": 249798,
     "generator-hull-controls.png": 683806,
     "generator-hull-examples.png": 252958,
     "generator-hull-sampling.png": 285569,
-    "generator-polar-construction.mp4": 130451,
-    "generator-polar-construction.png": 151260,
+    "generator-polar-construction.mp4": 321129,
+    "generator-polar-construction.png": 211555,
     "generator-polar-controls.png": 502713,
     "generator-polar-examples.png": 234095,
     "generator-polar-sampling.png": 201599,
@@ -624,8 +734,8 @@
     "generator-repulsive-growth.mp4": 514924,
     "generator-repulsive-growth.png": 108022,
     "generator-repulsive-numerics.png": 336193,
-    "generator-voronoi-construction.mp4": 144004,
-    "generator-voronoi-construction.png": 135854,
+    "generator-voronoi-construction.mp4": 284645,
+    "generator-voronoi-construction.png": 196508,
     "generator-voronoi-controls-more.png": 210104,
     "generator-voronoi-controls.png": 499885,
     "generator-voronoi-examples.png": 221488,

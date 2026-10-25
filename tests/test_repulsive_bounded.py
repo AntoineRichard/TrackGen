@@ -84,7 +84,7 @@ def _same(a: dict, b: dict, rows_a=slice(None), rows_b=slice(None)) -> bool:
 def test_repulsive_is_a_bounded_stage():
     assert registry.get("generator", "repulsive") is rep.Repulsive
     info = registry.describe("generator", "repulsive")
-    assert info.capture is CaptureClass.BOUNDED and info.capturable and info.accepts_ctx
+    assert info.capture is CaptureClass.BOUNDED and info.capturable
     assert info.origin == "track_gen._src.warp_generate_repulsive" and info.builtin
     assert info.params_schema["properties"]["repulsive_stall_window"]["default"] == 16
 

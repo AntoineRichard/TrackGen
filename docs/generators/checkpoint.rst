@@ -129,22 +129,31 @@ clipping and extent normalization precede the common road pipeline. Heading-base
 closure is a construction step; it is not an exact simplicity guarantee.
 
 .. figure:: ../assets/racing/generator-checkpoint-construction.png
-   :alt: Checkpoint construction buffers, generated centerline and finished road.
+   :alt: Four construction steps: radial targets, the actual open walk, closed candidates and crossing-score selection, beside the raw centerline and finished road.
    :align: center
 
-   Recorded construction geometry, followed by the selected generator centerline and the shared pipeline result. The left panel uses construction coordinates; the other panels use output coordinates.
+   Four steps explain radial targets, the actual open walk, closed candidates and
+   crossing-score selection. The raw generator centerline and finished road at right use
+   output coordinates; construction panels use their original coordinates.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-checkpoint-construction.png" aria-label="Three-stage reveal of actual checkpoint construction buffers, generator centerline and finished road.">
+   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-checkpoint-construction.png" aria-label="Progressive drawing of radial targets, the actual open walk, closed candidates and crossing-score selection, from actual checkpoint geometry.">
      <source src="../generator-checkpoint-construction.mp4" type="video/mp4">
-     Three-stage reveal of actual checkpoint construction buffers, generator centerline and finished road.
+     Progressive drawing of radial targets, the actual open walk, closed candidates and crossing-score selection, from actual checkpoint geometry.
    </video>
 
 :download:`Download the animation <../assets/racing/generator-checkpoint-construction.mp4>`.
 
-The animation reveals the three panels in order. It is an illustrative construction
-sequence, not elapsed runtime or a trace of iterative solver states.
+**Text alternative:** The drawing follows the selected candidate's actual open walk, with an
+orange dot marking its advancing end. It then reveals the separately closed candidates in
+enlarged views with shared fixed axes and their proper-crossing scores; the first minimum is
+selected. The normalized raw centerline and finished road remain visible at right.
+
+The geometry comes from recorded construction buffers. Prefix drawing explains
+algorithm order. Playback timing is illustrative, with no position morph
+between stages or claim of measured runtime or iterative solver states. The view
+stays fixed within each coordinate system.
 
 Continue with :doc:`/how-it-works/pipeline`, :doc:`/configuration/tuning`,
 :ref:`builtin-generator-params`, or :doc:`/tutorials/gate-sequences`.

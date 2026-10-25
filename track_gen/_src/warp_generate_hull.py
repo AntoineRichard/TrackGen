@@ -218,11 +218,11 @@ def _enqueue_hull(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
     # Step 1: sample point count + positions.
     _sample_counts_launch(ctx, seeds_wp, POINT_COUNT_SALT, POINT_SALT_OFFSET,
                           dyn["min_num_points"], int(config.max_num_points),
-                          scratch.count, keying="hashed")
+                          scratch.count)
     num_cells, cell = ops.grid_cells(config.min_point_distance)
     ops.sample_grid_points(ctx, seeds_wp, POINT_SALT, POINT_SALT_OFFSET, P, num_cells,
                            float(cell), float(config.scale), scratch.used,
-                           scratch.points, size=dyn["size"], keying="hashed")
+                           scratch.points, size=dyn["size"])
 
     # Step 2: angle-sort the first m points about their centroid. This is ops.angle_sort's
     # kernel with the legacy count floor of 1 (a count < 1 sorts the first point), so the

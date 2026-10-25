@@ -34,6 +34,9 @@ checkpoints and progress on CPU or CUDA.
    :ref:`generators-overview`; each generator guide shows its centerlines,
    construction steps and settings.
 
+:ref:`Watch the visual tour <visual-tour>` for all generator and solver animations
+in one place.
+
 .. figure:: assets/racing/data-gate-course.png
    :alt: A finished 3D drone course with ten square gate openings, their actual poses and passing order.
 
@@ -111,6 +114,7 @@ cause. :ref:`invalid-envs` explains how to diagnose and regenerate it.
    getting-started/quickstart
    getting-started/gates
    getting-started/concepts
+   getting-started/visual-tour
    user-guide/results
 
 .. toctree::

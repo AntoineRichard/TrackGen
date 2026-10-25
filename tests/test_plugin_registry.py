@@ -106,7 +106,7 @@ def test_plugin_track_generator_runs_through_track_generator(fresh):
     assert info == SpecInfo(kind="generator", name="toy.circle",
                             origin="tests._plugin_toys",
                             distribution=("toy-plugins", "1.2.3"), capturable=True,
-                            accepts_ctx=True, builtin=False, entry_point="toy")
+                            builtin=False, entry_point="toy")
 
 
 def test_plugin_gate_generator_runs_through_gate_generator(fresh):

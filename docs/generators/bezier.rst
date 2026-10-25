@@ -136,22 +136,31 @@ polygon fallback when needed. Angle sorting is a construction heuristic and does
 make this a convex-hull algorithm.
 
 .. figure:: ../assets/racing/generator-bezier-construction.png
-   :alt: Bezier construction buffers, generated centerline and finished road.
+   :alt: Four construction steps: sampled corners, angle ordering, both cubic handles and curve sampling, beside the raw centerline and finished road.
    :align: center
 
-   Recorded construction geometry, followed by the selected generator centerline and the shared pipeline result. The left panel uses construction coordinates; the other panels use output coordinates.
+   Four steps explain sampled corners, angle ordering, both cubic handles and curve
+   sampling. The raw generator centerline and finished road at right use output coordinates;
+   construction panels use their original coordinates.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-bezier-construction.png" aria-label="Three-stage reveal of actual bezier construction buffers, generator centerline and finished road.">
+   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-bezier-construction.png" aria-label="Progressive drawing of sampled corners, angle ordering, both cubic handles and curve sampling, from actual bezier geometry.">
      <source src="../generator-bezier-construction.mp4" type="video/mp4">
-     Three-stage reveal of actual bezier construction buffers, generator centerline and finished road.
+     Progressive drawing of sampled corners, angle ordering, both cubic handles and curve sampling, from actual bezier geometry.
    </video>
 
 :download:`Download the animation <../assets/racing/generator-bezier-construction.mp4>`.
 
-The animation reveals the three panels in order. It is an illustrative construction
-sequence, not elapsed runtime or a trace of iterative solver states.
+**Text alternative:** The drawing first reveals sampled corners and their angle-sorted
+cycle, then draws each cubic with its actual incoming and outgoing handles. The final step
+shows the selected raw loop; the raw centerline and finished road remain visible at right.
+
+The geometry comes from recorded construction buffers; Bézier handles are derived
+from the recorded tangents and local scales. Prefix drawing and operation arrows
+explain algorithm order. Playback timing is illustrative, with no position morph
+between stages or claim of measured runtime or iterative solver states. The view
+stays fixed within each coordinate system.
 
 Continue with :doc:`/how-it-works/pipeline`, :doc:`/configuration/tuning`,
 :ref:`builtin-generator-params`, or :doc:`/tutorials/gate-sequences`.

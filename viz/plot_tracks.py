@@ -161,8 +161,8 @@ def render(images=10, rows=9, cols=9, track_width_m=1.0, box_m=20.0, num_points=
     per_image = rows * cols
     E = images * per_image
     config = TrackGenConfig(num_envs=E, num_points=num_points, half_width=half_width,
-                            scale=scale, on_invalid="keep", spacing=spacing,
-                            N_max=n_max, device=device)
+                            scale=scale, spacing=spacing,
+                            N_max=n_max, device=device, on_invalid="keep")
     rng = make_rng(E, seed=seed, device=device)
     track = TrackGenerator(config, rng).generate(E)
 
@@ -175,7 +175,8 @@ def render(images=10, rows=9, cols=9, track_width_m=1.0, box_m=20.0, num_points=
 
     paths = []
     for img in range(images):
-        fig, axes = plt.subplots(rows, cols, figsize=(cols * cell_in, rows * cell_in), squeeze=False)
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * cell_in, rows * cell_in),
+                                  squeeze=False)
         base = img * per_image
         for k, ax in enumerate(axes.flat):
             draw_track(ax, track, base + k)

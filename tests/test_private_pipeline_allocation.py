@@ -4,7 +4,7 @@ import pytest
 import warp as wp
 
 from track_gen import TrackGenConfig, TrackGenerator
-from track_gen._src import warp_pipeline
+from tests._reference_generators import warp_pipeline
 from track_gen.exec import LaunchContext
 
 

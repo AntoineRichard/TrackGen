@@ -9,7 +9,8 @@ source (`exclude_patterns`).
 These datasets predate the 0.3 built-in hashed-RNG switch and are historical reference
 measurements. Running their commands against current source measures the new seed
 mapping and poison default; it does not reproduce these stored numbers. The 0.3 RNG
-distribution gate is documented separately in `docs/upgrading/from-0.2.rst`.
+distribution gate is documented separately in
+`docs/library-readiness/archive/upgrading/from-0.2.rst`.
 
 CPU files: every column but the timings (`gen_ms_per_call`, the collision `ms` lines)
 is deterministic for a fixed source revision, Warp version and platform; the

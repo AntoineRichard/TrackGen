@@ -76,7 +76,7 @@ it to the size the built-ins use:
    import warp as wp
 
    from track_gen import ops, plugin
-   from track_gen.ops.funcs import hash32
+   from track_gen.ops import rng
 
    track_gen_api = 1  # optional: the plugin API version this package targets
 
@@ -87,8 +87,7 @@ it to the size the built-ins use:
                  xy: wp.array(dtype=wp.vec2f)):
        t = wp.tid()                                  # one thread per point: t = e * n + i
        e = t // n
-       key = hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)
-       state = wp.rand_init(wp.int32(key))           # this env's stream for this salt
+       state = rng.init(seed[e], salt)              # this env's stream for this salt
        phase = 6.2831853 * wp.randf(state)
        theta = 6.2831853 * float(t - e * n) / float(n)
        r = 1.0 + amp[e] * wp.sin(float(lobes) * theta + phase)
@@ -221,10 +220,10 @@ parameters:
 
 
    @wp.kernel
-   def _phase_k(seeds: wp.array(dtype=wp.int32), salt: int,
+   def _phase_k(seeds: wp.array(dtype=wp.int32), salt: wp.uint32,
                 phase: wp.array(dtype=wp.float32)):
        e = wp.tid()                              # one thread per env
-       state = wp.rand_init(seeds[e], salt)
+       state = ops.rng.init(seeds[e], salt)
        phase[e] = wp.randf(state) * 6.2831853
 
 

@@ -427,7 +427,7 @@ The default order is one rule, for an anchors generator: its ``preferred["order"
 it accepts it, else ``"ccw"`` when it accepts it, else the first order it accepts
 (``"raw"`` for stations). ``presets.gates(order=None)``,
 ``GateGenConfig.gate_ordering=None`` (the config default, resolved by
-``legacy.to_gate_pipeline_spec`` when ``GateGenerator`` or ``Course`` is constructed)
+``bind_generator`` before the run config and pipeline spec are constructed)
 and the conformance kit all apply it, so ``GateGenerator(GateGenConfig(
 generator="acme.helix"))`` runs ``order.raw``. The run config holds the resolved name, never ``None``. For the five
 built-ins the rule gives ``"ccw"``. An explicit name is checked against the orders the

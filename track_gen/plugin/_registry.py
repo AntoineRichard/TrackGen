@@ -100,7 +100,6 @@ class SpecInfo:
             Stage: ``capture != HOST``, computed from the DEFAULT Params; a stage whose
             :meth:`~track_gen.plugin.Stage.capture_class` depends on its params may
             differ for other values (the generator reports its own).
-        accepts_ctx: Whether the spec uses a launch context (all generator plugins do).
         builtin: ``True`` for the specs shipped with track_gen.
         entry_point: The name of the entry point that registered the spec, or ``None``.
         params_schema: The JSON schema (draft 2020-12) of the spec's Params class:
@@ -141,7 +140,6 @@ class SpecInfo:
     origin: str
     distribution: "tuple[str, str] | None"
     capturable: bool
-    accepts_ctx: bool
     builtin: bool = False
     entry_point: "str | None" = None
     params_schema: Mapping[str, Any] = dataclasses.field(default_factory=dict, hash=False)
@@ -547,7 +545,6 @@ class Registry:
                 raise TypeError(f"{spec.__name__}.capture_class() must return a "
                                 f"CaptureClass, got {capture!r}")
             capturable = capture != CaptureClass.HOST
-            accepts_ctx = True
             writes, provides = dict(spec.writes), frozenset(spec.provides)
             if kind == "generator":
                 writes, provides = _declared_of(spec, params_cls())
@@ -565,7 +562,6 @@ class Registry:
                     preferred=types.MappingProxyType(dict(spec.preferred)))
         else:
             capturable = bool(getattr(spec, "capturable", True))
-            accepts_ctx = isinstance(spec, GeneratorSpec)
         if kind == "gate_generator":
             from ..stages.gates import _orderings_of  # noqa: PLC0415
 
@@ -577,7 +573,6 @@ class Registry:
             origin=origin.module,
             distribution=origin.distribution,
             capturable=capturable,
-            accepts_ctx=accepts_ctx,
             builtin=origin.builtin,
             entry_point=origin.entry_point,
             params_schema=_schema(params_cls) if has_params else {},

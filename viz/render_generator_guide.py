@@ -4,8 +4,8 @@
         python -m viz.render_generator_guide --out-dir /private/tmp/generator-guide
 
 Matplotlib and imageio-ffmpeg are optional maintenance tools, never Sphinx dependencies.
-Private scratch reads below belong only to this renderer. Construction reveals show
-recorded buffers, not simulated time; the repulsive movie records actual loop states.
+Private scratch reads below belong only to this renderer. Construction drawings explain
+operations using recorded buffers, not simulated time; the repulsive movie records actual loop states.
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import hashlib
 import json
 import platform
 import subprocess
+import textwrap
 from pathlib import Path
 
 import matplotlib
@@ -26,6 +27,7 @@ import warp as wp
 from matplotlib.animation import FFMpegWriter
 
 from track_gen import TrackGenConfig, TrackGenerator
+from track_gen._version import __version__
 
 FAMILIES = ("bezier", "hull", "polar", "voronoi", "checkpoint", "repulsive")
 BLUE, ORANGE, INK = "#166baf", "#d26a18", "#243344"
@@ -109,13 +111,13 @@ def _construction(gen, cfg, e):
     out = {}
     if name == "bezier":
         n = int(sc["gen_count"].numpy()[e])
-        out = {"anchors": rows("gen_ordered")[:n], "dense": rows("gen_dense")}
+        out = {"sampled": rows("gen_corners")[:n], "anchors": rows("gen_ordered")[:n], "dense": rows("gen_dense")}
         out["tangents"] = rows("gen_tan")[:n]
         out["handle_scales"] = sc["gen_scale"].numpy().reshape(E, -1)[e, :n].copy()
         out["crossings"] = int(sc["gen_crossers"].numpy()[e])
     elif name == "hull":
         n = int(sc["count"].numpy()[e])
-        out = {"anchors": rows("sorted")[:n], "augmented": rows("aug")[:2*n],
+        out = {"sampled": rows("points")[:n], "anchors": rows("sorted")[:n], "augmented": rows("aug")[:2*n],
                "dense": rows("dense"), "crossings": int(sc["crossers"].numpy()[e])}
     elif name == "polar":
         out = {"anchors": rows("controls"), "dense": rows("dense")}
@@ -408,84 +410,262 @@ def render_comparisons(out_dir, name, *, seed=23):
     return records
 
 
-def render_construction(out_dir, sample, *, movies=True):
+def bezier_controls(sample):
+    """Both handles for each cubic, derived from the recorded tangent/scale buffers."""
+    sc, cfg = sample["construction"], sample["config"]
+    a = sc["anchors"]
+    b = np.roll(a, -1, axis=0)
+    chord = np.linalg.norm(b-a, axis=1)
+    h0 = np.minimum(cfg["rad"]*chord, cfg["handle_clamp_frac"]*sc["handle_scales"])
+    h1 = np.minimum(cfg["rad"]*chord,
+                    cfg["handle_clamp_frac"]*np.roll(sc["handle_scales"], -1))
+    return np.stack((a, a+h0[:, None]*sc["tangents"],
+                     b-h1[:, None]*np.roll(sc["tangents"], -1, axis=0), b), axis=1)
+
+
+def construction_stages(sample):
+    """A drawing storyboard; stage order is algorithm order, never elapsed runtime."""
     name = sample["config"]["generator"]
-    sc = sample["construction"]
+    descriptions = {
+        "bezier": [
+            ("Sample corners", "Reveal the actual sampled grid corners; labels retain sampling order."),
+            ("Order around the centroid", "Connect the angle-sorted corners to form the anchor cycle."),
+            ("Draw each cubic with two handles", "Orange: active cubic control polygon. Blue: recorded dense curve samples."),
+            ("Resample and choose the raw loop", "Arc-resample the curve; a proper crossing selects the corner-polygon fallback.")],
+        "hull": [
+            ("Sample anchors", "Reveal the actual sampled grid anchors; labels retain sampling order."),
+            ("Order around the centroid", "The base cycle is angle-sorted; it is not a geometric convex hull."),
+            ("Displace inserted midpoints", "Arrows run from ordinary edge midpoints to their actual displaced positions."),
+            ("Join and check the curve", "Draw recorded Catmull–Rom samples, or the augmented polygon if fallback was selected.")],
+        "polar": [
+            ("Keep the angular slots ordered", "Dashed rays are the unjittered angular slots; their order is fixed."),
+            ("Sample radial and angular jitter", "Reveal actual knots and their radii; labels show the closed traversal order."),
+            ("Join the periodic spline", "Draw the recorded dense Catmull–Rom samples through the radial knots."),
+            ("Arc-resample, then normalize", "Left: recorded dense samples. Right: fixed-count arc-resampling and XY normalization.")],
+        "voronoi": [
+            ("Sample the site field", "Reveal actual sampled sites; a Voronoi edge graph is not traversed."),
+            ("Select sites in anchor order", "Numbered blue sites were chosen against angular/radial targets, avoiding reused sites."),
+            ("Cut each anchor corner", "Orange: actual 25%/75% Chaikin points, connected in their recorded order."),
+            ("Join and check the curve", "Draw recorded spline samples, or the corner-cut polygon if fallback was selected.")],
+        "checkpoint": [
+            ("Sample the selected candidate's targets", "Numbered radial targets guide the walk; the final route need not pass through them."),
+            ("Trace the bounded-turn walk", "Reveal successive positions of the actual open walk; the orange dot is its current end."),
+            ("Close each candidate", "Heading drift and positional-gap correction create closed candidates; no morph is implied."),
+            ("Choose the fewest crossings", "Blue is the first minimum crossing score; selection precedes extent normalization.")],
+    }
+    progressive = {"bezier": 2, "hull": 3, "polar": 2, "voronoi": 3, "checkpoint": 1}
+    return [dict(title=t, explanation=e, progressive_curve=(i == progressive[name]))
+            for i, (t, e) in enumerate(descriptions[name])]
+
+
+def _prefix(points, progress):
+    points = np.asarray(points)
+    points = points[np.isfinite(points).all(axis=1)]
+    return points[:max(1, int(np.ceil(len(points)*progress)))]
+
+
+def draw_construction_step(ax, sample, stage, progress):
+    """Draw real geometry prefixes, with one fixed construction-coordinate view."""
+    name, sc = sample["config"]["generator"], sample["construction"]
+    chosen = (int(np.argmin(sc["candidate_crossings"]))
+              if name == "checkpoint" and sc["candidate_crossings"] is not None else 0)
+    a = sc["checkpoints"][chosen] if name == "checkpoint" else sc["anchors"]
+    view = [a]
+    for key in ("dense", "augmented", "sites", "walks", "candidates", "sampled"):
+        if key in sc:
+            view.append(sc[key].reshape(-1, 2))
+    if name == "bezier":
+        view.append(bezier_controls(sample).reshape(-1, 2))
+    _limits(ax, view)
+    _style(ax)
+    active = np.empty((0, 2))
+
+    def points(p, *, color=BLUE, labels=False, size=25):
+        ax.scatter(*p.T, s=size, color=color, zorder=4)
+        if labels:
+            for i, q in enumerate(p):
+                ax.annotate(str(i), q, xytext=(4, 4), textcoords="offset points",
+                            fontsize=8, color=INK)
+
+    def path(p, *, color=BLUE, closed=False, lw=2, **kw):
+        p = _close(p) if closed else p
+        ax.plot(*p.T, color=color, lw=lw, **kw)
+
+    if name in ("bezier", "hull"):
+        if stage == 0:
+            points(_prefix(sc["sampled"], progress), labels=True)
+        elif stage == 1:
+            points(a, color="#9eabb5", size=18)
+            active = _prefix(_close(a), progress)
+            path(active)
+            points(active[:len(a)], labels=True)
+        elif name == "bezier" and stage == 2:
+            controls = bezier_controls(sample)
+            dense = sc["dense"][:len(a)*sample["config"]["num_points_per_segment"]]
+            active = _prefix(dense, progress)
+            path(_close(a), color="#b4c0c9", lw=.8)
+            seg = min((len(active)-1)//sample["config"]["num_points_per_segment"], len(a)-1)
+            c = controls[seg]
+            path(c, color=ORANGE, lw=1.4)
+            points(c[1:3], color=ORANGE)
+            points(c[[0, 3]])
+            for label, p in zip(("P0", "P1", "P2", "P3"), c):
+                ax.annotate(label, p, xytext=(4, -12), textcoords="offset points", fontsize=9)
+            path(active)
+            points(active[-1:], color=ORANGE, size=38)
+        elif name == "hull" and stage == 2:
+            path(a, color="#a6b3be", closed=True, lw=1)
+            points(a, size=16)
+            mid = (a+np.roll(a, -1, axis=0))*.5
+            moved = sc["augmented"][1::2]
+            n = len(_prefix(moved, progress))
+            for p, q in zip(mid[:n], moved[:n]):
+                ax.annotate("", q, p, arrowprops=dict(arrowstyle="->", color=ORANGE, lw=1.6))
+            points(mid, color="#b4c0c9", size=12)
+            points(moved[:n], color=ORANGE)
+            path(_prefix(_close(sc["augmented"]), progress), color=ORANGE, lw=1)
+        else:
+            points(a, color="#a6b3be", size=14)
+            fallback = sc.get("crossings", 0) > 0
+            curve = (sample["raw"] if name == "bezier" else
+                     sc["augmented"] if fallback else sc["dense"])
+            active = _prefix(_close(curve) if fallback and name == "hull" else curve, progress)
+            path(active)
+            if name == "bezier":
+                points(active[::8], size=11)
+    elif name == "polar":
+        radius = np.linalg.norm(a, axis=1).max()
+        if stage <= 1:
+            for angle in np.arange(len(a))*2*np.pi/len(a):
+                path(np.array([[0, 0], [radius*np.cos(angle), radius*np.sin(angle)]]),
+                     color="#c2ccd4", lw=.8, ls="--")
+        if stage == 0:
+            angles = np.arange(len(a))*2*np.pi/len(a)
+            points(_prefix(np.column_stack((radius*np.cos(angles), radius*np.sin(angles))), progress),
+                   color="#8192a0", labels=True)
+        elif stage == 1:
+            p = _prefix(a, progress)
+            for q in p:
+                path(np.array([[0, 0], q]), color=ORANGE, lw=1)
+            points(p, labels=True)
+            path(p, lw=1)
+        else:
+            points(a, color="#8e9eab", size=18)
+            active = _prefix(sc["dense"], progress)
+            path(active)
+            if stage == 3:
+                points(active[::max(1, len(active)//48)], size=10)
+    elif name == "voronoi":
+        sites = _prefix(sc["sites"], progress) if stage == 0 else sc["sites"]
+        points(sites, color="#b9c3cb", size=10)
+        if stage == 1:
+            p = _prefix(a, progress)
+            points(p, labels=True, size=35)
+            path(p, lw=1.6)
+        elif stage == 2:
+            path(a, color="#94a3af", closed=True, lw=1)
+            points(a, color="#94a3af", size=18)
+            p = _prefix(_close(sc["augmented"]), progress)
+            path(p, color=ORANGE)
+            points(p, color=ORANGE, size=14)
+        elif stage == 3:
+            points(sc["augmented"], color=ORANGE, size=12)
+            active = _prefix(sc["dense"], progress)
+            path(active)
+    else:
+        if stage <= 1:
+            points(_prefix(a, progress) if stage == 0 else a, labels=True)
+            path(a, color="#adb9c2", closed=True, lw=.8)
+        if stage == 1:
+            active = _prefix(sc["walks"][chosen], progress)
+            path(active)
+            points(active[-1:], color=ORANGE, size=45)
+        elif stage >= 2:
+            # Closure changes coordinate scale. Separate, explicitly enlarged views
+            # keep actual candidate coordinates and one shared fixed camera, instead
+            # of shrinking them against the much larger open-walk coordinate box.
+            candidates = sc["candidates"]
+            scores = sc["candidate_crossings"]
+            columns = min(2, len(candidates))
+            rows = int(np.ceil(len(candidates)/columns))
+            for i, curve in enumerate(candidates):
+                col, row = i % columns, i // columns
+                inset = ax.inset_axes([col/columns+.025, 1-(row+1)/rows+.035,
+                                       .9/columns, .62/rows])
+                _limits(inset, [candidates.reshape(-1, 2)])
+                _style(inset)
+                prefix = _prefix(_close(curve), progress)
+                color = BLUE if stage == 3 and i == chosen else "#aab7c1" if stage == 3 else plt.get_cmap("tab10")(i)
+                inset.plot(*prefix.T, color=color, lw=2 if stage == 3 and i == chosen else 1.3)
+                score = "not counted" if scores is None else str(int(scores[i]))
+                inset.set_title(f"candidate {i}\n{score} crossings" +
+                                ("\nselected: first minimum" if stage == 3 and i == chosen else ""), fontsize=8,
+                                color=BLUE if stage == 3 and i == chosen else INK)
+            ax.text(.5, .01, "Enlarged closed-candidate views · shared fixed axes",
+                    ha="center", transform=ax.transAxes, fontsize=9)
+            if stage == 3:
+                active = _prefix(_close(candidates[chosen]), progress)
+    return dict(active_curve=active)
+
+
+def _construction_result_axes(raw_ax, road_ax, sample):
+    _line(raw_ax, sample["raw"], color=BLUE, lw=1.8)
+    raw_ax.set_title("Generator output: raw centerline\n" +
+                     (f"polygon fallback ({sample['construction']['crossings']} crossings)"
+                      if sample["construction"].get("crossings", 0) else "before shared road pipeline"), fontsize=11)
+    _road(road_ax, sample)
+    road_ax.set_title("Finished road after shared pipeline\n" + _label(sample), fontsize=11,
+                      color=GREEN if sample["valid"] else RED)
+    for ax in (raw_ax, road_ax):
+        _limits(ax, [sample["raw"], sample["outer"]])
+        _style(ax)
+
+
+def render_construction(out_dir, sample, *, movies=True):
+    """Family-specific progressive drawings and a still four-step storyboard."""
+    name = sample["config"]["generator"]
     if name == "repulsive":
         return
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4.6))
-    a = sc["checkpoints"][0] if name == "checkpoint" else sc["anchors"]
-    ax = axes[0]
-    if "sites" in sc:
-        ax.scatter(*sc["sites"].T, s=6, color="#a7b3bf", label="sites")
-    if name == "polar":
-        for p in a:
-            ax.plot([0,p[0]], [0,p[1]], color="#b8c7d4", lw=.7)
-    _line(ax, a, color="#8795a1", lw=1)
-    ax.scatter(*a.T, s=28, color=BLUE, zorder=3)
-    if name == "bezier":
-        cfg = sample["config"]
-        chords = np.linalg.norm(np.roll(a,-1,axis=0)-a,axis=1)
-        for i,p in enumerate(a):
-            h = min(cfg["rad"]*chords[i], cfg["handle_clamp_frac"]*sc["handle_scales"][i])
-            q = p + h*sc["tangents"][i]
-            ax.plot([p[0],q[0]],[p[1],q[1]], color=ORANGE, lw=1.5)
-            ax.scatter(*q, color=ORANGE, s=12)
-    if name == "hull":
-        aug = sc["augmented"]
-        _line(ax, aug, color=ORANGE, lw=1)
-        ax.scatter(*aug[1::2].T, s=18, color=ORANGE)
-    if name == "checkpoint":
-        axes[0].plot(*sc["walks"][0].T, color=ORANGE, lw=1)
-    _limits(ax, [a] + ([sc["sites"]] if "sites" in sc else []) +
-            ([sc["walks"][0]] if name == "checkpoint" else []))
-    ax.set_title({"bezier":"Sampled corners + outgoing handles", "hull":"Sorted anchors + displaced midpoints",
-                  "polar":"Sampled radial / angular knots", "voronoi":"Sites + selected anchors",
-                  "checkpoint":"Candidate 0: checkpoints + open walk"}[name], fontsize=11)
-    _line(axes[1], sample["raw"], color=BLUE, lw=2)
-    crossings = sc.get("crossings",0)
-    axes[1].set_title("Selected generator centerline\n" +
-                      (f"polygon fallback: {crossings} smooth crossings" if crossings else
-                       "after extent normalization, if used"), fontsize=11)
-    _road(axes[2], sample)
-    axes[2].set_title("Shared tail: resample → relax → road\n" + _label(sample), fontsize=11)
-    for ax in axes[1:]:
-        _limits(ax, [sample["raw"], sample["outer"]])
-    for ax in axes:
-        _style(ax)
-    fig.suptitle(name.capitalize() + " construction · actual buffers, illustrative stage reveal", fontsize=16)
-    fig.text(.5,.015,"Left panel uses construction coordinates; the last two use final coordinate units. This is a stage diagram, not a solver-time trace.",ha="center",fontsize=10)
-    fig.tight_layout(rect=(0,.045,1,.92))
+    stages = construction_stages(sample)
+    footer = ("Illustrative drawing of recorded geometry: stage order is algorithm order, not elapsed runtime.\n"
+              "Construction view uses pre-normalization coordinates; raw/final views at right use output coordinates.")
     if movies:
-        artists = [list(ax.lines)+list(ax.collections) for ax in axes]
-        line_data = {line: (np.array(line.get_xdata()), np.array(line.get_ydata()))
-                     for ax in axes for line in ax.lines}
-        from matplotlib.collections import PathCollection
-        scatter_data = {artist: np.array(artist.get_offsets()) for ax in axes
-                        for artist in ax.collections if isinstance(artist, PathCollection)}
+        fig = plt.figure(figsize=(12, 7.2))
+        grid = fig.add_gridspec(2, 3, width_ratios=(1, 1, 1), left=.025, right=.98,
+                               bottom=.13, top=.86, wspace=.14, hspace=.18)
+        ax = fig.add_subplot(grid[:, :2])
+        _construction_result_axes(fig.add_subplot(grid[0, 2]), fig.add_subplot(grid[1, 2]), sample)
+        heading = fig.text(.34, .95, "", ha="center", fontsize=17)
+        explanation = fig.text(.34, .9, "", ha="center", fontsize=10)
+        fig.text(.5, .035, footer, ha="center", fontsize=10)
         writer = _writer()
         with writer.saving(fig, str(out_dir / f"generator-{name}-construction.mp4"), dpi=120):
-            for stage in range(3):
-                for j, group in enumerate(artists):
-                    for art in group:
-                        art.set_visible(j <= stage)
-                for frame in range(12):
-                    # Reveal prefixes of recorded curves/anchors, never synthesize a
-                    # shape between stages or imply these are solver iterations.
-                    for art in artists[stage]:
-                        if art in line_data:
-                            x,y = line_data[art]
-                            n = max(1, int(np.ceil(len(x)*(frame+1)/8)))
-                            art.set_data(x[:n],y[:n])
-                        elif art in scatter_data:
-                            points = scatter_data[art]
-                            n = max(1,int(np.ceil(len(points)*(frame+1)/8)))
-                            art.set_offsets(points[:n])
+            for i, stage in enumerate(stages):
+                heading.set_text(f"{name.capitalize()} · {i+1}/4 · {stage['title']}")
+                explanation.set_text(textwrap.fill(stage["explanation"], width=93))
+                for progress in [*np.linspace(.02, 1, 18), *([1]*6)]:
+                    ax.clear()
+                    draw_construction_step(ax, sample, i, progress)
+                    if i == 3 and sample["construction"].get("crossings", 0):
+                        ax.text(.02, .02, f"Polygon fallback: {sample['construction']['crossings']} smooth crossings",
+                                transform=ax.transAxes, color=RED, fontsize=11)
                     writer.grab_frame()
-        for group in artists:
-            for art in group:
-                art.set_visible(True)
+        plt.close(fig)
+    fig, axes = plt.subplots(2, 3, figsize=(12, 7.6))
+    for i, stage in enumerate(stages):
+        ax = axes[i//2, i%2]
+        draw_construction_step(ax, sample, i, 1)
+        ax.set_title(textwrap.fill(f"{i+1}. {stage['title']}", width=39), fontsize=11)
+    _construction_result_axes(axes[0, 2], axes[1, 2], sample)
+    fig.suptitle(f"{name.capitalize()} construction · actual geometry, illustrative drawing", fontsize=16)
+    fig.text(.5, .025, footer, ha="center", fontsize=10)
+    fig.tight_layout(rect=(0, .08, 1, .93))
     _save(fig, out_dir / f"generator-{name}-construction.png")
+    return dict(kind="progressive construction drawing of recorded geometry", sample=_record(sample),
+                stage_titles=[s["title"] for s in stages], stages=len(stages),
+                frames=96 if movies else 0, duration_seconds=16 if movies else 0,
+                geometry_interpolated=False, elapsed_runtime=False,
+                output=f"generator-{name}-construction." + ("mp4" if movies else "png"))
 
 
 def _writer():
@@ -701,14 +881,12 @@ def render(out_dir: Path, *, movies=True):
             raise AssertionError(f"not enough valid examples for {name}: {[s['fail'] for s in pool]}")
         examples[name] = selected
         render_examples(out_dir,selected)
-        render_construction(out_dir,selected[0],movies=movies)
+        construction_animation = render_construction(out_dir,selected[0],movies=movies)
         comparisons = render_comparisons(out_dir,name)
         manifest["families"][name] = dict(seed_pool=seeds, examples=[_record(s) for s in selected],
                                           comparisons=comparisons)
         if name != "repulsive":
-            manifest["animations"][name] = dict(kind="illustrative reveal of recorded construction buffers",
-                                                sample=_record(selected[0]), stages=3,
-                                                output=f"generator-{name}-construction." + ("mp4" if movies else "png"))
+            manifest["animations"][name] = construction_animation
         print(f"rendered {name}",flush=True)
     render_gallery(out_dir,examples)
     manifest["specials"] = render_specials(out_dir)
@@ -718,12 +896,53 @@ def render(out_dir: Path, *, movies=True):
     return manifest
 
 
+def render_construction_animations(out_dir: Path, source_manifest: Path):
+    """Refresh only construction assets, preserving the other visual selections."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest = json.loads(source_manifest.read_text())
+    source_dir = Path(__file__).resolve().parents[1] / "track_gen/_src"
+    source = dict(git_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+                  worktree_dirty=bool(subprocess.check_output(["git", "status", "--porcelain"], text=True)),
+                  renderer_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                  warp_version=wp.__version__, numpy_version=np.__version__,
+                  matplotlib_version=matplotlib.__version__, trackgen_version=__version__, device="cpu")
+    for name in FAMILIES[:-1]:
+        old = manifest["animations"][name]["sample"]
+        overrides = {k: v for k, v in old["config"].items()
+                     if k not in ("generator", "num_envs", "device", "on_invalid")}
+        pool = sample_batch(name, seeds=manifest["families"][name]["seed_pool"], overrides=overrides)
+        sample = pool[old["env"]]
+        if sample["seed"] != old["seed"]:
+            raise AssertionError("construction seed-pool selection changed")
+        record = render_construction(out_dir, sample)
+        source_file = source_dir / ("warp_generate" + ("" if name == "bezier" else "_"+name) + ".py")
+        record["source"] = dict(source, generator_source_sha256=hashlib.sha256(source_file.read_bytes()).hexdigest())
+        record["command"] = ("python -m viz.render_generator_guide --construction-only "
+                             "--source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR")
+        manifest["animations"][name] = record
+        for suffix in (".png", ".mp4"):
+            file = out_dir / ("generator-"+name+"-construction"+suffix)
+            manifest["assets"][file.name] = file.stat().st_size
+        print(f"rendered construction {name}", flush=True)
+    (out_dir / "generators-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True)+"\n")
+    return manifest
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir",type=Path,default=Path("docs/assets/racing"))
     parser.add_argument("--no-movies",action="store_true",help="render posters only (no ffmpeg needed)")
+    parser.add_argument("--construction-only", action="store_true",
+                        help="refresh the five construction movies/posters using recorded manifest selections")
+    parser.add_argument("--source-manifest", type=Path,
+                        default=Path("docs/assets/racing/generators-manifest.json"))
     args = parser.parse_args()
-    render(args.out_dir,movies=not args.no_movies)
+    if args.construction_only:
+        if args.no_movies:
+            parser.error("--construction-only includes movies; omit --no-movies")
+        render_construction_animations(args.out_dir, args.source_manifest)
+    else:
+        render(args.out_dir,movies=not args.no_movies)
 
 
 if __name__ == "__main__":

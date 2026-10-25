@@ -29,11 +29,6 @@ from track_gen.plugin.stage import CaptureClass, StageBuilder
 from track_gen.stages import params as sp
 from track_gen.testing.contract import no_allocation
 
-# Roadmap PR13d: bezier's style_sampling is deprecated (one DeprecationWarning per built
-# generator); this module still exercises it.
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
-
 DEV = "cpu"
 E = 2
 TRACK_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen", "length",
@@ -719,7 +714,9 @@ def test_track_generator_scratch_is_a_view_of_the_program():
     assert gen._inputs is p.inputs and gen._regen_mask is p.inputs["regen_mask"]
     # The PR9 composition still runs on the view and writes the same Track.
     want = _snap(gen._track)
-    warp_pipeline._run_pipeline(gen._config, gen._seed_buf, out=gen._track, scratch=s,
+    from tests._reference_generators.warp_pipeline import _run_pipeline
+
+    _run_pipeline(gen._config, gen._seed_buf, out=gen._track, scratch=s,
                                 generator_spec=gen._generator_spec,
                                 ctx=LaunchContext.for_call(DEV))
     assert _snap(gen._track) == want

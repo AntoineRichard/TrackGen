@@ -1,4 +1,4 @@
-"""CourseConfig validation matrix + the deprecated set_capturing no-op."""
+"""CourseConfig validation matrix."""
 from __future__ import annotations
 
 import pytest

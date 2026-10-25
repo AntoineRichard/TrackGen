@@ -71,7 +71,7 @@ def corner_count_sample_inplace(seeds_wp, attempt, config, out_count,
     # Legacy entry point (kept for out-of-tree plugins): ops.sample_counts keyed
     # seed * CORNER_COUNT_SALT + attempt, without the public op's validation.
     _sample_counts_launch(ctx, seeds_wp, CORNER_COUNT_SALT, int(attempt),
-                          int(config.min_num_points), int(config.max_num_points), out_count, keying="hashed")
+                          int(config.min_num_points), int(config.max_num_points), out_count)
     ctx.sync()
 
 def corner_sample_inplace(seeds_wp, attempt, config, out_corners, used_scratch,
@@ -101,7 +101,7 @@ def corner_sample_inplace(seeds_wp, attempt, config, out_corners, used_scratch,
     scale = scale_per_env if per_env else float(config.scale)
     _sample_grid_points_launch(ctx, seeds_wp, CORNER_SALT, int(attempt), P, num_cells,
                                float(cell_size), scale, used_scratch, out_corners,
-                               per_env=per_env, keying="hashed")
+                               per_env=per_env)
     ctx.sync()
 
 def ccw_sort_inplace(corners_wp, count_wp, keys_scratch, out_wp, P,
@@ -182,13 +182,11 @@ def _enqueue_bezier(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx
     npseg = int(config.num_points_per_segment)
     M = P * npseg
     arc = ops.ArcScratch(scratch.gen_arc_real, scratch.gen_arc_seg, scratch.gen_arc_s, scratch.gen_arc_cr)
-    style = bool(getattr(config, 'style_sampling', False))
-    scale_pe = rad_pe = clamp_pe = None
-    ops.sample_counts(ctx, seeds_wp, CORNER_COUNT_SALT, 0, int(config.min_num_points), int(config.max_num_points), scratch.gen_count, keying="hashed")
+    ops.sample_counts(ctx, seeds_wp, CORNER_COUNT_SALT, 0, int(config.min_num_points), int(config.max_num_points), scratch.gen_count)
     num_cells, cell = ops.grid_cells(config.min_point_distance)
-    ops.sample_grid_points(ctx, seeds_wp, CORNER_SALT, 0, P, num_cells, float(cell), float(config.scale), scratch.gen_used, scratch.gen_corners, keying="hashed")
+    ops.sample_grid_points(ctx, seeds_wp, CORNER_SALT, 0, P, num_cells, float(cell), float(config.scale), scratch.gen_used, scratch.gen_corners)
     _angle_sort_launch(ctx, scratch.gen_corners, P, scratch.gen_count, P, scratch.gen_keys, scratch.gen_ordered, m_floor=1)
-    assemble_inplace(scratch.gen_ordered, scratch.gen_count, config, scratch.gen_tan, scratch.gen_scale, scratch.gen_dense, rad_per_env=rad_pe, clamp_per_env=clamp_pe, ctx=ctx)
+    assemble_inplace(scratch.gen_ordered, scratch.gen_count, config, scratch.gen_tan, scratch.gen_scale, scratch.gen_dense, rad_per_env=None, clamp_per_env=None, ctx=ctx)
     ops.arc_resample(ctx, scratch.gen_dense, M, N, arc, scratch.gen_rs, scratch.gen_arc_co)
     ops.self_intersections(ctx, scratch.gen_rs, N, scratch.gen_crossers, count=scratch.gen_arc_co)
     ctx.launch(_assemble_polygon_selected_k, E * M, [scratch.gen_ordered, scratch.gen_count, P, npseg, scratch.gen_crossers, scratch.gen_poly])

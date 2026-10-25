@@ -35,7 +35,7 @@ are:
   ``checkpoint_angle_jitter`` and ``checkpoint_turn_rate`` (``checkpoint``). The polar,
   voronoi and checkpoint **gate** generators have the same ring knobs (not
   ``checkpoint_turn_rate``: they do not steer). Each generator page gives their bounds,
-  effective range and measured yield (:ref:`generators-per-env`);
+  effects, visual examples and failure cases (:ref:`generators-per-env`);
 - the course **size** (``size``, ``[0.1, 10]``) of every built-in generator but
   ``external``: ``generator.size`` on tracks and on the ``bezier`` / ``hull`` gate
   generators, ``normalize.size`` (the ``normalize.extent`` stage) for the ``polar``,

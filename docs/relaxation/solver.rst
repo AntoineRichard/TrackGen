@@ -118,6 +118,27 @@ not preserve every radius or clearance. The spacing-only polish then uses the or
 spacing correction with separation and bending disabled. The tail uses fixed launches
 and the existing position buffers; it does not run Chebyshev acceleration.
 
+.. _relax-smoothing-comparison:
+
+.. figure:: ../assets/racing/relaxation-smoothing.png
+   :alt: The same seed after zero, five and twenty Taubin passes, with an identical
+         zoom showing the unsmoothed centerline as an orange dashed baseline.
+
+   Only ``relax_smooth_passes`` changes after 50 main sweeps. Spacing polish is
+   disabled in all three panels so its correction does not hide the smoothing
+   effect. The fixed zoom shows small corners rounding; the orange dashed line
+   retains the zero-pass centerline. Counts, validity and failure masks describe
+   the returned, uniformly resampled road, not internal bead buffers.
+
+All three selected seed-0 results pass the configured checks. Their minimum
+nonlocal bead distance decreases from approximately ``1.043`` to ``0.996`` while
+the smallest local radius first increases, then decreases. Smooth-looking output
+does not imply improved separation or monotonic curvature. Measure final geometry
+and failure bits when changing either tail budget; :ref:`geometry-validity` explains
+what the sampled checks establish. The
+:download:`comparison manifest <../assets/racing/relaxation-manifest.json>` records
+the full settings and diagnostics.
+
 .. list-table::
    :header-rows: 1
    :widths: 35 15 50

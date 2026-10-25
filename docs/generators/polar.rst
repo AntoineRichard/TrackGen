@@ -100,22 +100,31 @@ and normalizes the longest side to the shared target extent times ``scale * size
 The shared resampling and relaxation stages follow.
 
 .. figure:: ../assets/racing/generator-polar-construction.png
-   :alt: Polar construction buffers, generated centerline and finished road.
+   :alt: Four construction steps: ordered angular slots, sampled knot radii, periodic spline and resampling, beside the raw centerline and finished road.
    :align: center
 
-   Recorded construction geometry, followed by the selected generator centerline and the shared pipeline result. The left panel uses construction coordinates; the other panels use output coordinates.
+   Four steps explain ordered angular slots, sampled knot radii, periodic spline and
+   resampling. The raw generator centerline and finished road at right use output
+   coordinates; construction panels use their original coordinates.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-polar-construction.png" aria-label="Three-stage reveal of actual polar construction buffers, generator centerline and finished road.">
+   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-polar-construction.png" aria-label="Progressive drawing of ordered angular slots, sampled knot radii, periodic spline and resampling, from actual polar geometry.">
      <source src="../generator-polar-construction.mp4" type="video/mp4">
-     Three-stage reveal of actual polar construction buffers, generator centerline and finished road.
+     Progressive drawing of ordered angular slots, sampled knot radii, periodic spline and resampling, from actual polar geometry.
    </video>
 
 :download:`Download the animation <../assets/racing/generator-polar-construction.mp4>`.
 
-The animation reveals the three panels in order. It is an illustrative construction
-sequence, not elapsed runtime or a trace of iterative solver states.
+**Text alternative:** Dashed rays show the unjittered angular slots, followed by the actual
+radially and angularly jittered knots in traversal order. The clip then draws the recorded
+periodic spline and marks its samples. The normalized raw centerline and finished road
+remain visible at right.
+
+The geometry comes from recorded construction buffers. Prefix drawing explains
+algorithm order. Playback timing is illustrative, with no position morph
+between stages or claim of measured runtime or iterative solver states. The view
+stays fixed within each coordinate system.
 
 Continue with :doc:`/how-it-works/pipeline`, :doc:`/configuration/tuning`,
 :ref:`builtin-generator-params`, or :doc:`/tutorials/gate-sequences`.

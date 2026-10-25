@@ -111,22 +111,31 @@ crossing check chooses the augmented polygon fallback when the smooth curve cros
 The shared tail then determines whether the finite-width road is valid.
 
 .. figure:: ../assets/racing/generator-hull-construction.png
-   :alt: Hull construction buffers, generated centerline and finished road.
+   :alt: Four construction steps: sampled anchors, angle ordering, midpoint displacement and curve sampling, beside the raw centerline and finished road.
    :align: center
 
-   Recorded construction geometry, followed by the selected generator centerline and the shared pipeline result. The left panel uses construction coordinates; the other panels use output coordinates.
+   Four steps explain sampled anchors, angle ordering, midpoint displacement and curve
+   sampling. The raw generator centerline and finished road at right use output coordinates;
+   construction panels use their original coordinates.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-hull-construction.png" aria-label="Three-stage reveal of actual hull construction buffers, generator centerline and finished road.">
+   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-hull-construction.png" aria-label="Progressive drawing of sampled anchors, angle ordering, midpoint displacement and curve sampling, from actual hull geometry.">
      <source src="../generator-hull-construction.mp4" type="video/mp4">
-     Three-stage reveal of actual hull construction buffers, generator centerline and finished road.
+     Progressive drawing of sampled anchors, angle ordering, midpoint displacement and curve sampling, from actual hull geometry.
    </video>
 
 :download:`Download the animation <../assets/racing/generator-hull-construction.mp4>`.
 
-The animation reveals the three panels in order. It is an illustrative construction
-sequence, not elapsed runtime or a trace of iterative solver states.
+**Text alternative:** The drawing first reveals sampled anchors and their angle-sorted
+cycle. Orange arrows then connect each ordinary edge midpoint to its actual displaced
+position, before drawing the curve or selected polygon fallback. The raw centerline and
+finished road remain visible at right.
+
+The geometry comes from recorded construction buffers. Prefix drawing explains
+algorithm order. Playback timing is illustrative, with no position morph
+between stages or claim of measured runtime or iterative solver states. The view
+stays fixed within each coordinate system.
 
 Continue with :doc:`/how-it-works/pipeline`, :doc:`/configuration/tuning`,
 :ref:`builtin-generator-params`, or :doc:`/tutorials/gate-sequences`.

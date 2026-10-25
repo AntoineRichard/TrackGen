@@ -6,7 +6,7 @@ Installation
 TrackGen is a Warp-first library: ``warp-lang`` and ``numpy`` are its only runtime
 dependencies, and every pipeline runs on the Warp ``cpu`` device as well as on ``cuda``.
 
-This guide and its examples target ``v0.3.0rc1``, a release candidate for downstream
+This guide and its examples target ``v0.3.0rc2``, a release candidate for downstream
 racing-repository validation.
 
 Requirements
@@ -56,12 +56,12 @@ repository. ``uv add`` records the dependency in your ``pyproject.toml``, resolv
 .. code-block:: bash
 
    # pin the release candidate used by this guide
-   uv add "git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc1"
+   uv add "git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc2"
 
    # with an extra (here the Gradio parameter explorer's)
-   uv add "track_gen[ui] @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc1"
+   uv add "track_gen[ui] @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc2"
 
-   # or a local v0.3.0rc1 checkout (see below), as an editable path dependency
+   # or a local v0.3.0rc2 checkout (see below), as an editable path dependency
    uv add --editable /path/to/TrackGen
 
 ``uv sync`` later rebuilds the environment from the lockfile (on a fresh clone, or in CI).
@@ -70,7 +70,7 @@ With pip:
 
 .. code-block:: bash
 
-   pip install "track_gen @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc1"
+   pip install "track_gen @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc2"
 
 From a checkout
 ---------------
@@ -80,7 +80,7 @@ install the checkout in editable mode with the ``dev`` extra:
 
 .. code-block:: bash
 
-   git clone --branch v0.3.0rc1 https://github.com/AntoineRichard/TrackGen.git && cd TrackGen
+   git clone --branch v0.3.0rc2 https://github.com/AntoineRichard/TrackGen.git && cd TrackGen
 
    # uv (fetches Python 3.12 if it is missing)
    uv venv --python 3.12

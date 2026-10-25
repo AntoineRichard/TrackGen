@@ -9,18 +9,20 @@ the architecture and the roadmap, and `CHANGELOG.md` for what shipped.
 ## State (2026-10-25)
 - `main` = **v0.2.0** (released; GitHub release v0.2.0). It is the v2 refactor, roadmap
   PR0–PR15b; see the CHANGELOG and `docs/library-readiness/archive/upgrading/from-0.1.rst`.
-- `v3` = the 0.3 line, version `0.3.0rc1`. Roadmap PR16 cleanup is implemented in
+- `v3` = the 0.3 line, version `0.3.0rc2`. Roadmap PR16 cleanup is implemented in
   four dev milestones. Draft PR #4 prepares the release candidate; downstream racing-
   repository validation and the user's explicit approval are required before 0.3.0.
+  RC2 addresses review findings #1–#3 and #5–#14; #4 (the auto-spacing config
+  contract) is explicitly deferred until the user answers its review thread.
   1.0 is a later milestone.
 
 ## Documentation work and release progress
-- `v0.3.0rc1` is commit `4664986f6097b62e4f6557da925de0f9210c63fe` on `v3`.
+- `v0.3.0rc2` is commit `a42759a3f999a8668a200cddc3f04e0508478dd1` on `v3`.
   Draft PR #4 is open. Both CPU CI lanes, strict docs and linkcheck passed.
-  The exact tag archive passed 756 CUDA tests and 4,270 full-suite tests on spark-home
+  The exact tag archive passed 756 CUDA tests and 4,283 full-suite tests on spark-home
   (four optional Gradio skips); 210 full-generator + 4,800 gate arrays match freshly
-  rebuilt dev4 snapshots byte for byte. Release steps 1–2 below are complete.
-- Release step 3 is pending: the user's racing repos must validate `@v0.3.0rc1` and the
+  rebuilt rc1 snapshots byte for byte. Release steps 1–2 below are complete.
+- Release step 3 is pending: the user's racing repos must validate `@v0.3.0rc2` and the
   user must explicitly approve the final release. Do not restart the release sequence
   or publish 0.3.0 while waiting.
 - The approved reader-documentation overhaul is on `codex/racing-docs`, based on the RC.
@@ -134,9 +136,9 @@ old `workstation` host is dead.
    - validate the rc tree on spark-home: the CUDA lane and the full suite. Its outputs must
      equal dev4's, since only the version changed.
 3. **Hand the rc to the user.** The racing repositories pin
-   `git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc1`. STOP here until the user
-   confirms the racing validation passed. Fix anything they report on `v3`, then cut `rc2`
-   the same way.
+   `git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc2`. STOP here until the user
+   confirms the racing validation passed. Fix anything they report on `v3`, then cut the
+   next release candidate the same way.
 4. **Release, only after the user's explicit go:**
    - set `0.3.0` and date the CHANGELOG section `## 0.3.0 (<date>, tag v0.3.0)`, with a short
      summary that links the 0.2 -> 0.3 guide;

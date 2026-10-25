@@ -49,9 +49,9 @@ class _PointGates(Stage):
         size = b.param("size")
 
         def enqueue(ctx):
-            ops.sample_counts(ctx, seed, count_salt, count_offset, lo, hi, count, keying="hashed")
+            ops.sample_counts(ctx, seed, count_salt, count_offset, lo, hi, count)
             ops.sample_grid_points(ctx, seed, point_salt, point_offset, P, num_cells,
-                                   float(cell_size), scale, used, points, size=size, keying="hashed")
+                                   float(cell_size), scale, used, points, size=size)
         return enqueue
 
 

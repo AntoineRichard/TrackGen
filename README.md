@@ -10,7 +10,7 @@ native.**
 ![Warp](https://img.shields.io/badge/warp--lang-%E2%89%A5%201.18-76b900)
 
 > [!NOTE]
-> **These examples target the `v0.3.0rc1` release candidate.** Read [Upgrading from 0.2](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc1/docs/upgrading/from-0.2.rst)
+> **These examples target the `v0.3.0rc2` release candidate.** Read [Upgrading from 0.2](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc2/docs/upgrading/from-0.2.rst)
 > before updating: legacy APIs are removed, built-in seeds produce new geometry,
 > invalid results default to poison, configs are frozen, and Track/GateSequence storage
 > must be complete. The candidate is ready for downstream racing-repository validation.
@@ -52,12 +52,12 @@ Python ≥ 3.10; `numpy` and `warp-lang` ≥ 1.18 are the only runtime deps. The
 wheels); the `cpu` device runs anywhere.
 
 ```bash
-uv add "git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc1"                     # the release candidate
-pip install "track_gen @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc1"    # or with pip
-uv add "track_gen[ui] @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc1"      # with the UI extra
+uv add "git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc2"                     # the release candidate
+pip install "track_gen @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc2"    # or with pip
+uv add "track_gen[ui] @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc2"      # with the UI extra
 ```
 
-From a checkout of `v0.3.0rc1`: `uv venv --python 3.12 && uv pip install -e ".[dev]"`.
+From a checkout of `v0.3.0rc2`: `uv venv --python 3.12 && uv pip install -e ".[dev]"`.
 Extras: `dev` (tests, torch, matplotlib) · `ui` (Gradio parameter explorer)
 · `docs` (Sphinx). Details:
 [installation](https://antoinerichard.github.io/TrackGen/getting-started/installation.html).
@@ -128,7 +128,7 @@ More: [quickstart](https://antoinerichard.github.io/TrackGen/getting-started/qui
 | | |
 |---|---|
 | [Getting started](https://antoinerichard.github.io/TrackGen/getting-started/quickstart.html) | install, quickstart, concepts and terms, parameter explorer |
-| [Upgrading from 0.2](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc1/docs/upgrading/from-0.2.rst) | every 0.3 break and its replacement; [historical 0.1 → 0.2 guide](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc1/docs/upgrading/from-0.1.rst) |
+| [Upgrading from 0.2](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc2/docs/upgrading/from-0.2.rst) | every 0.3 break and its replacement; [historical 0.1 → 0.2 guide](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc2/docs/upgrading/from-0.1.rst) |
 | [Generating tracks and gates](https://antoinerichard.github.io/TrackGen/user-guide/generating.html) | presets, specs, params, seeds; [results](https://antoinerichard.github.io/TrackGen/user-guide/results.html); [curricula](https://antoinerichard.github.io/TrackGen/user-guide/curricula.html); [choosing a generator](https://antoinerichard.github.io/TrackGen/tutorials/choosing-a-generator.html) |
 | [Generators](https://antoinerichard.github.io/TrackGen/generators/overview.html) | the six families, quality benchmarks |
 | [Courses, simulators and RL](https://antoinerichard.github.io/TrackGen/utilities/course.html) | courses, [CUDA graphs in a sim](https://antoinerichard.github.io/TrackGen/tutorials/cuda-graph-in-a-sim.html), [RL auto-reset](https://antoinerichard.github.io/TrackGen/user-guide/rl-auto-reset.html), [runtime utilities](https://antoinerichard.github.io/TrackGen/utilities/overview.html) |

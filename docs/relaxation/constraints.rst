@@ -29,6 +29,29 @@ radius ``w*(1+m)``. For variable width, use per-point solver radii
 ``r_i=w_i*(1+m)``: pair targets are ``r_i+r_j`` and local bending uses ``r_i``;
 the auto band uses the largest half-width in the environment.
 
+.. _relax-margin-comparison:
+
+See what margin changes
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. figure:: ../assets/racing/relaxation-margin.png
+   :alt: Seed 14 after 50 main sweeps at margins zero, 0.15 and 0.5. The middle
+         result passes; zero margin and the largest margin fail sampled thickness.
+
+   Only ``relax_margin`` changes. At half-width ``0.5``, the pair targets are
+   ``1.0``, ``1.15`` and ``1.5`` distance units. The same starting loop, 50 main
+   sweeps and disabled smoothing/polish are used throughout; equal axes expose
+   shape changes. A larger target can reshape the loop substantially and still
+   leave a failed finite-budget result. It is not a monotonic validity control.
+
+The label's minimum nonlocal bead distance is measured on the returned centerline,
+with the validity check's auto-derived index band. It describes one sampled
+diagnostic, not minimum segment clearance or the complete thickness check. Each
+panel shows the actual count, validity and failure mask; failed geometry uses
+explicit ``on_invalid="keep"``. These selected CPU examples do not estimate yield.
+The settings, source information and measurements are in the
+:download:`comparison manifest <../assets/racing/relaxation-manifest.json>`.
+
 Nonlocal separation
 ~~~~~~~~~~~~~~~~~~~~
 

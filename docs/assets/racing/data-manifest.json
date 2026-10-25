@@ -1,5 +1,5 @@
 {
-  "source_version": "0.3.0rc1",
+  "source_version": "0.3.0rc2",
   "command": "python -m viz.render_data_guide --out-dir OUT",
   "schematics": [
     "data-layout.png",

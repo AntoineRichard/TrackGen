@@ -41,10 +41,6 @@ from track_gen.exec import LaunchContext
 from track_gen.plugin import GeneratorSpec, registry
 from track_gen.testing.trace import trace_launches
 
-# Roadmap PR13d: bezier's style_sampling (the bezier_style case) is deprecated.
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
-
 DEV = "cpu"
 SEEDS = [0, 1, 7, 99991, 2147483647, 1000003]
 TRACK_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen", "length",

@@ -11,7 +11,6 @@ import hashlib
 import json
 import platform
 import sys
-import warnings
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -74,14 +73,6 @@ def _crossers(g):
 
 
 def compute() -> dict:
-    with warnings.catch_warnings():
-        # Roadmap PR13d: bezier's style_sampling (a fingerprinted case) is deprecated.
-        warnings.filterwarnings("ignore", message="bezier's style_sampling is deprecated",
-                                category=DeprecationWarning)
-        return _compute()
-
-
-def _compute() -> dict:
     from track_gen._src.gate_generator import GateGenerator
     from track_gen._src.rng_utils import PerEnvSeededRNG
     from track_gen._src.track_generator import TrackGenerator

@@ -928,8 +928,9 @@ class StageBuilder:
         ``hash32_host(fnv1a_32(f"{stage_id}/{stream}".encode()))``.
 
         Frozen for plugin API version 1, so outputs stay reproducible across releases.
-        Key the per-env RNG as ``wp.rand_init(int32(hash32(uint32(seed[e]) ^ salt) &
-        0x7FFFFFFF))``. Idempotent per stream; two streams whose salts collide raise
+        Key the per-env RNG with :func:`track_gen.ops.rng.init`
+        (``init(seed[e], salt)``), or :func:`~track_gen.ops.rng.init_at` for an indexed
+        stream. Idempotent per stream; two streams whose salts collide raise
         ``ValueError``.
         """
         stream = str(stream)

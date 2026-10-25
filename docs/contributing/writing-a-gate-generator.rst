@@ -136,7 +136,7 @@ tangent:
    import warp as wp
 
    from track_gen import plugin
-   from track_gen.ops.funcs import hash32
+   from track_gen.ops import rng
 
 
    @wp.kernel
@@ -146,8 +146,7 @@ tangent:
        t = wp.tid()                         # one thread per anchor slot: t = e * A + i
        e = t // A
        i = t - e * A
-       key = hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)
-       state = wp.rand_init(wp.int32(key))
+       state = rng.init(seed[e], salt)
        phase = 6.2831853 * wp.randf(state)  # the same draw for every anchor of e
        s = 6.2831853 * float(i) / float(A)  # lap parameter in [0, 2*pi)
        u = s + phase

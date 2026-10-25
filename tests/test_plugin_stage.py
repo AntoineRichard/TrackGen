@@ -246,7 +246,7 @@ def test_a_bounded_stage_registers():
 
 def test_describe_a_stage_generator(toys):
     info = registry.describe("generator", "toy.wobble")
-    assert info.capturable is True and info.accepts_ctx is True
+    assert info.capturable is True
     assert info.origin == "tests._plugin_toys" and not info.builtin
     assert info.params_schema["title"] == "ToyWobbleParams"
     assert info.params_schema["properties"]["amp"]["x-dynamic"] is True
@@ -684,8 +684,10 @@ def test_private_pipeline_helpers_refuse_a_stage_class(toys):
 
     cfg = TrackGenConfig(generator="toy.wobble", device=DEV, num_envs=E)
     gen = _gen()
+    from tests._reference_generators.warp_pipeline import _run_pipeline
+
     with pytest.raises(TypeError, match="Stage generators run through TrackGenerator"):
-        warp_pipeline._run_pipeline(cfg, gen._seed_buf, out=gen._track, scratch=gen._scratch,
+        _run_pipeline(cfg, gen._seed_buf, out=gen._track, scratch=gen._scratch,
                                     generator_spec=ToyWobble)
     with pytest.raises(RuntimeError, match="already built"):
         warp_pipeline._inflate_warp_alloc(gen._config, generator_spec=gen._generator_spec)

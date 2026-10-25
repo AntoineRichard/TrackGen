@@ -8,7 +8,8 @@ re-generate the SAME tracks (identical per-env seeds) under varying settings so 
 is one track and you can see the lever's impact directly. Everything is in metres
 (half_width=0.5 m, scale=10 -> ~20 m box; the 1 m-track regime).
 
-Quantitative numbers are the measured E=8192 results from benchmark_yield_sweep.py.
+Quantitative numbers are historical 0.1-era E=8192 results from
+benchmark_yield_sweep.py; illustrative tracks use the current generator.
 Headless (Agg); writes viz/out/track_gen_report.pdf.
 
     .venv/bin/python -m viz.make_report
@@ -35,6 +36,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 import warp as wp
 
 from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
+from viz.plot_tracks import _track_to_torch
 
 OUT_PDF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out", "track_gen_report.pdf")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -42,15 +44,13 @@ HALF_WIDTH = 0.5     # 1 m track width
 SCALE = 10.0         # ~20 m box
 SCALEBAR_M = 5.0
 
-# ------------------------------------------------------------------ measured E=8192 data
+# ------------------------------------------------------------------ historical 0.1-era E=8192 data
 # (from benchmark_yield_sweep.py, 1m/20m regime, RTX 5000 Ada; yield is at the working
 #  resolution -- see the caveats page). Filled from the sweep run.
 LINKS = {"x": [128, 256, 384, 512], "yield": [0.992, 0.684, 0.203, 0.031],
          "sec": [0.213, 0.782, 1.754, 3.081]}
 ITERS = {"x": [50, 150, 300, 600], "yield": [0.522, 0.684, 0.766, 0.825],
          "sec": [0.569, 0.782, 1.105, 1.779]}
-REGEN = {"x": [10, 20, 40], "yield": [0.684, 0.684, 0.684],
-         "sec": [0.782, 1.162, 1.910]}
 # XPBD over-relaxation: LARGER steps HURT (Jacobi solve is unstable for factor > 1).
 PBD = {"x": [1.0, 1.5, 2.0, 2.5], "yield": [0.684, 0.341, 0.022, 0.000],
        "sec": [0.782, 0.785, 0.787, 0.795]}
@@ -60,7 +60,7 @@ PBD_EXTRA = {  # margin / combined probes (256 links, iters=150 unless noted)
     "step x2.0, iters=50": {"yield": 0.023, "sec": 0.565},
 }
 
-BASELINE = {"links": 256, "iters": 150, "regen": 10, "yield": 0.684, "sec": 0.782}
+BASELINE = {"links": 256, "iters": 150, "yield": 0.684, "sec": 0.782}
 
 # Constant-spacing result (E=8192, spacing=0.30 m ≈ 0.6×half_width, N_max=384, iters=150)
 CS = {"spacing": 0.30, "n_max": 384, "yield": 0.999, "sec": 0.557, "peak_mb": 353}
@@ -111,18 +111,15 @@ def _draw(ax, track, e, title_prefix):
 class _TrackView:
     """Thin wrapper that exposes Track wp.array fields as torch tensors for plotting."""
     def __init__(self, track):
-        self.center = wp.to_torch(track.center)
-        self.outer = wp.to_torch(track.outer)
-        self.inner = wp.to_torch(track.inner)
-        self.valid = wp.to_torch(track.valid)
+        self.center, self.outer, self.inner, self.valid, _ = _track_to_torch(track)
 
 
-def _gen(links, iters, n, regen=10, sr=1.0, pr=1.0, margin=0.15, seed0=0,
+def _gen(links, iters, n, sr=1.0, pr=1.0, margin=0.15, seed0=0,
          spacing=0.10, n_max=256):
     cfg = TrackGenConfig(num_envs=n, num_points=links, half_width=HALF_WIDTH, scale=SCALE,
                          relax_iters=iters, relax_sep_relax=sr,
                          relax_spc_relax=pr, relax_margin=margin, device=DEVICE,
-                         spacing=spacing, N_max=n_max)
+                         spacing=spacing, N_max=n_max, on_invalid="keep")
     rng = PerEnvSeededRNG(seeds=seed0, num_envs=n, device=DEVICE)
     return _TrackView(TrackGenerator(cfg, rng).generate(n))
 
@@ -139,7 +136,8 @@ def _text_page(pdf, title, lines, fontsize=10):
 
 def page_overview(pdf):
     lines = [
-        "Pure-Warp track-generation pipeline -- E=8192 yield study",
+        "Historical 0.1-era track-generation measurements -- E=8192 yield study",
+        "Illustrative tracks use the current generator; measured results are historical.",
         f"device: {DEVICE}    regime: half_width=0.5 m, scale=10  (1 m track / ~20 m box)",
         "pipeline: generate -> resample -> XPBD relax -> inflate  (all NVIDIA Warp)",
         "",
@@ -156,9 +154,6 @@ def page_overview(pdf):
     lines.append("relax iters (256 links):")
     for x, y, s in zip(ITERS["x"], ITERS["yield"], ITERS["sec"]):
         lines.append(f"  {x:>4} iters{'':<14}{y:>8.3f}{s:>9.3f}")
-    lines.append("regen attempts (256 links):")
-    for x, y, s in zip(REGEN["x"], REGEN["yield"], REGEN["sec"]):
-        lines.append(f"  {x:>4} regen{'':<14}{y:>8.3f}{s:>9.3f}")
     lines.append("XPBD step scale sr=pr (256 links, 150 it):")
     for x, y, s in zip(PBD["x"], PBD["yield"], PBD["sec"]):
         if y is not None:
@@ -203,8 +198,7 @@ def page_quant(pdf):
     d.set_title("End-to-end speed @ E=8192")
     d.set_xlabel("num_points", color="#1f77b4"); d2.set_xlabel("relax_iters", color="#2ca02c")
     d.set_ylabel("s / call (8192 tracks)"); d.grid(alpha=0.3)
-    d.plot(REGEN["x"], REGEN["sec"], "^:", color="0.5")
-    fig.suptitle("Lever impact on yield and speed (measured E=8192)", fontsize=13)
+    fig.suptitle("Historical 0.1-era lever impact on yield and speed (measured E=8192)", fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     pdf.savefig(fig)
     plt.close(fig)
@@ -222,9 +216,9 @@ def _fixed_seed_page(pdf, title, subtitle, col_settings, gen_fn, n_seeds=5):
             _draw(ax, tr, i, label if i == 0 else "")
             if j == 0:
                 ax.set_ylabel(f"seed {i}", fontsize=7)
-    sub = "\n".join(textwrap.wrap(subtitle, width=max(55, 20 * ncol)))  # fit the figure width
+    sub = "\n".join(textwrap.wrap(subtitle, width=max(30, 18 * ncol)))  # fit the figure width
     fig.suptitle(f"{title}\n{sub}", fontsize=11)
-    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.tight_layout()
     pdf.savefig(fig)
     plt.close(fig)
 
@@ -294,7 +288,7 @@ def main():
         page_constant_spacing(pdf)
 
         findings = [
-            "FINDINGS (1 m / 20 m regime, E=8192):",
+            "HISTORICAL 0.1-ERA FINDINGS (1 m / 20 m regime, E=8192):",
             "",
             "* SPEED: baseline 256 links/150 it = 0.79 s/8192 (235 MB). Scales ~O(links^2)",
             "  and ~linear in iters; memory is tiny (<0.5 GB of 16).",
@@ -314,20 +308,16 @@ def main():
             "  so link counts are NOT directly comparable -- fewer links = looser gate, not",
             "  better tracks. Don't tune links to chase yield.",
             "",
-            "* REGEN ATTEMPTS -> NO yield change (10/20/40 all 0.684), only slower. The",
-            "  regen loop gates on GENERATION simplicity (saturated ~100%); final validity",
-            "  is the POST-RELAX check applied after the loop, which regen can't fix.",
-            "",
             "CAVEATS (adversarially verified):",
             "* Yield is 'valid at the working resolution', not resolution-absolute.",
             "* Re-validating at finer resolution collapses the thickness CURVATURE term",
             "  (artifact of resampling a polyline); SEPARATION stays honest (~0.47 m vs the",
             "  0.49 m target) -- the 1 m-band tracks genuinely do NOT self-overlap.",
             "",
-            "RECOMMENDATION (1 m/20 m): keep num_points=256; raise relax_iters to ~300-600",
+            "0.1-ERA STUDY RECOMMENDATION (1 m/20 m): num_points=256, relax_iters ~300-600",
             "for higher honest yield (0.77-0.83). Do NOT enlarge XPBD steps or margin (they",
-            "destabilize), and leave max_regen_iters=10 (more is wasted). The ceiling is",
-            "relaxation convergence -- the real win is a faster-converging solver.",
+            "destabilize). These historical results identify relaxation convergence as",
+            "the limiting factor; remeasure before applying them to the current generator.",
         ]
         _text_page(pdf, "Findings & recommendation", findings, fontsize=9)
     print(f"wrote {OUT_PDF}")

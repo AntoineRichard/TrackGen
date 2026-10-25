@@ -140,8 +140,8 @@ Building and checking the docs
 The docs are a Sphinx project under ``docs/`` (``docs/conf.py``), built with warnings as
 errors. Nitpicky mode is on: every cross-reference (``:ref:``, ``:doc:``, ``:term:``,
 ``:class:``, ...) must resolve. A local extension, ``docs/_ext/trackgen_docscheck.py``,
-also checks that every public name is documented, that no page outside
-``docs/upgrading/`` carries release or planning jargon, that every data file a page
+also checks that every public name is documented, that no published page carries
+release or planning jargon, that every data file a page
 includes exists, and that every entry of ``docs/_tools/nitpick_allowlist.txt`` still
 silences an unresolved reference (remove the entries it reports as stale).
 

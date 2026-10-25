@@ -8,10 +8,11 @@ road; a ``GateSequence`` describes ordered gates; a ``Centerline`` describes a r
 without road borders. Read **validity first, then the real count, then geometry**.
 
 .. figure:: ../assets/racing/data-layout.png
-   :alt: Three environment rows in flat storage: valid real points, unused padding and an invalid poisoned row.
+   :alt: Flat environment rows showing real count, validity, failure mask, per-env generation epoch and unused padding.
 
    Schematic storage: env ``e`` starts at ``e * stride``. The first ``count[e]`` slots
-   are real; capacity is not the number of points you should consume.
+   are real; capacity is not the number of points you should consume. ``generation[e]``
+   records that row's RNG epoch, which can differ between envs after masked advancement.
 
 Read one batch
 --------------

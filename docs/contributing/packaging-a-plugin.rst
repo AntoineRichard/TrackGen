@@ -99,7 +99,7 @@ and name: ``"generator"`` (a ``Stage`` class or a ``GeneratorSpec``),
 ``"gate_generator"`` (a ``Stage`` class) and the
 pipeline stage kinds of :ref:`writing-a-stage` (``"relax"``, ``"width"``,
 ``"elevation"``, ``"validity"``, ``"order"``, ``"stations"``). The set of kinds is
-open: later releases add more.
+open: plugins can register their own kinds.
 
 .. list-table::
    :header-rows: 1
@@ -306,9 +306,6 @@ class has no ``capturable`` or ``alloc_scratch``):
      - Whether a caller can record it into a CUDA graph, and its ``CaptureClass``, both
        for the Params defaults (:ref:`stage-capture-classes`). A ``GeneratorSpec``
        reports its ``capturable`` and no ``capture``.
-   * - ``accepts_ctx``
-     - Always ``True`` for a Stage or a ``GeneratorSpec``
-       (:ref:`generator-streams`).
    * - ``output``, ``reads``, ``writes``, ``provides``
      - A Stage's ports and the attributes it provides (``declare()`` at the Params
        defaults for a centerline generator); ``None`` and empty for a ``GeneratorSpec``.

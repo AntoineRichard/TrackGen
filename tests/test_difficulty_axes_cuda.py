@@ -105,7 +105,7 @@ pytestmark = pytest.mark.cuda
 import warp as wp  # noqa: E402
 
 from track_gen import GateGenerator, PerEnvSeededRNG, TrackGenConfig, TrackGenerator  # noqa: E402
-from track_gen._src import warp_pipeline  # noqa: E402
+from tests._reference_generators import warp_pipeline  # noqa: E402
 from tests._reference_generators import spec as _reference_generator_spec  # noqa: E402
 from track_gen._src.generator_binding import _StageGenerator  # noqa: E402
 from track_gen.exec import LaunchContext  # noqa: E402
@@ -505,8 +505,8 @@ _PAIRS = {
     "sample_grid_points": _Pair(f"{_SAMPLING}:_sample_grid_points_h_k",
                                 f"{_SAMPLING}:_sample_grid_points_sized_h_k",
                                 "append", None, 6, "track:bezier"),
-    "sample_grid_points_scaled": _Pair(f"{_SAMPLING}:_sample_grid_points_scaled_k",
-                                       f"{_SAMPLING}:_sample_grid_points_scaled_sized_k",
+    "sample_grid_points_scaled": _Pair(f"{_SAMPLING}:_sample_grid_points_scaled_h_k",
+                                       f"{_SAMPLING}:_sample_grid_points_scaled_sized_h_k",
                                        "append", None, 6, "ops:scaled-grid"),
     "normalize_extent": _Pair(f"{_GEOMETRY}:_normalize_extent_k",
                               f"{_GEOMETRY}:_normalize_extent_sized_k",

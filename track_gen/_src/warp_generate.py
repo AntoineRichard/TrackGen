@@ -316,11 +316,11 @@ def _enqueue_bezier(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx
     # depend on TrackGenConfig's min_num_points >= 2 check (a config mutated after
     # construction is not re-validated).
     _sample_counts_launch(ctx, seeds_wp, CORNER_COUNT_SALT, 0, dyn["min_num_points"],
-                          int(config.max_num_points), scratch.gen_count, keying="hashed")
+                          int(config.max_num_points), scratch.gen_count)
     num_cells, cell = ops.grid_cells(config.min_point_distance)
     ops.sample_grid_points(ctx, seeds_wp, CORNER_SALT, 0, P, num_cells, float(cell),
                            float(config.scale),
-                           scratch.gen_used, scratch.gen_corners, size=dyn["size"], keying="hashed")
+                           scratch.gen_used, scratch.gen_corners, size=dyn["size"])
     _angle_sort_launch(ctx, scratch.gen_corners, P, scratch.gen_count, P, scratch.gen_keys,
                        scratch.gen_ordered, m_floor=1)
 

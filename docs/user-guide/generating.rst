@@ -564,8 +564,8 @@ Seeds, epochs and the generation counter
 Built-in random streams hash the effective seed with a fixed named salt. Repeated
 calls with the same seeds, epochs and configuration reproduce output on the same
 device and Warp version. :ref:`ops-rng-keying` describes the stream namespaces,
-formulas and index choices. The public ops samplers use a linear default for plugin
-callers unless hashed keying is requested explicitly.
+formulas and index choices. The public ops samplers use the same hashed initialization,
+with a uint32 namespace salt and an int32 stream index.
 
 Each env is keyed by a pair ``(seed, epoch)``, held by the generator's
 :class:`~track_gen.seeds.SeedState` (``gen.seeds``):

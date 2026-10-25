@@ -26,8 +26,7 @@ points keep the scalar kernels. Covered here (design section 9.2):
    composition, the design section 4 counts, plain and masked);
 10. bounds (float32) and value types;
 11. the poison sentinels of the built-ins' static views and the ``dyn`` key checks;
-12. ``style_sampling`` (bytes == the frozen legacy path; self-drawn knobs);
-13. the generated CUDA source of every scalar / twin pair (locked until PR16);
+13. the generated CUDA source of every scalar / twin pair;
 14. the one-generation latch lag of a write recorded after segment 0;
 15. the legacy surfaces (the PR9 composition, frozen signatures, a ``GeneratorSpec``
     with dynamic Params refused);
@@ -37,7 +36,7 @@ Roadmap PR13d (``tests/test_difficulty_axes.py`` covers its axes): every built-i
 generator but ``external`` and the bezier / hull gate generators declare a dynamic
 ``size``, bezier / hull's ``min_num_points`` is a dynamic int32; the declared sets, the
 launch deltas (the rule of ``tests/_pr13d_delta.py``), the ``dyn`` key sets, the kit skip
-and ``style_sampling``'s deprecation are updated here accordingly.
+are updated here accordingly.
 """
 from __future__ import annotations
 
@@ -82,11 +81,6 @@ from track_gen.stages.track import _zcfg
 from track_gen.testing import check_generator, check_stage
 from track_gen.testing.capture import result_arrays
 from track_gen.testing.trace import trace_launches
-
-# Roadmap PR13d: bezier's style_sampling is deprecated (one DeprecationWarning per built
-# generator); this module still exercises it.
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
 
 DEV = "cpu"
 E = 8
@@ -320,7 +314,7 @@ def test_the_builtins_are_stage_classes_with_a_deprecated_params_alias(name):
     assert cls.capture is plugin.CaptureClass.STATIC
     assert not hasattr(cls, "params")
     info = registry.describe("generator", name)
-    assert info.builtin and info.capturable and info.accepts_ctx
+    assert info.builtin and info.capturable
 
 
 def test_no_params_alias_on_the_other_stages():
@@ -898,7 +892,6 @@ def _rows(trace) -> list:
 
 
 @pytest.mark.parametrize("case", sorted(LAUNCH_TABLE))
-@pytest.mark.filterwarnings("ignore:bezier's style_sampling is deprecated")
 def test_launch_delta_against_the_legacy_composition(case):
     """One generation's trace == the legacy (scalar) PR9 composition's under the PR13c
     rule then the PR13d one (``tests/_pr13d_delta.py``: the latch block computed from
@@ -1267,21 +1260,7 @@ def test_the_private_cores_check_the_dyn_key_set(name):
 
 
 # ---------------------------------------------------------------------------------------
-# 12. style_sampling
-# ---------------------------------------------------------------------------------------
-
-_RANGES = {"rad_range": (0.1, 0.35), "scale_range": (0.8, 1.2),
-           "handle_clamp_frac_range": (0.3, 0.9)}
-_STYLE_COMBOS = [{k: (v if (m >> i) & 1 else None) for i, (k, v) in enumerate(_RANGES.items())}
-                 for m in range(8)]
-
-
-
-
-
-
-# ---------------------------------------------------------------------------------------
-# 13. The generated CUDA source of each scalar / twin pair (locked until PR16)
+# 13. The generated CUDA source of each scalar / twin pair
 # ---------------------------------------------------------------------------------------
 
 #: twin -> the ops it adds to its scalar kernel's forward body: the knob loads

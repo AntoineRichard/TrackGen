@@ -122,22 +122,31 @@ the output into the configured coordinate scale; the crossing fallback and share
 road pipeline complete the course.
 
 .. figure:: ../assets/racing/generator-voronoi-construction.png
-   :alt: Voronoi construction buffers, generated centerline and finished road.
+   :alt: Four construction steps: sampled sites, selected anchor order, Chaikin corner cuts and curve sampling, beside the raw centerline and finished road.
    :align: center
 
-   Recorded construction geometry, followed by the selected generator centerline and the shared pipeline result. The left panel uses construction coordinates; the other panels use output coordinates.
+   Four steps explain sampled sites, selected anchor order, Chaikin corner cuts and curve
+   sampling. The raw generator centerline and finished road at right use output coordinates;
+   construction panels use their original coordinates.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-voronoi-construction.png" aria-label="Three-stage reveal of actual voronoi construction buffers, generator centerline and finished road.">
+   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-voronoi-construction.png" aria-label="Progressive drawing of sampled sites, selected anchor order, Chaikin corner cuts and curve sampling, from actual voronoi geometry.">
      <source src="../generator-voronoi-construction.mp4" type="video/mp4">
-     Three-stage reveal of actual voronoi construction buffers, generator centerline and finished road.
+     Progressive drawing of sampled sites, selected anchor order, Chaikin corner cuts and curve sampling, from actual voronoi geometry.
    </video>
 
 :download:`Download the animation <../assets/racing/generator-voronoi-construction.mp4>`.
 
-The animation reveals the three panels in order. It is an illustrative construction
-sequence, not elapsed runtime or a trace of iterative solver states.
+**Text alternative:** The drawing reveals the actual site field, then numbers selected sites
+in anchor order. Orange points show the recorded 25%/75% Chaikin corner cuts before the
+curve or selected polygon fallback is drawn. The normalized raw centerline and finished road
+remain visible at right.
+
+The geometry comes from recorded construction buffers. Prefix drawing explains
+algorithm order. Playback timing is illustrative, with no position morph
+between stages or claim of measured runtime or iterative solver states. The view
+stays fixed within each coordinate system.
 
 Continue with :doc:`/how-it-works/pipeline`, :doc:`/configuration/tuning`,
 :ref:`builtin-generator-params`, or :doc:`/tutorials/gate-sequences`.

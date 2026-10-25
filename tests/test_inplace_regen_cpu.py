@@ -36,7 +36,7 @@ import warp as wp
 from tests._fake_cuda import FakeCuda, FakeGraph, FakeSeedState, FakeStream, patch_facade_seeds
 from tests.test_caller_capture_cpu import _FACADES, _fake_rng
 from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG, TrackGenConfig, TrackGenerator
-from track_gen._src import warp_pipeline
+from tests._reference_generators import warp_pipeline
 from track_gen.plugin import registry
 from track_gen._src.generator_binding import _StageGenerator, bind_generator
 from track_gen.plugin import registry as _plugin_reg

@@ -19,6 +19,7 @@ selected figure families to a scratch directory; inspect the output before copyi
    MPLCONFIGDIR=/tmp/trackgen-mpl python -m viz.render_generator_guide --out-dir /tmp/tg-generators
    MPLCONFIGDIR=/tmp/trackgen-mpl python -m viz.render_course_guide --out-dir /tmp/tg-controls
    MPLCONFIGDIR=/tmp/trackgen-mpl python -m viz.render_collision_guide --out-dir /tmp/tg-geometry
+   MPLCONFIGDIR=/tmp/trackgen-mpl python -m viz.render_relaxation_guide --out-dir /tmp/tg-relaxation
    MPLCONFIGDIR=/tmp/trackgen-mpl python -m viz.render_data_guide --out-dir /tmp/tg-data
 
 .. list-table:: Asset families
@@ -40,6 +41,9 @@ selected figure families to a scratch directory; inspect the output before copyi
    * - ``render_data_guide`` / ``data-*``
      - Flat layout, borrowed storage and imported routes
      - Layout/lifecycle diagrams are schematic; the imported road and gates are real public-API output
+   * - ``render_relaxation_guide`` / ``relaxation-*``
+     - Main iterations, separation margin and smoothing budgets
+     - Isolated same-seed comparisons with actual counts, validity, fail bits and measured shape changes
 
 The manifest records source version, settings, seeds or fixture coordinates, sample
 selection and checks. A selected gallery sample is not a yield estimate. To show a

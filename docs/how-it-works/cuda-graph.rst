@@ -370,9 +370,9 @@ How such a generator runs:
   Python runs every call), the others with ``wp.capture_launch``. The seed prologue
   belongs to the first segment, the commit and the ``generation`` write to the last.
   ``gen.graph`` stays ``None``; masked regeneration keys a set of segment graphs per
-  ``(advance, mask)`` like the plain self-graph (`Masked regeneration`_). A legacy
-  ``capturable=False`` generator thus becomes a ``HOST`` segment followed by a captured
-  tail, with the same outputs as before.
+  ``(advance, mask)`` like the plain self-graph (`Masked regeneration`_). A
+  ``GeneratorSpec(capturable=False)`` runs as a ``HOST`` segment followed by a captured
+  tail.
 - **On** ``cpu`` **and with** ``enqueue()``: every segment eagerly, in order.
 - **Under a caller's capture**: ``generate()``, ``enqueue()``, ``Program.run()`` and
   ``Program.enqueue()`` raise ``NotCapturableError`` before launching anything, so your

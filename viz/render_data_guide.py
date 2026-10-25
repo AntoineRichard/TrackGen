@@ -28,12 +28,12 @@ def _save(fig, path):
 
 
 def render_layout(path):
-    fig, ax = plt.subplots(figsize=(10, 4.3))
-    ax.set(xlim=(-1.35, 10.9), ylim=(-.8, 3.9))
+    fig, ax = plt.subplots(figsize=(11.2, 4.7))
+    ax.set(xlim=(-1.35, 12.2), ylim=(-1.0, 3.9))
     ax.axis("off")
     ax.text(-1.2, 3.48, "One flat array; fixed-capacity rows", fontsize=17, weight="bold", color=INK)
     ax.text(-1.2, 3.08, "Schematic: E = 3, stride = 8. Each cell is one vec3f point.", fontsize=11, color=INK)
-    for e, n in enumerate((5, 3, 0)):
+    for e, (n, epoch) in enumerate(zip((5, 3, 0), (7, 3, 7))):
         y = 2.1 - e
         ax.text(-.25, y + .34, f"env {e}", ha="right", fontsize=12, weight="bold", color=INK)
         for i in range(8):
@@ -43,10 +43,12 @@ def render_layout(path):
             ax.text(i+.47, y+.41, f"p{i}" if real else "NaN", ha="center", fontsize=11,
                     color=BLUE if real else "#6b7280")
             ax.text(i+.47, y+.12, str(e*8+i), ha="center", fontsize=8, color="#657086")
-        ax.text(8.25, y+.46, f"count={n}   valid={int(n > 0)}", fontsize=11, color=INK)
-        ax.text(8.25, y+.12, "fail_mask=0" if n else "fail_mask ≠ 0", fontsize=10,
+        ax.text(8.25, y+.53, f"count={n}   valid={int(n > 0)}", fontsize=11, color=INK)
+        ax.text(8.25, y+.29, "fail_mask=0" if n else "fail_mask ≠ 0", fontsize=10,
                 color=INK if n else AMBER)
-    ax.text(0, -.66, "Read count to stop. Skip invalid rows. Padding is not geometry.", fontsize=12, color=INK)
+        ax.text(8.25, y+.05, f"generation={epoch} (RNG epoch)", fontsize=10, color=TEAL)
+    ax.text(0, -.58, "Read count to stop. Skip invalid rows. Padding is not geometry.", fontsize=12, color=INK)
+    ax.text(0, -.88, "Masked advancement can leave different RNG epochs in different envs.", fontsize=10.5, color=TEAL)
     _save(fig, path)
 
 

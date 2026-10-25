@@ -41,11 +41,12 @@ within a fixed device, Warp version and configuration, but it does not reproduce
 or pipeline specs. The ``rng=`` object argument on generator facades still means a
 ``PerEnvSeededRNG`` seed source, not a choice of keying.
 
-Public ``ops.sample_counts`` and ``ops.sample_grid_points`` keep
-``keying="linear"`` as their default so existing plugin callers keep their draws.
-Opt in with the keyword-only ``keying="hashed"`` to use
-``rng.init_at(seed, salt, offset)``. New plugin kernels can call ``rng.init`` or
-``rng.init_at`` directly; their formulas are frozen for plugin API version 1.
+Public ``ops.sample_counts`` and ``ops.sample_grid_points`` use
+``rng.init_at(seed, salt, offset)``. Their ``keying=`` selector is removed:
+``salt`` is a hashed uint32 namespace and ``offset`` an int32 stream index.
+Their draws differ from 0.2 for the same salt. New plugin kernels can call
+``rng.init`` or ``rng.init_at`` directly; their formulas are frozen for plugin
+API version 1.
 
 A ``Course`` that derives checkpoint capacity by generating geometry at construction
 can derive a different capacity after this switch, especially for elevated tracks or
@@ -91,6 +92,8 @@ Removed APIs and replacements
        ``Course.set_capturing`` and private ``_CAPTURING`` flags
      - Delete the calls and flag writes. Calls use their launch context and can be
        recorded without a global capture switch.
+   * - ``registry.describe(...).accepts_ctx``
+     - Removed: every generator receives ``ctx``.
    * - ``CourseLine.track``
      - ``CourseLine.centerline``
    * - Built-in generator class ``.params`` aliases
@@ -99,6 +102,10 @@ Removed APIs and replacements
    * - ``style_sampling``, ``rad_range``, ``scale_range``,
        ``handle_clamp_frac_range`` in configs, Params and saved specs
      - Remove the keys and use ``randomize=``; see the recipe below.
+   * - ``ops.sample_counts(..., keying=...)`` and
+       ``ops.sample_grid_points(..., keying=...)``
+     - Delete the selector. Salts are hashed uint32 namespaces; draws differ
+       from 0.2 for the same salt.
    * - ``output_mode``
      - Delete the key. The config path uses constant-spacing resampling.
    * - Unused ``TrackGenConfig`` fields listed below

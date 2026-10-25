@@ -3,6 +3,8 @@
 Per op: host-side validation (raised before any launch), hand-built semantics (shapes,
 NaN padding, count semantics), BITWISE equivalence to the frozen HEAD-1077b18 kernel it
 replaces (``tests/_legacy_kernels_pr7.py``), and zero allocation during the call.
+For samplers, the frozen numeric body receives the independently expanded hashed
+initializer input; the removed linear stream mapping is not a runtime option.
 Stream-explicitness and no-host-sync are covered by the ``ops[all]`` driver in
 ``tests/test_no_host_sync.py`` (shared with ``tests/test_launch_stream.py``).
 """
@@ -22,6 +24,7 @@ import pytest
 import warp as wp
 
 from tests import _legacy_kernels_pr7 as L
+from tests._reference_sampling import linearized_seeds
 from track_gen import ops
 from track_gen.exec import LaunchContext
 from track_gen.ops import funcs
@@ -143,11 +146,16 @@ def test_public_surface():
 
 
 @pytest.mark.parametrize("name", ["sample_counts", "sample_grid_points"])
-def test_sampler_keying_is_keyword_only_and_defaults_to_linear(name):
-    keying = inspect.signature(getattr(ops, name)).parameters.get("keying")
-    assert keying is not None
-    assert keying.kind is inspect.Parameter.KEYWORD_ONLY
-    assert keying.default == "linear"
+@pytest.mark.parametrize("keying", ["linear", "hashed"])
+def test_sampler_rejects_removed_keying(name, keying, ctx):
+    args = dict(seeds=i32([0]), salt=1, offset=0)
+    if name == "sample_counts":
+        args.update(lo=2, hi=5, out=ei32(1))
+    else:
+        args.update(num=3, num_cells=3, cell_size=0.2, scale=1.0,
+                    used=ei32(3), out=ev2(3))
+    with pytest.raises(TypeError, match="keying"):
+        getattr(ops, name)(ctx, **args, keying=keying)
 
 
 @pytest.mark.parametrize("name", _CTX_OPS)
@@ -400,7 +408,7 @@ def _bad_cases():
         # sampling
         "counts/lo>hi": lambda: (ops.sample_counts, counts(lo=5, hi=4), "lo"),
         "counts/out": lambda: (ops.sample_counts, counts(out=ei32(E + 1)), "out"),
-        "counts/salt range": lambda: (ops.sample_counts, counts(salt=2 ** 31), "salt"),
+        "counts/salt range": lambda: (ops.sample_counts, counts(salt=2 ** 32), "salt"),
         "counts/salt float": lambda: (ops.sample_counts, counts(salt=3.5), "salt"),
         "grid/scale shape": lambda: (ops.sample_grid_points, grid(scale=ef32(E + 1)), "scale"),
         "grid/used": lambda: (ops.sample_grid_points, grid(used=ei32(E * P - 1)), "used"),
@@ -950,31 +958,37 @@ def test_angle_sort_bitwise_vs_head(ctx):
     assert same(o1, o2)
 
 
-def test_sample_counts_bitwise_vs_head(ctx):
+def test_sample_counts_numeric_body_bitwise_vs_head(ctx):
     seeds = i32(_INT32_OVERFLOW_SEEDS)
     E = len(_INT32_OVERFLOW_SEEDS)
     for attempt in (0, 3):
         a, b = ei32(E), ei32(E)
         ops.sample_counts(ctx, seeds, 6151, attempt, 3, 11, a)
-        launch(L._bezier_corner_count_sample_k, E, [seeds, attempt, 3, 11, b])
+        ref = linearized_seeds(_INT32_OVERFLOW_SEEDS, 6151, attempt,
+                               linear_salt=6151, linear_offset=attempt)
+        launch(L._bezier_corner_count_sample_k, E, [ref, attempt, 3, 11, b])
         assert same(a, b)
     a, b = ei32(E), ei32(E)
     ops.sample_counts(ctx, seeds, 5119, 1, 4, 9, a)
-    launch(L._hull_point_count_sample_k, E, [seeds, 4, 9, b])
+    ref = linearized_seeds(_INT32_OVERFLOW_SEEDS, 5119, 1,
+                           linear_salt=5119, linear_offset=1)
+    launch(L._hull_point_count_sample_k, E, [ref, 4, 9, b])
     assert same(a, b)
 
 
-def test_sample_grid_points_bitwise_vs_head(ctx):
+def test_sample_grid_points_numeric_body_bitwise_vs_head(ctx):
     seeds = i32(_INT32_OVERFLOW_SEEDS)
     E, P, mpd, scale = len(_INT32_OVERFLOW_SEEDS), 11, 0.05, 0.9
     nc, cell = ops.grid_cells(mpd)
     nc2 = nc * nc
     sc = f32(np.random.default_rng(13).uniform(0.5, 1.5, E))
 
-    def legacy(kernel, args):
+    def legacy(kernel, args, salt, index):
+        ref = linearized_seeds(_INT32_OVERFLOW_SEEDS, salt, index,
+                               linear_salt=salt, linear_offset=index)
         used, out = ei32(E * P), ev2(E * P)
         launch(L._pipe_fill_i32_k, E * P, [used, -1])
-        launch(kernel, E, [seeds, *args, P, used, out])
+        launch(kernel, E, [ref, *args, P, used, out])
         return used, out
 
     for attempt in (0, 3):
@@ -982,11 +996,12 @@ def test_sample_grid_points_bitwise_vs_head(ctx):
                                    (sc, L._bezier_corner_sample_style_k, sc)):
             used, out = ei32(E * P), ev2(E * P)
             ops.sample_grid_points(ctx, seeds, 9781, attempt, P, nc, cell, s_new, used, out)
-            u2, o2 = legacy(kern, [attempt, nc, nc2, float(cell), s_old])
+            u2, o2 = legacy(kern, [attempt, nc, nc2, float(cell), s_old], 9781, attempt)
             assert same(out, o2) and same(used, u2)
     used, out = ei32(E * P), ev2(E * P)
     ops.sample_grid_points(ctx, seeds, 7919, 1, P, nc, cell, scale, used, out)
-    u2, o2 = legacy(L._hull_point_sample_k, [nc, nc2, float(cell), float(scale)])
+    u2, o2 = legacy(L._hull_point_sample_k, [nc, nc2, float(cell), float(scale)],
+                    7919, 1)
     assert same(out, o2) and same(used, u2)
 
 

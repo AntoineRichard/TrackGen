@@ -364,7 +364,7 @@ class TrackGenConfig:
     relax_smooth_passes : int
         Number of shrink-free Taubin smoothing passes applied after the main sweep
         loop.  Must be >= 0.  Default 5.  Each pass is two Laplacian half-steps
-        (:math:`lambda > 0` then :math:`mu < -lambda`), which removes the
+        (:math:`\\lambda > 0` then :math:`\\mu < -\\lambda`), which removes the
         sub-``R_min`` curvature noise the bending guard's deadband cannot see (bending
         only fires below the minimum radius; gentler wiggles are invisible to all three
         constraints) without shrinking corners through the validity gate the way a plain
@@ -741,12 +741,12 @@ class GateGenConfig:
         ``"raw"`` (the generator's own order) and ``"random_pairs"`` (random gate pairs
         for training objectives).  ``None`` (default): the generator's default order,
         resolved at ``GateGenerator`` (hence ``Course``) construction by
-        ``legacy.to_gate_pipeline_spec`` with the rule of ``presets.gates(order=None)``
+        ``bind_generator`` before the run config is built, with the rule of ``presets.gates(order=None)``
         and the conformance kit: its ``preferred["order"]`` when it accepts it, else
         ``"ccw"`` when it accepts it, else the first order it accepts.  That is
         ``"ccw"`` for the five built-ins, and ``"raw"`` for a generator that provides
-        per-anchor attributes. The pipeline selects the resolved ordering Stage
-        before building the gate generator's downstream stages.
+        per-anchor attributes. The resolved run config holds the order name, never
+        ``None``; the pipeline selects that ordering Stage before building downstream stages.
 
     min_num_points : int
         Minimum corner-anchor count per env for the bezier/hull point sampler.

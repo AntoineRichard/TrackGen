@@ -478,7 +478,7 @@ sinusoidal hills per lap with a per-env amplitude:
 
 .. code-block:: python
 
-   from track_gen.ops.funcs import hash32
+   from track_gen.ops import rng
 
 
    @wp.kernel
@@ -492,8 +492,7 @@ sinusoidal hills per lap with a per-env amplitude:
        if i >= count[e]:
            z[t] = 0.0                   # padding, as the built-in profiles write it
            return
-       key = hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)
-       state = wp.rand_init(wp.int32(key))
+       state = rng.init(seed[e], salt)
        phase = 6.2831853 * wp.randf(state)          # the same draw for every point of e
        u = cum[t] / wp.max(perim[e], 1.0e-9)        # lap fraction in [0, 1)
        z[t] = base + amp[e] * wp.sin(6.2831853 * float(waves) * u + phase)
