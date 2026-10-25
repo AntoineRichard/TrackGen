@@ -65,3 +65,42 @@ Progress is appended below so another turn can resume without repeating work.
 - Final handoff to root: all authorized runtime/test work complete and source frozen for root commit, fresh whole-branch review, full CPU and candidate CUDA. High-growth seed7 integration rejection remains CPU only; deterministic geometry fixtures retain DEVS coverage without requiring equal optimizer trajectories. No staging/commit/push/tag/GPU performed by this agent.
 
 - Fresh whole-branch review of 3e30002 found one P1: metadata published raw dynamic size while geometry used its clamped effective value. Root independently reproduced above-bound false-valid and below-bound false-invalid public calls with identical actual geometry. The single fix pass now publishes the same comparison-clamped size, preserving NaN policy. Four correct regressions RED, then five CPU GREEN; tests include metadata, public fields, infinities, NaN, matched masked epochs and captured replay. Four CUDA cases remain required. Review and dispositions are recorded in docs/superpowers/reviews/2026-10-25-repulsive-self-review.md. No other actionable finding or deferred minor.
+
+
+## GPU performance gate exposed during integration
+
+The c017fd0 numerical repair is not ready to ship. On the GPU validation machine,
+the default 64-row seed-11 batch took 187.615s to construct and 188.255s for a
+warm graph generation. The rc2 comparison took 0.831s and 0.183s respectively.
+The new contract returned 53 valid roads; all 53 independently cleared each
+filled disc and the wall. The rc2 reference reported 64 valid, but only 1 cleared
+the actual full band (its discs were inferred from opposite ring samples).
+Changing the old 58-row flag threshold alone cannot establish correctness.
+The revised regression requires at least 48/64 and independently checks every
+reported-valid band with a float64 SciPy hull reference.
+
+A diagnostic context ran the actual 64/128/256-resolution body steps and timed
+each launch. At 256 points, the serial per-environment energy took 0.107s,
+shape acceptance 0.597s, final resample acceptance 0.220s, and forced growth
+0.0157s; the per-vertex gradient took 0.00257s. Serial kernels use only one
+CTA for 64 environments at block 256. Launch-only block 32/8/1 trials retained
+every observed output byte but improved the heavy kernels by only about 10%.
+First-launch JIT costs in those variants were excluded from the comparison.
+
+1. Keep the current numerical source as a held reference and write isolated
+   parallel energy/search helpers plus independent CPU reference tests. Prefer
+   fixed O(E*N) scratch; justify any larger allocation. Keep all submissions on ctx.
+2. Preserve the complete objective, precision, swept barriers, first acceptable
+   trial, bounded trial count, actual-movement and freeze semantics. Review any
+   f64 regrouping; do not silently replace objective decrease with a soft guard.
+3. Integrate only after the helper reference tests pass. Measure CPU/CUDA state
+   differences and warm GPU time, including a contact state and the public 64-row
+   workload. Root alone schedules GPU jobs.
+4. Repeat the required full CPU/CUDA/full-GPU lanes, fresh-baseline non-Repulsive
+   byte guards, docs/snippets and platform-specific RP references after stability.
+   If RP outputs change again, refresh the affected visual proof and media.
+
+The first c017fd0 full-snapshot job was deliberately terminated after discovery
+of the performance blocker. It is not a passing byte guard; those comparisons
+remain pending on the optimized candidate. The prior immutable rc2 baseline
+snapshot completed successfully and remains available for that comparison.

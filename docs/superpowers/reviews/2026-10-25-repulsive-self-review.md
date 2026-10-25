@@ -23,7 +23,9 @@ shared SIZE_BOUNDS and preserving NaN propagation. Four correct regression cases
 failed before the fix; five CPU cases pass afterward. The tests cover metadata,
 finite out-of-range values, both infinities, NaN invalidity, actual public
 geometry/diagnostics, matched masked epochs and capture replay without allocation
-or synchronization. Four explicit CUDA cases await coordinated device validation.
+or synchronization. All four explicit CUDA cases passed in the first coordinated focused run.
+That run exposed separate precision/yield integration gates, so it does not
+clear the whole CUDA lane.
 The first draft of the masked test incorrectly omitted advance=True; that test
 error was corrected before the recorded final RED run.
 
@@ -66,3 +68,41 @@ cell coverage deliberately permits conservative rejection of unused concave
 pockets to protect physical folded strips. Precision and parameter removals are
 Repulsive-specific breaks. These decisions and their evidence are in the current
 design, plan, migration guide and excluded solver-repair record.
+
+
+## Integration tests and GPU performance gate
+
+The first full CPU run completed with 3624 passes and four failures caused by
+stale integration assumptions: requiring ordinary defaults to freeze, using the
+frozen Repulsive tail as an epoch-zero oracle, omitting a construction-only
+planner check from wrapper coverage, and asserting the old growth defaults.
+Commit `0d14a23` corrects those tests without changing executable runtime code.
+Focused checks passed: 141 defaults/wrapper tests, 163 epoch tests, one complete
+CPU conformance case, and 28 tangent/reference tests. The conformance workload
+uses supported fixed 1.1 growth and one disc; both fixed eight-row batches
+genuinely freeze and skip a window, retaining all original assertions.
+
+The first CUDA default batch returned 53/64 valid roads. Every valid road
+passed the independent float64 hull/disc and circular-wall reference; minimum
+gaps were .002527 and .193317. The rc2 comparison flagged all 64 valid but
+only one road passed the same physical full-band check (its analytic discs
+were reconstructed from opposite force-ring samples). The obsolete 58/64
+flag gate was replaced by an explicit 75% fixed-batch yield floor plus an
+independent check of every returned road. This is not a universal yield claim.
+The unchanged compactness gate also passed on the measured batch, median .546.
+
+A separate fresh independent review of only `0d14a23` found no actionable
+issues. It checked the conservative hull reference, retained direct-seed
+comparison, nonvacuous absorbing check and construction-only exemption. It
+accepted the mesh/force-scaled fp32 translation-balance tolerance while noting
+that gamma is a practical regression tolerance, not a rigorous error bound
+for every intermediate derivative operation. The independent component-wise
+finite-difference and energy checks retain their original tolerances.
+
+The warm GPU generation cost of 188.255 seconds is a release blocker. A
+three-resolution kernel profile isolates serial full-energy evaluation and
+line-search work. Launch-only changes preserved bytes but improved these
+kernels by only about 10%; parallel evaluation/search is being implemented
+and must receive its own focused proof and full integration validation.
+The c017fd0 candidate snapshot was deliberately stopped after this discovery;
+no passing complete snapshot comparison or full GPU suite is claimed.
