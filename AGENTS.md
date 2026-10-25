@@ -83,6 +83,54 @@ old `workstation` host is dead.
   GPU host.
 - Use `ssh -o ConnectTimeout=10 ...`: a dead host otherwise hangs.
 
+### Reaching the GPU machine
+- `spark-home` is a `Host` alias in the `~/.ssh/config` of the user's Mac (key-based auth,
+  default user). It works only from that Mac. This repository is public: never commit host
+  addresses, keys or user names.
+- The Codex sandbox blocks network access by default. `ssh`, `scp` and `rsync` need network
+  access approved for the command, or running outside the sandbox.
+- To send a tree, export a commit (never the working tree with stray files) and sync it:
+  ```bash
+  rm -rf /tmp/tg-<name> && mkdir -p /tmp/tg-<name> && git archive <ref> | tar -x -C /tmp/tg-<name>
+  rsync -a --delete /tmp/tg-<name>/ spark-home:code/TrackGen-test/<name>/
+  ssh -o ConnectTimeout=10 spark-home 'cd ~/code/TrackGen-test/<name> && PYTHONPATH=$PWD \
+    ~/venvs/trackgen/bin/python -m pytest -q -p no:cacheprovider -m cuda tests -ra'
+  ```
+  Run long jobs (the full suite takes about 6 min; snapshots several minutes) with their
+  output redirected to a log, and read the log afterwards.
+
+## Next: release 0.3.0 (do the steps in order)
+1. **CI on `v3`.** The test workflow runs only on pull requests and on pushes to `main`, so
+   `v3` has never run on GitHub CI. Open a DRAFT pull request `v3` -> `main` with
+   `gh pr create --draft --base main --head v3`. The body summarises dev1-dev4, links
+   `docs/upgrading/from-0.2.rst`, and lists the test plan. The PR runs:
+   - the CPU lanes on Linux x86_64 (Warp 1.18.0 and latest);
+   - the docs build and the linkcheck.
+
+   Fix every failure on `v3`, with the validation rules above. When a golden fails ONLY on
+   CI, decide whether it is host sensitivity or a real regression before touching it. For
+   0.2.0 the checkpoint path tracer's last-ulp differences were host sensitivity. Never
+   re-baseline blindly.
+2. **Cut `v0.3.0rc1`** once CI is green:
+   - set `0.3.0rc1` in `pyproject.toml` and `track_gen/_version.py`, plus a CHANGELOG header;
+   - commit "release: 0.3.0rc1", make an annotated tag `v0.3.0rc1`, push the branch and the tag;
+   - validate the rc tree on spark-home: the CUDA lane and the full suite. Its outputs must
+     equal dev4's, since only the version changed.
+3. **Hand the rc to the user.** The racing repositories pin
+   `git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc1`. STOP here until the user
+   confirms the racing validation passed. Fix anything they report on `v3`, then cut `rc2`
+   the same way.
+4. **Release, only after the user's explicit go:**
+   - set `0.3.0` and date the CHANGELOG section `## 0.3.0 (<date>, tag v0.3.0)`, with a short
+     summary that links the 0.2 -> 0.3 guide;
+   - pin `@v0.3.0` in `README.md` and `docs/getting-started/installation.rst`;
+   - commit "release: 0.3.0", push, and mark the PR ready;
+   - merge it with a MERGE COMMIT (`gh pr merge --merge`), so the dev and rc tags stay
+     reachable from `main`;
+   - tag `v0.3.0` (annotated) on the merge commit and push it;
+   - `gh release create v0.3.0` with notes that link the migration guide;
+   - check that the docs workflow on `main` deployed.
+
 ## Conventions
 - Commits: author "Antoine Richard <antoiner@nvidia.com>". Use
   `git -c user.name=... -c user.email=...` and never change the global git config. Push
