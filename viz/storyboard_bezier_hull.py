@@ -1,8 +1,8 @@
 """Source-backed explanatory movies for Bezier and Hull construction.
 
 Ordinary endpoints and spline candidates are recorded from the real generator.
-The labelled Bezier illustration remaps only its inputs, then records the actual
-Bezier and road stages. Prefixes explain operation order, not elapsed runtime.
+The labelled Bezier and Hull illustrations remap only their anchor inputs, then
+record the actual curve and road stages. Prefixes explain operation order, not elapsed runtime.
 """
 from __future__ import annotations
 
@@ -55,13 +55,45 @@ def _illustrative_bezier_example():
     return sample
 
 
+@lru_cache(maxsize=1)
+def _illustrative_hull_example():
+    settings = dict(min_num_points=10, max_num_points=10, min_point_distance=.0625)
+    data = _capture_one('hull', 7, settings, illustrative_inputs=True)
+    distinct = len(set(data['grid_ids']))
+    inside = bool(((data['offset_vectors'] >= 0)
+                   & (data['offset_vectors'] < data['grid_pitch'])).all())
+    if distinct != 10 or not inside or not data['final_valid']:
+        raise AssertionError('the declared Hull illustration no longer meets its input/road checks')
+    selection = dict(selected_seed=7, settings=settings, distinct_cells=distinct,
+                     sampled_inside_cells=inside, grid_cells_per_side=data['grid_cells_per_side'],
+                     grid_pitch=data['grid_pitch'], illustrative_inputs=True,
+                     production_sampler_unchanged=True,
+                     sampler_remapping='origin + (original_noise + 0.5) * pitch; exact canonical '
+                                       'Hull seed-7 cell IDs and RNG draws, remapped only for this '
+                                       'illustration; midpoint displacement is unchanged.')
+    sample = dict(seed=7, epoch=0, env=0, config=data['config'],
+                  count=data['final_count'], valid=data['final_valid'], fail=data['final_fail'],
+                  raw=data['raw'], center=data['final_center'], inner=data['final_inner'],
+                  outer=data['final_outer'], illustrative_inputs=True,
+                  construction=dict(sampled=data['sampled'], anchors=data['ordered'],
+                                    dense=data['smooth_dense'], augmented=data['polygon_vertices'],
+                                    crossings=data['smooth_crossings']), example_selection=selection)
+    sample[_CACHE] = _with_fallback(data)
+    return sample
+
+
 def select_construction_sample(sample):
-    """Use labelled illustrative Bezier inputs; retain every other input.
+    """Use labelled cell-bounded anchor inputs for the two grid-family movies.
 
     Only render() calls this selection boundary. capture() and draw_step() continue
     to expose the actual sample supplied by their caller, including default jitter.
     """
-    return _illustrative_bezier_example() if sample['config']['generator'] == 'bezier' else sample
+    name = sample['config']['generator']
+    if name == 'bezier':
+        return _illustrative_bezier_example()
+    if name == 'hull':
+        return _illustrative_hull_example()
+    return sample
 
 
 def _finite(points):
@@ -113,6 +145,7 @@ def _capture_one(name, seed, config, *, illustrative_inputs=False):
     from track_gen.ops.geometry import _self_intersections_by_i_k, _angle_sort_k
     from track_gen.ops.sampling import _sample_grid_points_launch
     from track_gen._src.warp_generate import CORNER_SALT
+    from track_gen._src.warp_generate_hull import POINT_SALT, POINT_SALT_OFFSET
     from track_gen.testing.capture import result_arrays
 
     fields = {field.name for field in dataclasses.fields(TrackGenConfig)}
@@ -137,8 +170,13 @@ def _capture_one(name, seed, config, *, illustrative_inputs=False):
     observed, remapping, lifetimes = {}, {}, []
     base = LaunchContext.current('cpu')
     if illustrative_inputs:
-        if name != 'bezier':
-            raise ValueError('illustrative input mapping is only for the Bezier teaching clip')
+        if name not in ('bezier', 'hull'):
+            raise ValueError('illustrative input mapping requires a grid-family teaching clip')
+        point_key = 'gen_corners' if name == 'bezier' else 'points'
+        id_key = 'gen_used' if name == 'bezier' else 'used'
+        sampler_salt = CORNER_SALT if name == 'bezier' else POINT_SALT
+        sampler_offset = 0 if name == 'bezier' else POINT_SALT_OFFSET
+        candidate = scratch['gen_rs'] if name == 'bezier' else gen.program.tap('raw.xy')
         noise = wp.empty(cfg.max_num_points, dtype=wp.vec2f, device='cpu')
         noise_ids = wp.empty(cfg.max_num_points, dtype=wp.int32, device='cpu')
 
@@ -148,12 +186,12 @@ def _capture_one(name, seed, config, *, illustrative_inputs=False):
 
         def launch(self, kernel, dim, inputs=(), outputs=(), **kwargs):
             if (illustrative_inputs and kernel is _angle_sort_k
-                    and inputs[0].ptr == scratch['gen_corners'].ptr):
-                ids = scratch['gen_used'].numpy().copy()
-                canonical = scratch['gen_corners'].numpy().copy()
+                    and inputs[0].ptr == scratch[point_key].ptr):
+                ids = scratch[id_key].numpy().copy()
+                canonical = scratch[point_key].numpy().copy()
                 # Reuse the sampler itself with its grid term zeroed, so the exact
                 # original RNG noise is retained rather than recovered by subtraction.
-                _sample_grid_points_launch(base, gen.program.seed, CORNER_SALT, 0,
+                _sample_grid_points_launch(base, gen.program.seed, sampler_salt, sampler_offset,
                     cfg.max_num_points, 8, 0., cfg.scale, noise_ids, noise,
                     size=gen.params['generator'].in_effect('size'))
                 np.testing.assert_array_equal(ids, noise_ids.numpy())
@@ -163,10 +201,10 @@ def _capture_one(name, seed, config, *, illustrative_inputs=False):
                 mapped = origins+(draws+np.float32(.5))*np.float32(.125)
                 mapped_wp = wp.array(mapped, dtype=wp.vec2f, device='cpu')
                 lifetimes.append(mapped_wp)
-                base.copy(scratch['gen_corners'], mapped_wp)
+                base.copy(scratch[point_key], mapped_wp)
                 remapping.update(source_sampler_points=canonical, source_sampler_noise=draws)
             if (kernel is _self_intersections_by_i_k
-                    and (not illustrative_inputs or inputs[0].ptr == scratch['gen_rs'].ptr)):
+                    and (not illustrative_inputs or inputs[0].ptr == candidate.ptr)):
                 if observed:
                     raise AssertionError('expected one generator crossing check')
                 observed['smooth_raw'] = inputs[0].numpy().reshape(1, cfg.num_points, 2)[0].copy()
@@ -176,7 +214,7 @@ def _capture_one(name, seed, config, *, illustrative_inputs=False):
 
     if illustrative_inputs:
         # Only this maintenance CPU enqueue sees the mapping. All subsequent
-        # Bezier and road stages are the real bound Program, including validity.
+        # curve and road stages are the real bound Program, including validity.
         gen.program.enqueue(Observer())
         illustrated = {key: value.numpy().tobytes() for key, value in result_arrays(track).items()}
         first_raw = gen.program.tap('raw.xy').numpy().copy()
@@ -301,7 +339,7 @@ def construction_stages(sample):
         ('If it crosses, replace the whole loop', f'A separate default seed {_FALLBACK_SEEDS[name]} shows the automatic branch: reject the smooth loop and choose its entire polygon. No local spline edit or user toggle.'),
         ('Produce fixed-count raw samples', 'The generator stops at num_points raw samples. The shared spacing, XPBD and uniform stages determine the finished road and bead count.'),
     ])
-    if sample.get('illustrative_inputs'):
+    if sample.get('illustrative_inputs') and name == 'bezier':
         stages = [
             ('Select 10 grid cells', 'This construction illustration selects 10 addresses from an 8 × 8 grid of 64 cells.'),
             ('Add cell-bounded jitter', 'Orange arrows keep the illustrated points inside their selected cells.'),
@@ -309,6 +347,16 @@ def construction_stages(sample):
             ('Join corners with cubic handles', 'Tangent directions and two handles join each pair of corners with a cubic.'),
             ('Separate real example: whole-loop fallback', 'Default seed 97 rejects its crossing smooth loop and selects its entire polygon.'),
             ('Resample, then build the road', 'The Bezier stage writes 256 raw samples; the shared road pipeline produces the finished beads.'),
+        ]
+    if sample.get('illustrative_inputs') and name == 'hull':
+        stages = [
+            ('Select 10 grid cells', 'This construction illustration selects 10 addresses from an 8 × 8 grid of 64 cells.'),
+            ('Add cell-bounded anchor jitter', 'Orange arrows keep the illustrated anchors inside their selected cells.'),
+            ('Order around the centroid', 'Sort every anchor by angle; no point is discarded and no geometric convex hull is computed.'),
+            ('Displace inserted midpoints', 'Real Hull displacement moves one midpoint per edge radially; the original anchors stay fixed.'),
+            ('Join with a Catmull–Rom spline', 'The real closed spline passes through the anchors and displaced midpoints.'),
+            ('Separate real example: whole-loop fallback', 'Default seed 23 rejects its crossing smooth loop and selects its entire augmented polygon.'),
+            ('Resample, then build the road', 'The Hull stage writes 256 raw samples; the shared road pipeline produces the finished beads.'),
         ]
     smooth_stage = 3 if name == 'bezier' else 4
     return [dict(title=title, explanation=explanation, progressive_curve=i == smooth_stage)
@@ -344,7 +392,7 @@ def _grid(ax, data, p):
     for x in ticks:
         ax.plot([x, x], [0., end], color=p.grid, lw=.6, zorder=0)
         ax.plot([0., end], [x, x], color=p.grid, lw=.6, zorder=0)
-    pitch = (f"{data['grid_pitch']:g}" if data['name'] == 'bezier'
+    pitch = (f"{data['grid_pitch']:g}" if data['name'] == 'bezier' or data.get('illustrative_inputs')
              else f"{data['grid_pitch']:.2f}")
     label = (f"{len(data['sampled'])} corners · {data['grid_cells_per_side']} × "
              f"{data['grid_cells_per_side']} grid · pitch {pitch}" if data.get('illustrative_inputs')
@@ -476,7 +524,7 @@ def _result_axes(raw_ax, road_ax, data, p):
         ax.set_xticks([])
         ax.set_yticks([])
     _line(raw_ax, data['raw'], p.blue, closed=True, lw=2)
-    raw_title = ("Bézier curve"
+    raw_title = (("Bézier curve" if data['name'] == 'bezier' else "Hull curve")
                  if data.get('illustrative_inputs') else
                  f"Primary seed {data['seed']}\nraw n={len(data['raw'])}")
     raw_ax.set_title(raw_title, color=p.ink, fontsize=12)
@@ -535,7 +583,8 @@ def render(out_dir, sample, movies=True, theme='light', writer_factory=None):
             with writer.saving(fig, str(out_dir/f'generator-{name}-construction.mp4'), dpi=120):
                 for i, (stage, count) in enumerate(zip(stages, allocations)):
                     if sample.get('illustrative_inputs'):
-                        heading.set_text('Bézier construction illustration · 10 points · 8 × 8 grid')
+                        heading.set_text(('Bézier' if name == 'bezier' else 'Hull')
+                                         + ' construction illustration · 10 points · 8 × 8 grid')
                         explanation.set_text(f"{i+1}/{len(stages)} · {stage['title']}\n"
                                              + textwrap.fill(stage['explanation'], width=112))
                     else:
@@ -548,14 +597,15 @@ def render(out_dir, sample, movies=True, theme='light', writer_factory=None):
                         writer.grab_frame()
             plt.close(fig)
         fig, ax, heading, explanation = _frame(sample, theme)
-        heading.set_text("Bézier construction illustration · 10 points · 8 × 8 grid"
+        heading.set_text(("Bézier" if name == "bezier" else "Hull")
+                         + " construction illustration · 10 points · 8 × 8 grid"
                          if sample.get("illustrative_inputs") else f"{name.capitalize()} · grid addresses and actual offsets")
         explanation.set_text(textwrap.fill(stages[1]['explanation'], width=112))
         draw_step(ax, sample, 1, 1., theme=theme)
         save_figure(fig, out_dir/f'generator-{name}-construction.png', theme=theme, dpi=120)
         plt.close(fig)
     from .render_generator_guide import _record
-    record = dict(kind=('construction illustration with remapped inputs and real Bezier/road stages'
+    record = dict(kind=(f'construction illustration with remapped inputs and real {"Bezier" if name == "bezier" else "Hull"}/road stages'
                         if sample.get('illustrative_inputs') else
                         'progressive construction drawing of recorded geometry'), sample=_record(sample),
                 stage_titles=[stage['title'] for stage in stages], stages=len(stages),

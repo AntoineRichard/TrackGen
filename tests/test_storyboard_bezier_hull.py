@@ -106,8 +106,8 @@ def test_posters_keep_declared_input_and_separate_fallback_selection(example, tm
         assert record['fallback_example']['automatic_whole_loop']
         assert record['raw_count'] == len(example['raw'])
         assert record['final_count'] == selected['count']
-        assert record.get('illustrative_inputs', False) == (name == 'bezier')
-        assert record['observation_preserves_outputs'] == (name != 'bezier')
+        assert record['illustrative_inputs']
+        assert not record['observation_preserves_outputs']
         assert record['theme'] == theme
         assert record['geometry_interpolated'] is False
         assert record['elapsed_runtime'] is False
@@ -227,3 +227,106 @@ def test_ten_point_sampler_replay_matches_actual_generator_prefix():
                                   scratch['gen_corners'].numpy().reshape(64, 10, 2)[7])
     np.testing.assert_array_equal(illustration['grid_ids'],
                                   scratch['gen_used'].numpy().reshape(64, 10)[7])
+
+
+def test_hull_illustration_bounds_anchor_jitter_but_retains_real_midpoint_and_road_stages():
+    from track_gen import ops
+    from track_gen.exec import LaunchContext
+
+    story = _story()
+    default = guide.sample_batch('hull', seeds=[7])[0]
+    before = default['raw'].tobytes(), default['center'].tobytes()
+    chosen = story.select_construction_sample(default)
+    data = story.capture(chosen)
+    assert chosen['illustrative_inputs'] and data['production_sampler_unchanged']
+    assert chosen['config']['min_num_points'] == chosen['config']['max_num_points'] == 10
+    assert chosen['config']['min_point_distance'] == .0625
+    assert len(set(data['grid_ids'])) == 10
+    assert data['grid_cells_per_side'] == 8 and data['grid_pitch'] == .125
+    assert ((data['offset_vectors'] >= 0) & (data['offset_vectors'] < .125)).all()
+    np.testing.assert_array_equal(data['sampled'], data['grid_origins'].astype(np.float32)
+        +(data['source_sampler_noise']+np.float32(.5))*np.float32(.125))
+    assert data['illustration_replay_equal'] and data['ordinary_outputs_restored']
+    assert not data['observation_preserves_outputs']
+    assert data['final_valid'] and data['final_fail'] == 0
+    assert data['smooth_crossings'] == 0
+    assert before == (default['raw'].tobytes(), default['center'].tobytes())
+    again = guide.sample_batch('hull', seeds=[7])[0]
+    assert before == (again['raw'].tobytes(), again['center'].tobytes())
+    np.testing.assert_array_equal(story.capture(default)['sampled'],
+                                  default['construction']['sampled'])
+
+    # The calm anchor mapping must not flatten Hull's separate midpoint layer.
+    np.testing.assert_array_equal(data['polygon_vertices'][::2], data['ordered'])
+    moved = data['polygon_vertices'][1::2]-data['midpoints']
+    radial = data['midpoints']-data['ordered'].astype(np.float64).mean(axis=0)
+    assert np.linalg.norm(moved, axis=1).max() > .01
+    assert np.all(np.linalg.norm(moved, axis=1) <= .15*np.linalg.norm(radial, axis=1)+1e-7)
+    assert np.max(np.abs(moved[:, 0]*radial[:, 1]-moved[:, 1]*radial[:, 0])) < 1e-7
+    # Replaying the public Catmull-Rom op from the captured actual augmented loop
+    # must reproduce the entire dense candidate, not a drawing approximation.
+    context = LaunchContext.current('cpu')
+    augmented = wp.array(data['polygon_vertices'], dtype=wp.vec2f, device='cpu')
+    count = wp.array([20], dtype=wp.int32, device='cpu')
+    dense = wp.empty(600, dtype=wp.vec2f, device='cpu')
+    ops.closed_catmull_rom(context, augmented, 20, 30, dense, count=count, endpoint=True)
+    np.testing.assert_array_equal(dense.numpy(), data['smooth_dense'])
+    scratch = ops.ArcScratch(wp.empty(600, dtype=wp.vec2f, device='cpu'),
+        wp.empty(600, dtype=wp.float32, device='cpu'),
+        wp.empty(601, dtype=wp.float32, device='cpu'),
+        wp.empty(1, dtype=wp.int32, device='cpu'))
+    raw = wp.empty(256, dtype=wp.vec2f, device='cpu')
+    out_count = wp.empty(1, dtype=wp.int32, device='cpu')
+    ops.arc_resample(context, dense, 600, 256, scratch, raw, out_count)
+    np.testing.assert_array_equal(raw.numpy(), data['raw'])
+    assert data['fallback']['seed'] == 23
+    assert data['fallback']['observation_preserves_outputs']
+    assert data['fallback']['smooth_crossings'] == 2
+
+
+def test_hull_illustration_uses_its_own_canonical_sampler_draws_and_salt():
+    story = _story()
+    _, generator = guide.sample_batch('hull', seeds=[7], overrides={
+        'min_num_points': 10, 'max_num_points': 10, 'min_point_distance': .0625},
+        return_generator=True)
+    scratch = guide._generator_scratch(generator)
+    chosen = story.select_construction_sample(guide.sample_batch('hull', seeds=[7])[0])
+    data = story.capture(chosen)
+    np.testing.assert_array_equal(data['source_sampler_points'], scratch['points'].numpy())
+    np.testing.assert_array_equal(data['grid_ids'], scratch['used'].numpy())
+    np.testing.assert_array_equal(data['source_sampler_points'],
+        data['grid_origins'].astype(np.float32)+data['source_sampler_noise'])
+    from track_gen._src.warp_generate_hull import _midpoint_displace_dyn_k
+    from track_gen.exec import LaunchContext
+    ordered = wp.array(data['ordered'], dtype=wp.vec2f, device='cpu')
+    count = wp.array([10], dtype=wp.int32, device='cpu')
+    displacement = wp.array([.15], dtype=wp.float32, device='cpu')
+    augmented = wp.empty(20, dtype=wp.vec2f, device='cpu')
+    augmented_count = wp.empty(1, dtype=wp.int32, device='cpu')
+    LaunchContext.current('cpu').launch(_midpoint_displace_dyn_k, 1,
+        [ordered, count, generator.program.seed, 10, displacement, augmented, augmented_count])
+    np.testing.assert_array_equal(augmented.numpy(), data['polygon_vertices'])
+    assert augmented_count.numpy()[0] == 20
+    bezier = story.capture(story.select_construction_sample(
+        guide.sample_batch('bezier', seeds=[7])[0]))
+    assert not np.array_equal(data['source_sampler_noise'], bezier['source_sampler_noise'])
+
+
+def test_hull_illustration_labels_anchor_mapping_and_midpoint_displacement_separately(tmp_path):
+    story = _story()
+    default = guide.sample_batch('hull', seeds=[7])[0]
+    record = story.render(tmp_path, default, movies=False)
+    assert record['illustrative_inputs'] and record['production_sampler_unchanged']
+    assert 'real Hull/road stages' in record['kind']
+    assert record['example_selection']['distinct_cells'] == 10
+    chosen = story.select_construction_sample(default)
+    stages = story.construction_stages(chosen)
+    assert len(stages) == 7
+    assert 'cell-bounded' in stages[1]['title'].lower()
+    assert 'midpoint' in stages[3]['title'].lower()
+    assert 'real' in stages[3]['explanation'].lower()
+    assert 'Catmull' in stages[4]['title']
+    assert '23' in stages[5]['explanation']
+    fig, ax, heading, explanation = story._frame(chosen, 'light')
+    assert any('Hull curve' == x.get_title() for x in fig.axes)
+    plt.close(fig)

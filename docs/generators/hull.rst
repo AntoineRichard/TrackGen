@@ -118,29 +118,40 @@ How it is constructed
    not illustrate a local spline repair or an optional toggle.
 
 .. figure:: ../assets/racing/generator-hull-construction.png
-   :alt: Grid addresses and actual random offsets for Hull, beside the raw loop and finished road.
+   :alt: Ten cell-bounded illustrative Hull anchors on an 8 by 8 grid, beside the resulting curve and finished road.
    :align: center
 
-   The large view explains point selection. The movie then separates angle ordering,
-   midpoint displacement, spline evaluation and the actual whole-loop fallback.
+   Construction illustration: ten anchors on an 8×8 grid, with cell-bounded jitter
+   for clarity. Only the anchor inputs are remapped; the curve and finished road
+   come from the real Hull and road stages. The movie separates anchor placement,
+   midpoint displacement, spline evaluation and a real whole-loop fallback.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:contain" poster="../_images/generator-hull-construction.png" aria-label="Grid selection, offsets, angle ordering, midpoint displacement, Catmull-Rom and whole-loop fallback.">
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:contain" poster="../_images/generator-hull-construction.png" aria-label="Hull construction illustration: cell-bounded anchors, angle ordering, real midpoint displacement, Catmull-Rom and separate whole-loop fallback.">
      <source src="../generator-hull-construction.mp4" type="video/mp4">
-     Grid selection, offsets, angle ordering, midpoint displacement, Catmull-Rom and whole-loop fallback.
+     Hull construction illustration: cell-bounded anchors, angle ordering, real midpoint displacement, Catmull-Rom and separate whole-loop fallback.
    </video>
 
 :download:`Download the animation <../assets/racing/generator-hull-construction.mp4>`.
 
-**Text alternative:** Grey grid addresses lead to the sampled blue points through
-orange offset vectors. Every active point enters the angle-sorted cycle. Orange
-arrows then show the inserted midpoints' actual displacements. A seed-23 inset
-marks crossings of the rejected smooth candidate and shows the entire selected
-augmented polygon. Raw and finished-road counts remain distinct.
+**Text alternative:** Ten selected cells lead to blue anchors through short orange
+offset vectors. Every anchor enters the angle-sorted cycle. A separate stage keeps
+those anchors fixed and moves each inserted midpoint radially, using the actual
+``hull_displacement=0.15`` operation. The real Catmull–Rom spline and road pipeline
+produce the displayed curve and road from those same illustrated anchors. A
+separate default seed-23 example marks crossings of a rejected smooth candidate
+and selects its entire augmented polygon. Raw and finished-road counts remain
+distinct.
 
-The drawings use observed buffers, including the rejected spline before the
-fallback overwrites it. Timing is explanatory. Continue with the
+The illustration uses ``min_num_points=max_num_points=10`` and
+``min_point_distance=0.0625``. It preserves Hull seed 7's grid addresses and random
+draws, but maps each anchor to ``origin + (noise + 0.5) * pitch``. This bounds
+illustrative anchor jitter to its cell; it is not a public sampler option or a
+change to the production offsets described above. Midpoint displacement, spline
+evaluation, sampling, relaxation and validity remain the actual operations.
+The rejected default spline is recorded before fallback overwrites it. Timing is
+explanatory. Continue with the
 :ref:`shared sampling and relaxation stages <sampling-stages>`.
 
 Continue with :doc:`/how-it-works/pipeline`, :doc:`/configuration/tuning`,
