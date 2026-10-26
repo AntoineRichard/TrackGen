@@ -6,7 +6,7 @@ CUDA-graph capturable: no host syncs or allocations on hot paths, and every laun
 through a `LaunchContext` (`ctx`). Read `docs/library-readiness/target-architecture.md` for
 the architecture and the roadmap, and `CHANGELOG.md` for what shipped.
 
-## State (2026-10-25)
+## State (2026-10-26)
 - `main` = **v0.2.0** (released). The 0.1/0.2 migration records are retained under
   `docs/library-readiness/archive/`, outside the published site.
 - The combined working candidate is **0.3.0rc3**. Immutable `v0.3.0rc2` remains
@@ -17,6 +17,26 @@ the architecture and the roadmap, and `CHANGELOG.md` for what shipped.
 - The release-blocking Repulsive repair and the racing documentation are combined.
   Finish the candidate validation/tag steps below, then STOP for the user's racing
   validation. Final release, merge to `main` and docs deployment need explicit approval.
+
+## Current follow-up status (2026-10-26)
+
+Immutable `v0.3.0rc3` is already published at
+`fbf1a3b6efbc41665bc7606370b286142000b46c`. Its required CPU/CUDA/full Spark
+validation, normal Linux CPU matrix, strict docs and linkcheck passed. The release
+steps below describe those completed candidate gates; do not recreate its tag.
+Downstream Racing validation and explicit final-release approval are still pending.
+
+Subsequent work changes documentation and maintenance tools only: measured
+six-generator benchmarks (Mac CPU batch 64; GB10 and RTX 5090 graph replay batch
+4096), and an audit of all nine movies in both themes. Hull now uses the same
+explicitly labelled ten-anchor, 8×8, cell-bounded teaching regime as Bezier, while
+retaining actual midpoint/spline/road stages and a separate default fallback example.
+A track XPBD metric moved clear of road geometry. Runtime source, defaults, RNG,
+package metadata, goldens and the rc3 tag remain unchanged. See the excluded
+`docs/superpowers/reviews/2026-10-26-animation-audit.md` for audit and capture evidence.
+The follow-up passed 3,763 CPU tests (four optional UI skips), 62 media tests on
+Spark, strict docs with all 82 pairs and desktop/mobile browser checks in both
+themes. Normal CI on this follow-up must be distinguished from the rc3 gates above.
 
 ## Release-blocking Repulsive repair (user decision, 2026-10-25)
 

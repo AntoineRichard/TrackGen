@@ -540,37 +540,110 @@
     },
     "hull": {
       "aspect_ratio": "16:9",
-      "command": "python -m viz.render_generator_guide --construction-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR --theme dark",
+      "command": "Selective Python capture: viz.render_generator_guide.sample_batch(\"hull\", seeds=[7]); viz.render_generator_guide.render_construction(out_dir, sample, movies=True, theme=\"dark\"). Uses storyboard_bezier_hull.select_construction_sample for the labelled illustration.",
       "duration_seconds": 24.0,
       "effective_generator_params": {
         "hull_displacement": 0.15000000596046448,
-        "max_num_points": 13,
-        "min_num_points": 9,
-        "min_point_distance": 0.05,
+        "max_num_points": 10,
+        "min_num_points": 10,
+        "min_point_distance": 0.0625,
         "num_points_per_segment": 30,
         "size": 1.0
       },
       "elapsed_runtime": false,
+      "example_selection": {
+        "distinct_cells": 10,
+        "grid_cells_per_side": 8,
+        "grid_pitch": 0.125,
+        "illustrative_inputs": true,
+        "production_sampler_unchanged": true,
+        "sampled_inside_cells": true,
+        "sampler_remapping": "origin + (original_noise + 0.5) * pitch; exact canonical Hull seed-7 cell IDs and RNG draws, remapped only for this illustration; midpoint displacement is unchanged.",
+        "selected_seed": 7,
+        "settings": {
+          "max_num_points": 10,
+          "min_num_points": 10,
+          "min_point_distance": 0.0625
+        }
+      },
       "fallback_example": {
         "automatic_whole_loop": true,
         "proper_crossings": 2,
         "seed": 23,
         "settings": "current defaults"
       },
-      "final_count": 85,
+      "final_count": 57,
       "frame_size": [
         1696,
         954
       ],
       "frames": 144,
       "geometry_interpolated": false,
-      "kind": "progressive construction drawing of recorded geometry",
-      "observation_preserves_outputs": true,
+      "grid_ids": [
+        3,
+        56,
+        28,
+        51,
+        22,
+        23,
+        41,
+        5,
+        43,
+        39
+      ],
+      "illustrated_sampled_points": [
+        [
+          0.4330490529537201,
+          0.112034372985363
+        ],
+        [
+          0.05633842200040817,
+          0.8937143087387085
+        ],
+        [
+          0.6080278754234314,
+          0.48783910274505615
+        ],
+        [
+          0.4595378041267395,
+          0.8462057113647461
+        ],
+        [
+          0.8328944444656372,
+          0.3333178758621216
+        ],
+        [
+          0.8988416790962219,
+          0.2662294805049896
+        ],
+        [
+          0.23202094435691833,
+          0.6800211071968079
+        ],
+        [
+          0.7305896282196045,
+          0.04308905452489853
+        ],
+        [
+          0.432388573884964,
+          0.6282008290290833
+        ],
+        [
+          0.8997801542282104,
+          0.5438798069953918
+        ]
+      ],
+      "illustration_replay_equal": true,
+      "illustrative_inputs": true,
+      "kind": "construction illustration with remapped inputs and real Hull/road stages",
+      "observation_preserves_outputs": false,
+      "ordinary_outputs_restored": true,
       "output": "generator-hull-construction.mp4",
       "poster_frame_size": [
         1696,
         954
       ],
+      "production_sampler_unchanged": true,
       "raw_count": 256,
       "sample": {
         "config": {
@@ -590,9 +663,9 @@
           "half_width": 0.1,
           "handle_clamp_frac": 0.4,
           "hull_displacement": 0.15,
-          "max_num_points": 13,
-          "min_num_points": 9,
-          "min_point_distance": 0.05,
+          "max_num_points": 10,
+          "min_num_points": 10,
+          "min_point_distance": 0.0625,
           "num_envs": 1,
           "num_points": 256,
           "num_points_per_segment": 30,
@@ -661,11 +734,11 @@
           "z_profile": "flat",
           "z_valid_grade": 0.0
         },
-        "count": 85,
+        "count": 57,
         "env": 0,
         "epoch": 0,
         "fail": 0,
-        "geometry_sha256": "f85c319305fdc0974fb34cc3803000a20bab897ea3ba9156b90232140e0842b7",
+        "geometry_sha256": "8698bd26b1e0137cfb471fdec0789ca015d2ccad460fe406c5ba6f7bae1d8b54",
         "polygon_fallback_used": false,
         "raw_finite": true,
         "real_geometry_finite": true,
@@ -673,10 +746,11 @@
         "smooth_raw_crossings": 0,
         "valid": true
       },
+      "sampler_remapping": "origin + (original_noise + 0.5) * pitch; exact canonical Hull seed-7 cell IDs and RNG draws, remapped only for this illustration; midpoint displacement is unchanged.",
       "source": {
         "device": "cpu",
         "generator_source_sha256": "e4f6400cfc0f0534c8139f92056a8651d99d3d3b629222d3e39a32969d69f5a4",
-        "git_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
+        "git_commit": "c3ed4b8810d936721413c6843cdfc1c9cd2bdd13",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "palette_sha256": "a6509a087b4df1335adc35330b563b093e08de11f5dc31309f460f5bcae1d55f",
@@ -700,23 +774,107 @@
           "viz/render_generator_guide.py": "6a9bcd57722b10991b1e4214ebfe2cd2fa29c185d8c3bd4a799d3979cc10ea74",
           "viz/render_readme_assets.py": "752f8e53853aafdcaa2dcec65fb95b80127e3d5ce692a0a277e5df983f8758af",
           "viz/render_relaxation_guide.py": "454fb741f4e93fa47c18a2f4b50f559666a410c39d9507a5d1d1c8675ee131ba",
-          "viz/render_relaxation_video.py": "80f1f3d0535af47b460a385c0c8c2d32a5a57720a66e8946ca756fe16a12f02d",
+          "viz/render_relaxation_video.py": "1f59a8d779f580e000f89080df85a1c19d4a3e22a5317b4755de4c5e4dfa6512",
           "viz/render_utility_assets.py": "f4e36737e66c2bc66f30fa7751ff6fb2ada58d677573b17d5bd4f472be41c541",
-          "viz/storyboard_bezier_hull.py": "53a7f2cc6982d607c097bc87ef9b71dfbc5f0f10b8fbcd2f9f4971dae167793c",
+          "viz/storyboard_bezier_hull.py": "a463c7b1b8c3baf4e74ca9a79e77cb18d27aaa432be661fe5be48f0c47e5f4f7",
           "viz/storyboard_polar.py": "03f5bbe7b763f5660c7e73d42cd09b93855dbcc830863fe0192aaa767b7e2c2d",
           "viz/storyboard_spacing.py": "08327ecfd115f28e0aa8917dcf670f163033fb0f49d36ff079160855f9d3ee6c"
         },
         "warp_version": "1.18.0",
         "worktree_dirty": false
       },
+      "source_sampler_noise": [
+        [
+          -0.03560757637023926,
+          0.39627498388290405
+        ],
+        [
+          -0.04929262399673462,
+          -0.35028547048568726
+        ],
+        [
+          0.36422282457351685,
+          0.402712881565094
+        ],
+        [
+          0.17630237340927124,
+          0.269645631313324
+        ],
+        [
+          0.16315573453903198,
+          0.1665428876876831
+        ],
+        [
+          -0.30926668643951416,
+          -0.37016409635543823
+        ],
+        [
+          0.3561675548553467,
+          -0.059831321239471436
+        ],
+        [
+          0.3447169065475464,
+          -0.15528756380081177
+        ],
+        [
+          -0.040891408920288086,
+          -0.474393367767334
+        ],
+        [
+          -0.30175870656967163,
+          -0.14896166324615479
+        ]
+      ],
+      "source_sampler_points": [
+        [
+          0.33939242362976074,
+          0.39627498388290405
+        ],
+        [
+          -0.04929262399673462,
+          0.5247145295143127
+        ],
+        [
+          0.8642228245735168,
+          0.777712881565094
+        ],
+        [
+          0.5513023734092712,
+          1.0196456909179688
+        ],
+        [
+          0.913155734539032,
+          0.4165428876876831
+        ],
+        [
+          0.5657333135604858,
+          -0.12016409635543823
+        ],
+        [
+          0.4811675548553467,
+          0.5651686787605286
+        ],
+        [
+          0.9697169065475464,
+          -0.15528756380081177
+        ],
+        [
+          0.3341085910797119,
+          0.15060663223266602
+        ],
+        [
+          0.5732412934303284,
+          0.3510383367538452
+        ]
+      ],
       "stage_titles": [
-        "Choose grid addresses",
-        "Add the actual random offsets",
+        "Select 10 grid cells",
+        "Add cell-bounded anchor jitter",
         "Order around the centroid",
         "Displace inserted midpoints",
-        "Join the augmented loop with a spline",
-        "If it crosses, replace the whole loop",
-        "Produce fixed-count raw samples"
+        "Join with a Catmull\u2013Rom spline",
+        "Separate real example: whole-loop fallback",
+        "Resample, then build the road"
       ],
       "stages": 7,
       "theme": "dark"
@@ -2606,11 +2764,11 @@
       }
     },
     "generator-hull-construction.mp4": {
-      "command": "python -m viz.render_generator_guide --construction-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR --theme dark",
+      "command": "Selective Python capture: viz.render_generator_guide.sample_batch(\"hull\", seeds=[7]); viz.render_generator_guide.render_construction(out_dir, sample, movies=True, theme=\"dark\"). Uses storyboard_bezier_hull.select_construction_sample for the labelled illustration.",
       "source": {
         "device": "cpu",
         "generator_source_sha256": "e4f6400cfc0f0534c8139f92056a8651d99d3d3b629222d3e39a32969d69f5a4",
-        "git_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
+        "git_commit": "c3ed4b8810d936721413c6843cdfc1c9cd2bdd13",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "palette_sha256": "a6509a087b4df1335adc35330b563b093e08de11f5dc31309f460f5bcae1d55f",
@@ -2634,9 +2792,9 @@
           "viz/render_generator_guide.py": "6a9bcd57722b10991b1e4214ebfe2cd2fa29c185d8c3bd4a799d3979cc10ea74",
           "viz/render_readme_assets.py": "752f8e53853aafdcaa2dcec65fb95b80127e3d5ce692a0a277e5df983f8758af",
           "viz/render_relaxation_guide.py": "454fb741f4e93fa47c18a2f4b50f559666a410c39d9507a5d1d1c8675ee131ba",
-          "viz/render_relaxation_video.py": "80f1f3d0535af47b460a385c0c8c2d32a5a57720a66e8946ca756fe16a12f02d",
+          "viz/render_relaxation_video.py": "1f59a8d779f580e000f89080df85a1c19d4a3e22a5317b4755de4c5e4dfa6512",
           "viz/render_utility_assets.py": "f4e36737e66c2bc66f30fa7751ff6fb2ada58d677573b17d5bd4f472be41c541",
-          "viz/storyboard_bezier_hull.py": "53a7f2cc6982d607c097bc87ef9b71dfbc5f0f10b8fbcd2f9f4971dae167793c",
+          "viz/storyboard_bezier_hull.py": "a463c7b1b8c3baf4e74ca9a79e77cb18d27aaa432be661fe5be48f0c47e5f4f7",
           "viz/storyboard_polar.py": "03f5bbe7b763f5660c7e73d42cd09b93855dbcc830863fe0192aaa767b7e2c2d",
           "viz/storyboard_spacing.py": "08327ecfd115f28e0aa8917dcf670f163033fb0f49d36ff079160855f9d3ee6c"
         },
@@ -2645,11 +2803,11 @@
       }
     },
     "generator-hull-construction.png": {
-      "command": "python -m viz.render_generator_guide --construction-only --source-manifest docs/assets/racing/generators-manifest.json --out-dir DIR --theme dark",
+      "command": "Selective Python capture: viz.render_generator_guide.sample_batch(\"hull\", seeds=[7]); viz.render_generator_guide.render_construction(out_dir, sample, movies=True, theme=\"dark\"). Uses storyboard_bezier_hull.select_construction_sample for the labelled illustration.",
       "source": {
         "device": "cpu",
         "generator_source_sha256": "e4f6400cfc0f0534c8139f92056a8651d99d3d3b629222d3e39a32969d69f5a4",
-        "git_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
+        "git_commit": "c3ed4b8810d936721413c6843cdfc1c9cd2bdd13",
         "matplotlib_version": "3.11.2",
         "numpy_version": "2.5.4",
         "palette_sha256": "a6509a087b4df1335adc35330b563b093e08de11f5dc31309f460f5bcae1d55f",
@@ -2673,9 +2831,9 @@
           "viz/render_generator_guide.py": "6a9bcd57722b10991b1e4214ebfe2cd2fa29c185d8c3bd4a799d3979cc10ea74",
           "viz/render_readme_assets.py": "752f8e53853aafdcaa2dcec65fb95b80127e3d5ce692a0a277e5df983f8758af",
           "viz/render_relaxation_guide.py": "454fb741f4e93fa47c18a2f4b50f559666a410c39d9507a5d1d1c8675ee131ba",
-          "viz/render_relaxation_video.py": "80f1f3d0535af47b460a385c0c8c2d32a5a57720a66e8946ca756fe16a12f02d",
+          "viz/render_relaxation_video.py": "1f59a8d779f580e000f89080df85a1c19d4a3e22a5317b4755de4c5e4dfa6512",
           "viz/render_utility_assets.py": "f4e36737e66c2bc66f30fa7751ff6fb2ada58d677573b17d5bd4f472be41c541",
-          "viz/storyboard_bezier_hull.py": "53a7f2cc6982d607c097bc87ef9b71dfbc5f0f10b8fbcd2f9f4971dae167793c",
+          "viz/storyboard_bezier_hull.py": "a463c7b1b8c3baf4e74ca9a79e77cb18d27aaa432be661fe5be48f0c47e5f4f7",
           "viz/storyboard_polar.py": "03f5bbe7b763f5660c7e73d42cd09b93855dbcc830863fe0192aaa767b7e2c2d",
           "viz/storyboard_spacing.py": "08327ecfd115f28e0aa8917dcf670f163033fb0f49d36ff079160855f9d3ee6c"
         },
@@ -3939,8 +4097,8 @@
     "generator-checkpoint-controls.png": 476320,
     "generator-checkpoint-examples.png": 227379,
     "generator-checkpoint-fallback.png": 162080,
-    "generator-hull-construction.mp4": 709595,
-    "generator-hull-construction.png": 180723,
+    "generator-hull-construction.mp4": 552665,
+    "generator-hull-construction.png": 117169,
     "generator-hull-controls-more.png": 256735,
     "generator-hull-controls.png": 706077,
     "generator-hull-examples.png": 263771,
@@ -16781,7 +16939,7 @@
     "generator-checkpoint-controls.png": "287ea820aa01cc95bc8fbb94ef5a36fe0b21d82903a6460b44aa391e1ae36dd2",
     "generator-checkpoint-examples.png": "b0bd48604c3c70dcdc931f3d4d581af9f464a7c32f8b173c3bb21f79fc793efd",
     "generator-checkpoint-fallback.png": "393b789350f6159b7d1ac81aeeefd8d395615b481d72ecebb003baeaf95605c4",
-    "generator-hull-construction.png": "00c0e3523f372a34118039d9737d2442a0df2f9aca1babf7b34fd3738b07d50d",
+    "generator-hull-construction.png": "b0c815ebc364bf63c7c7f05d413572566e1e81609bc5c00cc82e3098e1daf171",
     "generator-hull-controls-more.png": "a99610c1b9edb10af1ec646d9d006e25c1c8647de2e58cb9173526bcdc9aee6d",
     "generator-hull-controls.png": "0deeffb6b65ae78ec28d5d7d238b6cdeac551b978a3259cb8097ce64571c1892",
     "generator-hull-examples.png": "b07266ca798249158bba153e862fc6e0b12b6692124a60ace275106a69d99802",

@@ -65,12 +65,12 @@ growth clip records actual solver iterations. A gallery sample is not a yield es
 
       .. raw:: html
 
-         <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-hull-construction.png" aria-label="Cell-bounded anchors, real midpoint displacement and a separate whole-loop fallback.">
+         <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-hull-construction.png" aria-label="Ten-anchor construction illustration: cell-bounded inputs, real midpoint displacement and a separate whole-loop fallback.">
            <source src="../generator-hull-construction.mp4" type="video/mp4">
-           Cell-bounded anchors, real midpoint displacement and a separate whole-loop fallback.
+           Ten-anchor construction illustration: cell-bounded inputs, real midpoint displacement and a separate whole-loop fallback.
          </video>
 
-      :doc:`Cell-bounded anchors, real midpoint displacement and a separate whole-loop fallback. </generators/hull>`
+      :doc:`Ten-anchor construction illustration: cell-bounded inputs, real midpoint displacement and a separate whole-loop fallback. </generators/hull>`
 
    .. grid-item-card:: Polar
 

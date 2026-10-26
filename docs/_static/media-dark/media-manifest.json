@@ -307,21 +307,21 @@
       "producer": "generators"
     },
     "generator-hull-construction.mp4": {
-      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
+      "capture_commit": "c3ed4b8810d936721413c6843cdfc1c9cd2bdd13",
       "dark": "_static/media-dark/generator-hull-construction.mp4",
-      "dark_sha256": "0dd8fb90a3e7af013bbcfe80f358a1b3190067a7c57651d92cb8de5aacf68dc7",
+      "dark_sha256": "dcac55ce7890f7b5b32a1360bcad23ceb138ae28e69bd796d6d36d9a89a1d61e",
       "kind": "video",
       "light": "assets/racing/generator-hull-construction.mp4",
-      "light_sha256": "e41480a98127bcb62e9d1d2a709d4bfa3814b0adef12528c0688d4873dad6351",
+      "light_sha256": "9558411d58d89971071711830f3299b6c919c40872331583daf740b155d4d06c",
       "producer": "generators"
     },
     "generator-hull-construction.png": {
-      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
+      "capture_commit": "c3ed4b8810d936721413c6843cdfc1c9cd2bdd13",
       "dark": "_static/media-dark/generator-hull-construction.png",
-      "dark_sha256": "7daf528e8e459482320ce137eb37d2150f67da34a87efff0fb63a8ec25a4d6ae",
+      "dark_sha256": "96a99c05624b374d7212c4b49a6bd267b6133db4705609a18d32cf0d74725091",
       "kind": "image",
       "light": "assets/racing/generator-hull-construction.png",
-      "light_sha256": "6a9b65be552843f50fdecb8e9c4f22b2db9daa8931f6cf545515adc4b80f35c7",
+      "light_sha256": "4d1b3af062127a7b20adc2b4a284c46f84bac941a41564a474380ca92c45e24e",
       "producer": "generators"
     },
     "generator-hull-controls-more.png": {
@@ -685,21 +685,21 @@
       "producer": "xpbd-gate"
     },
     "relaxation-iterations-poster.png": {
-      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
+      "capture_commit": "c3ed4b8810d936721413c6843cdfc1c9cd2bdd13",
       "dark": "_static/media-dark/relaxation-iterations-poster.png",
-      "dark_sha256": "1cc2f37ae6952db6d71e92710aceabddf5984c50d9890cb8762ebd570ba6fb62",
+      "dark_sha256": "bfa2641a699c9b2e3b6926f05ddc8fcc12327ec9307a1891c1841b593b19d767",
       "kind": "image",
       "light": "_static/relaxation-iterations-poster.png",
-      "light_sha256": "55f0ef96120673f11a91e4e3eb3452bd2261a82ca48af0c0e5448ded296fe23a",
+      "light_sha256": "4560680b1836849c2cdc6d467230d9e8fe14ab9a504d7b22dfb1820efa91761e",
       "producer": "xpbd-track"
     },
     "relaxation-iterations.mp4": {
-      "capture_commit": "fa1ee66c0354b43449e0009721662f6f2488f62a",
+      "capture_commit": "c3ed4b8810d936721413c6843cdfc1c9cd2bdd13",
       "dark": "_static/media-dark/relaxation-iterations.mp4",
-      "dark_sha256": "be38b34004bced3cdb8270fae6b326ff084dc30697193715ae5bcdfd9e23862b",
+      "dark_sha256": "0839284624d61814fb844161423c0e6b540befd482dbd7762f71e2953a6708d7",
       "kind": "video",
       "light": "_static/relaxation-iterations.mp4",
-      "light_sha256": "82c48182649e52fa86854f6099643788592d0332f7d7e7141b99d38fd9cd83df",
+      "light_sha256": "096f5709e6619322f16cd4d9a1006622d4596c5078bbde80847ca7e5126f902d",
       "producer": "xpbd-track"
     },
     "relaxation-iterations.png": {
