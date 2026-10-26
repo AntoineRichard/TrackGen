@@ -274,7 +274,7 @@ def run_case(generator, *, envs=4096, device="cpu", repeats=5, warmup_seconds=1.
 
         def replay():
             wp.capture_launch(cap.graph, stream=stream)
-            stream.synchronize()
+            wp.synchronize_stream(stream)
     else:
         phases["capture"] = None
 
@@ -294,7 +294,7 @@ def run_case(generator, *, envs=4096, device="cpu", repeats=5, warmup_seconds=1.
         track.count.fill_(-123456)
         track.generation.fill_(-123456)
         if stream is not None:
-            stream.synchronize()
+            wp.synchronize_stream(stream)
         started = time.perf_counter_ns()
         replay()
         elapsed = (time.perf_counter_ns() - started) * 1e-9
@@ -319,7 +319,7 @@ def run_case(generator, *, envs=4096, device="cpu", repeats=5, warmup_seconds=1.
     phase("epoch_reset")
     gen.seeds.reset_epoch(stream=stream)
     if stream is not None:
-        stream.synchronize()
+        wp.synchronize_stream(stream)
     if not np.all(gen.seeds.epoch.numpy() == 0):
         raise BenchmarkGuardError("epoch reset failed")
     # All event allocations happen before any measured interval.
@@ -334,7 +334,7 @@ def run_case(generator, *, envs=4096, device="cpu", repeats=5, warmup_seconds=1.
             stream.record_event(a)
             wp.capture_launch(cap.graph, stream=stream)
             stream.record_event(b)
-            stream.synchronize()
+            wp.synchronize_stream(stream)
         else:
             replay()
         wall_ms = (time.perf_counter_ns() - started) * 1e-6
