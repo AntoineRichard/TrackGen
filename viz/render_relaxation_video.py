@@ -179,14 +179,18 @@ def _frame(path,data,envs,limits,metadata,gates):
                 ax.plot(*np.vstack([b,b[0]]).T,color="#2563a6",lw=1.)
             ax.plot(*closed.T,color="#263445",ls="--",lw=.9)
         valid=data["valid"][e];fail=data["fail_mask"][e]
-        ax.set_title(f"seed {metadata['seed_start']+e}  |  env {e}\n"
-                     f"valid={valid}  fail=0x{fail:02x}  count={n}",fontsize=10,
-                     color="#237344" if valid else "#b83e35")
         distance = _min_distance(data,e,gates)
         distance_label = f"{distance:.7f}" if gates else f"{distance:.4f}"
-        ax.text(.03,.03,f"min {'pair' if gates else 'nonlocal bead'} distance\n"
-                f"{distance_label}",transform=ax.transAxes,fontsize=9,
-                bbox=dict(facecolor="white",edgecolor="none",alpha=.85))
+        panel_title = (f"seed {metadata['seed_start']+e}  |  env {e}\n"
+                       f"valid={valid}  fail=0x{fail:02x}  count={n}")
+        if not gates:
+            panel_title += f"\nmin nonlocal bead distance {distance_label}"
+        ax.set_title(panel_title,fontsize=10,
+                     color="#237344" if valid else "#b83e35")
+        if gates:
+            ax.text(.03,.03,f"min pair distance\n{distance_label}",
+                    transform=ax.transAxes,fontsize=9,
+                    bbox=dict(facecolor="white",edgecolor="none",alpha=.85))
         ax.set_xlim(lo[0],hi[0]);ax.set_ylim(lo[1],hi[1]);ax.set_aspect("equal")
         ax.set_xlabel("x [distance units]",fontsize=9);ax.set_ylabel("y [distance units]",fontsize=9)
         ax.tick_params(labelsize=8);ax.spines[["top","right"]].set_visible(False)
