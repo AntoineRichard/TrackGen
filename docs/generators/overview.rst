@@ -45,6 +45,100 @@ All six feed the shared resample → relax → width/offset → validity pipelin
 simulator reset cadence. If you already have the geometry, use ``external``:
 :ref:`ingesting-centerlines`.
 
+.. _generator-batch-benchmarks:
+
+Measured generation cost
+-------------------------
+
+Warm, complete road-generation calls at the Racing quickstart settings, measured on
+26 October 2026 with TrackGen 0.3.0rc3 and Warp 1.18.0. Each cell shows **median
+batch time**, attempted tracks per second, and the percentage passing final validity.
+CPU batches contain **64 candidates**; GPU batches contain **4,096**.
+
+.. list-table:: Finished-road generation at the measured batch sizes
+   :header-rows: 1
+   :widths: 16 28 28 28
+
+   * - Generator
+     - Mac M5 Pro CPU (64)
+     - Spark GB10 GPU (4,096)
+     - RTX 5090 GPU (4,096)
+   * - :doc:`bezier`
+     - | **55.1 ms**
+       | 1,160 tracks/s
+       | 100.00% valid
+     - | **70.6 ms**
+       | 58,000 tracks/s
+       | 99.95% valid
+     - | **26.7 ms**
+       | 153,000 tracks/s
+       | 99.95% valid
+   * - :doc:`hull`
+     - | **59.3 ms**
+       | 1,080 tracks/s
+       | 100.00% valid
+     - | **71.3 ms**
+       | 57,400 tracks/s
+       | 99.92% valid
+     - | **25.9 ms**
+       | 158,000 tracks/s
+       | 99.92% valid
+   * - :doc:`polar`
+     - | **41.7 ms**
+       | 1,530 tracks/s
+       | 100.00% valid
+     - | **61.4 ms**
+       | 66,700 tracks/s
+       | 100.00% valid
+     - | **20.9 ms**
+       | 196,000 tracks/s
+       | 100.00% valid
+   * - :doc:`voronoi`
+     - | **51.2 ms**
+       | 1,250 tracks/s
+       | 100.00% valid
+     - | **63.4 ms**
+       | 64,600 tracks/s
+       | 100.00% valid
+     - | **21.2 ms**
+       | 193,000 tracks/s
+       | 100.00% valid
+   * - :doc:`checkpoint`
+     - | **73.9 ms**
+       | 866 tracks/s
+       | 99.38% valid
+     - | **66.1 ms**
+       | 62,000 tracks/s
+       | 99.45% valid
+     - | **21.5 ms**
+       | 191,000 tracks/s
+       | 99.45% valid
+   * - :doc:`repulsive`
+     - | **145 s**
+       | 0.44 tracks/s
+       | 99.06% valid
+     - | **38.4 s**
+       | 107 tracks/s
+       | 98.72% valid
+     - | **11.6 s**
+       | 352 tracks/s
+       | 98.72% valid
+
+CPU uses completed eager wall time; GPUs use CUDA events around a warmed Warp graph
+replay. The five measured calls advance to fresh epochs. Failed candidates stay in
+the denominator; batches are never refilled to reach a number of valid roads.
+Valid percentages describe these measured samples.
+
+Batch size affects throughput: these are different operating points, rather than
+latencies for equal amounts of work. Initialization, compilation, construction and
+initial capture are outside the steady times. Repulsive includes its iterative
+growth solve and mandatory full-road disc/wall clearance; budget it for offline or
+infrequent generation.
+
+:doc:`benchmarks` gives the exact protocol and interpretation. Download the
+:download:`configurations, individual samples and hardware metadata <../_data/generator-benchmarks.json>`
+to inspect the measurements or reproduce the comparison.
+
 Try a family
 ------------
 

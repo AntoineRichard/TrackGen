@@ -135,11 +135,12 @@ python docs/_tools/build_ci_env.py -W --keep-going -E -b html -d /tmp/dt docs /t
   `TRACKGEN_SKIP_HOST_SENSITIVE_GOLDENS=1` (CI sets it) excludes them.
 - Doc examples are executed: `tests/test_doc_snippets.py`.
 
-GPU: `ssh spark-home` (NVIDIA GB10, sm_121, aarch64; venv `~/venvs/trackgen` with
+GPU: `ssh spark-tailscale` (NVIDIA GB10, sm_121, aarch64; venv `~/venvs/trackgen` with
 warp-lang 1.18.0 and torch cu130; test trees in `~/code/TrackGen-test/<name>/`; tools in
 `~/code/TrackGen-test/tools/`, copies in `docs/library-readiness/handoff-0.3/tools/`). The
-old `workstation` host is dead.
-- Byte snapshots are per machine. Rebuild the baseline ON spark-home from the last
+workstation is reachable through `ssh workstation` (RTX 5090, x86_64, existing
+TrackGen venv with Warp 1.18.0).
+- Byte snapshots are per machine. Rebuild the baseline ON spark-tailscale from the last
   validated tree (v0.2.0, or the previous dev tag), then compare:
   - `full_snapshot.py` (all generators);
   - `gate_snapshot.py` (160 gate configs x 3 calls, including a masked regeneration);
@@ -152,7 +153,7 @@ old `workstation` host is dead.
 - Use `ssh -o ConnectTimeout=10 ...`: a dead host otherwise hangs.
 
 ### Reaching the GPU machine
-- `spark-home` is a `Host` alias in the `~/.ssh/config` of the user's Mac (key-based auth,
+- `spark-tailscale` is the current Spark `Host` alias in the `~/.ssh/config` of the user's Mac (key-based auth,
   default user). It works only from that Mac. This repository is public: never commit host
   addresses, keys or user names.
 - The Codex sandbox blocks network access by default. `ssh`, `scp` and `rsync` need network
@@ -160,8 +161,8 @@ old `workstation` host is dead.
 - To send a tree, export a commit (never the working tree with stray files) and sync it:
   ```bash
   rm -rf /tmp/tg-<name> && mkdir -p /tmp/tg-<name> && git archive <ref> | tar -x -C /tmp/tg-<name>
-  rsync -a --delete /tmp/tg-<name>/ spark-home:code/TrackGen-test/<name>/
-  ssh -o ConnectTimeout=10 spark-home 'cd ~/code/TrackGen-test/<name> && PYTHONPATH=$PWD \
+  rsync -a --delete /tmp/tg-<name>/ spark-tailscale:code/TrackGen-test/<name>/
+  ssh -o ConnectTimeout=10 spark-tailscale 'cd ~/code/TrackGen-test/<name> && PYTHONPATH=$PWD \
     ~/venvs/trackgen/bin/python -m pytest -q -p no:cacheprovider -m cuda tests -ra'
   ```
   Run long jobs with their output redirected to a log, and read the log afterwards.
@@ -175,11 +176,12 @@ old `workstation` host is dead.
    workflow accepts `capture_goldens=true`; extract only the 11 `track/repulsive/`
    fields from its fingerprint fragment. Never merge whole fragments or update other
    families/platforms. Follow capture with normal CI against all retained byte guards.
-2. **Validate on spark-home.** Run the CUDA lane and full suite. Rebuild the previous
+2. **Validate on spark-tailscale.** Run the CUDA lane and full suite. Rebuild the previous
    validated baseline on that machine before byte comparison. Other generators and gate
    snapshots must stay byte-identical; Repulsive changes are authorized only with the
-   independent full-road clearance, target/smoothness and statistics evidence. Keep
-   machine/log details out of public reader pages and never commit host addresses.
+   independent full-road clearance, target/smoothness and statistics evidence. Keep release-validation
+   log paths and host addresses out of public reader pages. Benchmark hardware/software
+   specifications belong with the measurements; never commit host addresses.
 3. **Cut `v0.3.0rc3` only after the required gates pass.** Package metadata and install
    pins are prepared for rc3. Commit any final validated changes, create an annotated
    tag, and push `v3` and the tag. Do not recreate immutable rc1/rc2 tags. The user's racing

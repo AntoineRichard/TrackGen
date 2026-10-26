@@ -104,7 +104,16 @@ For frequent resets, measure steady generation at the actual batch size. For
 and measure the whole batch call: masking retains unselected results but does not
 make every generator stage's work proportional to the selected count. Construction
 also warms a generation; first CUDA graph recording has its own cost.
-:doc:`/generators/benchmarks` explains comparable measurements.
+
+Use the :ref:`batch comparison <generator-batch-benchmarks>` to compare the complete
+finished-road pipeline across the Mac CPU and two GPU systems. Every CPU family uses
+64 candidates per call; every GPU family uses 4,096. The table reports warm batch
+latency, attempted tracks per second and final valid percentage with Racing quickstart
+road settings. CPU uses eager wall time; GPUs use CUDA graph replay and device-event
+time. Throughput depends on batch size, so these measurements do not predict results
+at a common batch size. Failed candidates remain in the denominator and can reduce
+the number of valid roads delivered. :doc:`/generators/benchmarks` records the workload,
+fixed seeds, advancing epochs and excluded first-use costs.
 
 To mix families, allocate disjoint env ranges into a shared result as described in
 :ref:`results-mixed-batches`, or choose a registered seeded family per worker/run.
