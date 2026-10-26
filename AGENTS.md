@@ -27,8 +27,9 @@ steps below describe those completed candidate gates; do not recreate its tag.
 Downstream Racing validation and explicit final-release approval are still pending.
 
 Subsequent work changes documentation and maintenance tools only: measured
-six-generator benchmarks (Mac CPU batch 64; GB10 and RTX 5090 graph replay batch
-4096), and an audit of all nine movies in both themes. Hull now uses the same
+six-generator construction benchmarks (Mac CPU batch 64; GB10 and RTX 5090 graph
+replay batch 4096, producing 256 raw points before shared road stages), and an audit
+of all nine movies in both themes. Hull now uses the same
 explicitly labelled ten-anchor, 8×8, cell-bounded teaching regime as Bezier, while
 retaining actual midpoint/spline/road stages and a separate default fallback example.
 A track XPBD metric moved clear of road geometry. Runtime source, defaults, RNG,
@@ -36,7 +37,21 @@ package metadata, goldens and the rc3 tag remain unchanged. See the excluded
 `docs/superpowers/reviews/2026-10-26-animation-audit.md` for audit and capture evidence.
 The follow-up passed 3,763 CPU tests (four optional UI skips), 62 media tests on
 Spark, strict docs with all 82 pairs and desktop/mobile browser checks in both
-themes. Normal CI on this follow-up must be distinguished from the rc3 gates above.
+themes. Normal CI on `3ba86e3` also passed. The generator-only correction passed
+3,770 CPU tests (four optional UI skips), all 18 runner tests on each GPU host, and
+all-six-generator/two-epoch CUDA raw/public byte parity. All 18 new measurements
+and 90 timing samples passed independent integrity review. Its new CI must be
+distinguished from those earlier exact-head results.
+
+## Generator benchmark scope (user correction, 2026-10-26)
+
+The generator chooser compares each family's own construction of 256 raw points.
+Shared constant-spacing resampling, XPBD and its tails, elevation, road borders,
+final validity and commit are excluded. Seed advance/effective keying and generator
+parameter latching are included. Repulsive's own solver and width reservation remain
+part of its construction. Do not present generator-native flags as finished-road
+validity or reuse timings from the finished-road pipeline. Keep CPU batches at 64
+and both GPU graph batches at 4096; report attempted centerlines per second.
 
 ## Release-blocking Repulsive repair (user decision, 2026-10-25)
 

@@ -47,15 +47,20 @@ simulator reset cadence. If you already have the geometry, use ``external``:
 
 .. _generator-batch-benchmarks:
 
-Measured generation cost
--------------------------
+Generator construction cost
+---------------------------
 
-Warm, complete road-generation calls at the Racing quickstart settings, measured on
-26 October 2026 with TrackGen 0.3.0rc3 and Warp 1.18.0. Each cell shows **median
-batch time**, attempted tracks per second, and the percentage passing final validity.
-CPU batches contain **64 candidates**; GPU batches contain **4,096**.
+Each generator produces **256 raw centerline points**, including its own curve
+construction and internal resampling. Shared constant-spacing resampling, XPBD
+relaxation and its smoothing/polish tail, elevation, road borders and final road
+validity checks are outside the timed operation.
 
-.. list-table:: Finished-road generation at the measured batch sizes
+Measured 26 October 2026 with TrackGen 0.3.0rc3 and Warp 1.18.0. Each cell
+shows **median batch time** and attempted centerlines per second. CPU batches
+contain **64 candidates**; GPU batches contain **4,096**. Values are rounded to
+three significant digits.
+
+.. list-table:: Generator construction before shared road postprocessing
    :header-rows: 1
    :widths: 16 28 28 28
 
@@ -63,77 +68,60 @@ CPU batches contain **64 candidates**; GPU batches contain **4,096**.
      - Mac M5 Pro CPU (64)
      - Spark GB10 GPU (4,096)
      - RTX 5090 GPU (4,096)
-   * - :doc:`bezier`
-     - | **55.1 ms**
-       | 1,160 tracks/s
-       | 100.00% valid
-     - | **70.6 ms**
-       | 58,000 tracks/s
-       | 99.95% valid
-     - | **26.7 ms**
-       | 153,000 tracks/s
-       | 99.95% valid
-   * - :doc:`hull`
-     - | **59.3 ms**
-       | 1,080 tracks/s
-       | 100.00% valid
-     - | **71.3 ms**
-       | 57,400 tracks/s
-       | 99.92% valid
-     - | **25.9 ms**
-       | 158,000 tracks/s
-       | 99.92% valid
-   * - :doc:`polar`
-     - | **41.7 ms**
-       | 1,530 tracks/s
-       | 100.00% valid
-     - | **61.4 ms**
-       | 66,700 tracks/s
-       | 100.00% valid
-     - | **20.9 ms**
-       | 196,000 tracks/s
-       | 100.00% valid
-   * - :doc:`voronoi`
-     - | **51.2 ms**
-       | 1,250 tracks/s
-       | 100.00% valid
-     - | **63.4 ms**
-       | 64,600 tracks/s
-       | 100.00% valid
-     - | **21.2 ms**
-       | 193,000 tracks/s
-       | 100.00% valid
-   * - :doc:`checkpoint`
-     - | **73.9 ms**
-       | 866 tracks/s
-       | 99.38% valid
-     - | **66.1 ms**
-       | 62,000 tracks/s
-       | 99.45% valid
-     - | **21.5 ms**
-       | 191,000 tracks/s
-       | 99.45% valid
-   * - :doc:`repulsive`
-     - | **145 s**
-       | 0.44 tracks/s
-       | 99.06% valid
+   * - :doc:`Bézier <bezier>`
+     - | **8.88 ms**
+       | 7,210 centerlines/s
+     - | **2.44 ms**
+       | 1,680,000 centerlines/s
+     - | **0.913 ms**
+       | 4,490,000 centerlines/s
+   * - :doc:`Hull <hull>`
+     - | **10.2 ms**
+       | 6,260 centerlines/s
+     - | **3.65 ms**
+       | 1,120,000 centerlines/s
+     - | **1.42 ms**
+       | 2,890,000 centerlines/s
+   * - :doc:`Polar <polar>`
+     - | **1.37 ms**
+       | 46,600 centerlines/s
+     - | **1.58 ms**
+       | 2,590,000 centerlines/s
+     - | **0.738 ms**
+       | 5,550,000 centerlines/s
+   * - :doc:`Voronoi <voronoi>`
+     - | **15.9 ms**
+       | 4,030 centerlines/s
+     - | **8.21 ms**
+       | 499,000 centerlines/s
+     - | **4.62 ms**
+       | 888,000 centerlines/s
+   * - :doc:`Checkpoint <checkpoint>`
+     - | **33.9 ms**
+       | 1,890 centerlines/s
+     - | **7.46 ms**
+       | 549,000 centerlines/s
+     - | **2.25 ms**
+       | 1,820,000 centerlines/s
+   * - :doc:`Repulsive <repulsive>`
+     - | **144 s**
+       | 0.444 centerlines/s
      - | **38.4 s**
-       | 107 tracks/s
-       | 98.72% valid
+       | 107 centerlines/s
      - | **11.6 s**
-       | 352 tracks/s
-       | 98.72% valid
+       | 354 centerlines/s
 
 CPU uses completed eager wall time; GPUs use CUDA events around a warmed Warp graph
-replay. The five measured calls advance to fresh epochs. Failed candidates stay in
-the denominator; batches are never refilled to reach a number of valid roads.
-Valid percentages describe these measured samples.
+replay. Each operation advances the seed epoch, latches generator parameters and
+executes the bound generator. The five measured calls use fresh epochs. Throughput
+counts every attempted centerline; intrinsic generator status does not establish
+finished-road validity.
 
-Batch size affects throughput: these are different operating points, rather than
-latencies for equal amounts of work. Initialization, compilation, construction and
-initial capture are outside the steady times. Repulsive includes its iterative
-growth solve and mandatory full-road disc/wall clearance; budget it for offline or
-infrequent generation.
+Batch size affects throughput, so these timings describe different operating
+points. Initialization, compilation, constructor warm-up and initial graph capture
+are outside steady timing. Repulsive includes its own iterative growth and
+obstacle/wall constraints. Measure the complete road pipeline separately when
+budgeting a Racing reset.
 
 :doc:`benchmarks` gives the exact protocol and interpretation. Download the
 :download:`configurations, individual samples and hardware metadata <../_data/generator-benchmarks.json>`

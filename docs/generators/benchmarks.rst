@@ -3,58 +3,59 @@
 Measure a generator
 ===================
 
-Benchmark the course settings and batch size you intend to use. Compare families on
-the same machine, device, width, spacing, capacity and solver settings. The generator
-pictures are selected explanations; they do not establish yield, speed or a universal
-shape ranking.
+The :ref:`batch comparison <generator-batch-benchmarks>` measures each generator's
+own construction work, from its seeded inputs to 256 raw centerline samples.
+Compare families on the same machine, device, batch size, raw resolution and scale.
+The generator pictures are selected explanations; they do not establish yield,
+speed or a universal shape ranking.
 
-The :ref:`batch comparison <generator-batch-benchmarks>` measures the
-complete finished-road pipeline consumed by racing integrations: generation,
-resampling, relaxation, road borders and final validity. All CPU families use batches
-of 64 **candidates**; all GPU families use 4,096. Failed rows remain in the validity
-denominator. The benchmark never refills a batch to reach a requested number of
-valid roads. ``external`` ingests supplied geometry and is outside this six-family
+All CPU families use batches of 64 **candidates**; all GPU families use 4,096.
+Throughput counts every attempted centerline. The table does not report a finished
+road's validity or drivability: those require the downstream road pipeline and
+checks. ``external`` ingests supplied geometry and is outside this six-family
 procedural comparison.
 
 Batch latency protocol
 ----------------------
 
-``benchmarks.benchmark_generators`` uses the Racing quickstart road settings for
-every family and machine: 256 raw points, per-env capacity 512, half-width 0.03, spacing
-0.018, size and scale 1, 50 XPBD iterations, flat elevation, default validity checks
-and ``on_invalid="poison"``. Each family retains its own default generator
-parameters. These settings are shared; the resulting lengths and point counts can
-differ between families.
+``benchmarks.benchmark_generators`` advances the seed epoch and executes the bound
+built-in generator stage. Every family writes 256 raw points at size and scale 1,
+with its default construction parameters. Repulsive retains half-width 0.03 for
+its own obstacle/wall reservation. The complete resolved parameters accompany the
+measurements.
 
-CPU samples measure a completed eager ``generate(advance=True)`` call
-with ``time.perf_counter_ns()``. GPU samples replay an explicit Warp
-``ScopedCapture`` of ``generate(advance=True, sync=False)``, bracketed by
-timing-enabled Warp events on the same stream. GPU event time covers device execution;
-separately recorded wall time
-also includes host submission and waiting for completion. The comparison table
-uses CPU wall time and GPU event time, in milliseconds per batch. It compares the
-measured systems, execution modes and batch sizes; it does not isolate an architecture
-speedup. Attempted tracks per second is ``1000 * batch_size / median_ms`` and counts
-failed candidates too. Throughput depends on batch size: this normalization does
-not predict a CPU batch of 4,096 or a GPU batch of 64, and the batch latencies cannot
-be compared as equal amounts of work.
+The timed work includes each family's own sampling, curve construction, internal
+resampling and crossing fallback, where applicable. Repulsive includes its own
+iterative growth and barrier constraints. Shared constant-spacing resampling,
+XPBD relaxation and its smoothing/polish tail, elevation, road-border construction
+and final road validity checks are outside this measured operation. Measure the
+complete road pipeline separately when budgeting a Racing reset.
 
-Initialization, construction (which runs a generation), CUDA graph recording and
-warm-up are excluded from steady latency. Warm-up runs at least three complete
-calls (on CUDA, the first replay and two more) and lasts at least one second.
-After warm-up, epochs reset to zero. Every family receives explicitly materialized
-``int32`` seeds ``0..63`` on CPU and ``0..4095`` on GPU; the five measured calls
-advance to epochs ``1..5``. The table reports the median of those five latencies.
-Validity is read
-after each completed timing interval and includes every candidate per call: 64 on
-CPU or 4,096 on GPU.
-It is a final geometric validity measurement for this workload, not a vehicle's
-drivability score or a universal yield guarantee.
+CPU samples measure a completed eager stage execution with
+``time.perf_counter_ns()``. GPU samples replay an explicit Warp ``ScopedCapture``
+of the same seed-advance and generator work, bracketed by timing-enabled Warp
+events on the same stream. GPU event time covers device execution; separately
+recorded wall time also includes host submission and waiting for completion.
+The comparison table uses CPU wall time and GPU event time. Batch times carry
+explicit milliseconds or seconds; the raw timing records use milliseconds. It
+compares the measured systems, execution modes and batch sizes; it does not isolate
+an architecture speedup. Attempted centerlines per second is
+``1000 * batch_size / median_ms``. Throughput depends on batch size: this
+normalization does not predict a CPU batch of 4,096 or a GPU batch of 64, and the
+batch latencies cannot be compared as equal amounts of work.
+
+Initialization, construction/binding, CUDA graph recording and warm-up are
+excluded from steady latency. Warm-up runs at least three complete calls (on CUDA,
+the first replay and two more) and lasts at least one second. After warm-up, epochs
+reset to zero. Every family receives explicitly materialized ``int32`` seeds
+``0..63`` on CPU and ``0..4095`` on GPU; the five measured calls advance to epochs
+``1..5``. The table reports the median of those five latencies.
 
 Before measurement, the runner verifies that recording does not execute the graph,
-replay advances epochs once, generation metadata matches, and replay overwrites
-poisoned result storage. It also checks that finite valid geometry changes between
-epochs; all-invalid poisoned output alone cannot establish that regeneration ran.
+replay advances epochs once and replay overwrites deliberately filled raw output
+storage. It also checks that finite raw geometry changes between epochs. Output
+status and readback diagnostics run outside the timing interval; they do not stand
+in for final road validity.
 
 Reproduce a run from a checkout, recording its source revision:
 
@@ -83,20 +84,20 @@ does not establish a lower bound on warm batch latency. Keep the same batch size
 resolution and iteration budget when a case is expensive. A smaller workload belongs
 in a separately labelled comparison.
 
-Preserve the per-call latency and validity samples, timing ranges, setup/capture
-costs, resolved configuration, seeds and epochs with each result. Record the source
-revision, protocol/source hashes, date, CPU/GPU model, OS, driver and Python, Warp
-and NumPy versions. The download separates the installed NVIDIA driver version from
-CUDA driver API compatibility, and records CUDA-visible total memory separately from
-NVIDIA-SMI memory reporting.
+Preserve the per-call latency samples, raw-output diagnostics, timing ranges,
+setup/capture costs, resolved configuration, seeds and epochs with each result.
+Record the source revision, protocol/source hashes, date, CPU/GPU model, OS, driver
+and Python, Warp and NumPy versions. The download separates the installed NVIDIA
+driver version from CUDA driver API compatibility, and records CUDA-visible total
+memory separately from NVIDIA-SMI memory reporting.
 
 Quality and shape diagnostics
 -----------------------------
 
 The separate ``benchmarks.compare_generators`` command computes geometric metrics
-from actual generated batches, including the shared road pipeline. Its default
-configuration differs from the quickstart workload above. Start with a small CPU
-sampling-family check:
+from actual generated batches, including the shared road pipeline. That workload
+includes road stages excluded from the generator-stage timings above and uses its
+own default configuration. Start with a small CPU sampling-family check:
 
 .. code-block:: bash
 

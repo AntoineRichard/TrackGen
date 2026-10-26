@@ -105,15 +105,19 @@ and measure the whole batch call: masking retains unselected results but does no
 make every generator stage's work proportional to the selected count. Construction
 also warms a generation; first CUDA graph recording has its own cost.
 
-Use the :ref:`batch comparison <generator-batch-benchmarks>` to compare the complete
-finished-road pipeline across the Mac CPU and two GPU systems. Every CPU family uses
-64 candidates per call; every GPU family uses 4,096. The table reports warm batch
-latency, attempted tracks per second and final valid percentage with Racing quickstart
-road settings. CPU uses eager wall time; GPUs use CUDA graph replay and device-event
-time. Throughput depends on batch size, so these measurements do not predict results
-at a common batch size. Failed candidates remain in the denominator and can reduce
-the number of valid roads delivered. :doc:`/generators/benchmarks` records the workload,
-fixed seeds, advancing epochs and excluded first-use costs.
+Use the :ref:`batch comparison <generator-batch-benchmarks>` to compare generator
+construction across the Mac CPU and two GPU systems. Every CPU family uses 64
+candidates per call; every GPU family uses 4,096. Each produces 256 raw centerline
+samples with its default construction parameters. The table reports warm batch
+latency and attempted centerlines per second; shared resampling, XPBD relaxation,
+road borders and final road validity are outside the measurement. Repulsive's own
+iterative growth remains part of its construction cost.
+
+CPU uses eager wall time; GPUs use CUDA graph replay and device-event time.
+Throughput depends on batch size, so these measurements do not predict results at a
+common batch size. Measure the complete pipeline separately to budget resets and
+check how many roads meet your requirements. :doc:`/generators/benchmarks` records
+the workload, fixed seeds, advancing epochs and excluded first-use costs.
 
 To mix families, allocate disjoint env ranges into a shared result as described in
 :ref:`results-mixed-batches`, or choose a registered seeded family per worker/run.
