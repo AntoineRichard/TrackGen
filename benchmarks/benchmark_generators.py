@@ -1,4 +1,4 @@
-"""Finished-road timing; one isolated worker per family, with downloadable JSON.
+"""Generator-stage timing; one isolated worker per family, with downloadable JSON.
 
 Example (CPU uses a deliberately smaller batch than CUDA)::
 
@@ -30,17 +30,27 @@ import sys
 import time
 
 GENERATORS = ("bezier", "checkpoint", "hull", "polar", "voronoi", "repulsive")
-_ROAD = dict(num_points=256, N_max=512, half_width=.03, spacing=.018,
-             scale=1., size=1., relax_enable=True, relax_solver="xpbd", relax_iters=50,
-             z_profile="flat", on_invalid="poison")
-_PROTOCOL = dict(version=1, pipeline="public finished road", road=_ROAD,
+_GENERATOR = dict(num_points=256, scale=1., size=1., repulsive_half_width=.03)
+# The ordinary constructor binds the exact built-in stages and Repulsive width hint.
+# Its full warm-up is setup only: none of the shared road stages are timed below.
+_CONSTRUCTION = dict(num_points=256, N_max=512, half_width=.03, spacing=.018,
+                     scale=1., size=1., relax_enable=True, relax_solver="xpbd", relax_iters=50,
+                     z_profile="flat", on_invalid="poison")
+_PROTOCOL = dict(version=2, pipeline="generator_only", generator=_GENERATOR,
                  seeds="explicit int32 arange(E)", advance=True, mask=None,
+                 included=["seed advance and effective seed", "generator parameter latch",
+                           "bound generator stage and its internal operations"],
                  min_warmup_calls=3, min_warmup_seconds=1., timed_epochs="1..repeats",
                  cpu_timer="completed-call perf_counter_ns",
                  cuda_timer="Warp events around ScopedCapture graph replay",
                  wall_timer="completed-call perf_counter_ns",
-                 excluded=["initialization", "constructor", "capture", "first_replay", "warmup"],
-                 yield_denominator="all attempted candidates, no refill")
+                 excluded=["initialization", "constructor", "capture", "first_replay", "warmup",
+                           "shared constant-spacing resampling", "XPBD and smoothing tails",
+                           "width and frames", "road borders", "elevation", "final validity",
+                           "result lift and commit"],
+                 geometry_proof="changing finite raw rows with intrinsic generator flag=1",
+                 final_road_validity_measured=False)
+
 
 
 class BenchmarkGuardError(RuntimeError):
@@ -107,7 +117,7 @@ def _provenance(source_revision, protocol):
 
 
 def summarize(samples, *, mode):
-    """Median/range and candidate accounting; invalid rows stay in the denominator."""
+    """Median/range and all attempted raw paths; no finished-road quality claim."""
     if not samples:
         raise ValueError("at least one timing sample is required")
     field = "device_ms" if mode == "cuda_graph" else "wall_ms"
@@ -115,19 +125,14 @@ def summarize(samples, *, mode):
     if any(v is None or not math.isfinite(v) or v <= 0 for v in values):
         raise ValueError("timing samples must be finite positive milliseconds")
     batch = samples[0]["attempted_count"]
-    if batch < 1 or any(s["attempted_count"] != batch or
-                        not 0 <= s["valid_count"] <= batch for s in samples):
+    if batch < 1 or any(s["attempted_count"] != batch for s in samples):
         raise ValueError("samples must describe the same complete candidate batch")
     median = statistics.median(values)
-    attempted = sum(s["attempted_count"] for s in samples)
-    valid = sum(s["valid_count"] for s in samples)
-    throughput = batch * 1000. / median
     return dict(metric=field, median_ms=median, min_ms=min(values), max_ms=max(values),
                 sample_count=len(samples), batch_size=batch,
-                valid_count=valid, attempted_count=attempted,
-                attempted_tracks_per_second=throughput,
-                valid_tracks_per_second=throughput * valid / attempted,
-                microseconds_per_attempted_track=median * 1000. / batch) | {"yield": valid / attempted}
+                attempted_count=sum(s["attempted_count"] for s in samples),
+                attempted_tracks_per_second=batch * 1000. / median,
+                microseconds_per_attempted_track=median * 1000. / batch)
 
 
 def _cpu_name():
@@ -175,48 +180,85 @@ def _metadata(wp, np, device):
     return hardware, software
 
 
-def _check_epoch(gen, track, expected, np):
-    if not (np.all(gen.seeds.epoch.numpy() == expected)
-            and np.all(track.generation.numpy() == expected)):
-        raise BenchmarkGuardError("epoch or generation did not advance once for every candidate")
+class _RawGeneratorBody:
+    """Benchmark-owned view of one bound generator, without any common road stage.
+
+    A standalone public PipelineSpec must export a complete Track. Reuse its built
+    generator slot instead: this retains the exact parameters, output buffers and
+    BOUNDED context (including Repulsive's width reservation). These private seams
+    belong to this maintenance harness, not the downstream TrackGenerator API.
+    """
+
+    def __init__(self, gen):
+        self.gen = gen
+        program = gen.program
+        self.index = program.spec.ids.index("generator")
+        stage = program.spec.stages[self.index]
+        if stage.kind != "generator" or stage.name not in GENERATORS:
+            raise BenchmarkGuardError("the benchmark requires one built-in generator slot")
+        self.slot = program._enqueues[self.index]
+        self.adapter = program._binding.pipeline_spec
+        self.raw = program.tap("raw.xy")
+        self.accepted = program.tap("gen.valid")
+        self.envs = gen.config.num_envs
+        self.raw_points = int(self.raw.shape[0]) // self.envs
+        if self.raw_points != _GENERATOR["num_points"]:
+            raise BenchmarkGuardError("the bound generator did not provide 256 raw points")
+        self.config = dict(generator=stage.name, num_envs=self.envs,
+                           device=str(program.device), num_points=self.raw_points,
+                           scale=gen.config.scale, generator_params=dataclasses.asdict(stage.params))
+        if stage.name == "repulsive":
+            self.config["repulsive_half_width"] = gen.config.half_width
+
+    def enqueue(self, ctx):
+        self.gen.seeds.advance(ctx=ctx)
+        self.gen.seeds.effective(self.gen.program.seed, ctx=ctx)
+        self.adapter.latch(ctx, None)
+        self.slot(ctx)
 
 
-def _geometry(track, envs, capacity, np):
-    valid = track.valid.numpy().astype(bool)
-    count = track.count.numpy()
-    center = track.center.numpy().reshape(envs, capacity, 3)
-    geometry = {}
-    for e in np.flatnonzero(valid):
-        row = center[e, :int(count[e])]
-        if len(row) < 3 or not np.isfinite(row).all():
-            raise BenchmarkGuardError("valid candidate has nonfinite or incomplete geometry")
-        geometry[int(e)] = hashlib.sha256(row.tobytes()).hexdigest()
-    return geometry
+def _check_epoch(body, expected, np):
+    from track_gen.seeds import effective_seed
+
+    seeds = body.gen.seeds
+    effective = np.array([effective_seed(int(seed), expected) for seed in seeds.seeds.numpy()],
+                         dtype=np.int32)
+    if not (np.all(seeds.epoch.numpy() == expected)
+            and np.array_equal(body.gen.program.seed.numpy(), effective)):
+        raise BenchmarkGuardError("epoch or effective seed did not advance once for every candidate")
 
 
-def _sample(track, epoch, envs, wall_ms, device_ms, np):
-    valid = track.valid.numpy().astype(bool)
-    count = track.count.numpy()[valid]
-    fail = track.fail_mask.numpy()
-    if not np.array_equal(valid, fail == 0):
-        raise BenchmarkGuardError("validity and failure flags disagree")
-    n_valid = int(valid.sum())
+def _raw_arrays(body, np):
+    accepted = body.accepted.numpy()
+    if not np.isin(accepted, [0, 1]).all():
+        raise BenchmarkGuardError("generator left an invalid intrinsic flag")
+    raw = body.raw.numpy().reshape(body.envs, body.raw_points, 2)
+    finite = np.isfinite(raw).all(axis=(1, 2))
+    if np.any((accepted == 1) & ~finite):
+        raise BenchmarkGuardError("accepted raw candidate has nonfinite or incomplete geometry")
+    return raw, accepted, finite
+
+
+def _geometry(body, np):
+    raw, accepted, _ = _raw_arrays(body, np)
+    return {int(e): hashlib.sha256(raw[e].tobytes()).hexdigest()
+            for e in np.flatnonzero(accepted == 1)}
+
+
+def _sample(body, epoch, wall_ms, device_ms, np):
+    _, accepted, finite = _raw_arrays(body, np)
     return dict(epoch=epoch, wall_ms=wall_ms, device_ms=device_ms,
-                valid_count=n_valid, attempted_count=envs,
-                fail_counts={name: int(((fail & (1 << bit)) != 0).sum())
-                             for name, bit in track.fail_bits.items()},
-                truncated_count=int((track.truncated.numpy() != 0).sum()),
-                count_valid=dict(min=int(count.min()), max=int(count.max()),
-                                 mean=float(count.mean())) if count.size else None) | {"yield": n_valid / envs}
+                attempted_count=body.envs, generator_accepted_count=int((accepted == 1).sum()),
+                finite_raw_count=int(finite.sum()))
 
 
 def run_case(generator, *, envs=4096, device="cpu", repeats=5, warmup_seconds=1.,
              source_revision=None, label="Benchmark", progress_path=None):
     """Run one worker case. Raises on unavailable CUDA or failed recomputation guards.
 
-    Successful JSON includes ``samples`` (wall_ms/device_ms, epoch, valid_count,
-    attempted_count, yield, fail_counts), ``summary`` (metric, median/min/max_ms,
-    microseconds_per_attempted_track, throughput and aggregate yield), ``config``,
+    Successful JSON includes ``samples`` (wall_ms/device_ms, epoch, attempted_count,
+    intrinsic generator flags and finite raw counts), ``summary`` (metric,
+    median/min/max_ms and attempted throughput), resolved generator ``config``,
     ``seeds``, ``epochs``, ``phases_seconds``, ``checks``, ``provenance``, ``hardware``
     and ``software``. No percentile is inferred from the default five samples.
     """
@@ -240,6 +282,7 @@ def run_case(generator, *, envs=4096, device="cpu", repeats=5, warmup_seconds=1.
     import numpy as np
     import warp as wp
     from track_gen import TrackGenConfig, TrackGenerator, __version__
+    from track_gen.exec import LaunchContext
     wp.init()
     dev = wp.get_device(device)  # explicit requested device; never fall back to CPU
     hardware, software = _metadata(wp, np, dev)
@@ -247,28 +290,26 @@ def run_case(generator, *, envs=4096, device="cpu", repeats=5, warmup_seconds=1.
     phases["initialization"] = (time.perf_counter_ns() - started) * 1e-9
     seeds = np.arange(envs, dtype=np.int32)
     seed_array = wp.array(seeds, dtype=wp.int32, device=dev)
-    cfg = TrackGenConfig(generator=generator, num_envs=envs, device=str(dev), **_ROAD)
+    cfg = TrackGenConfig(generator=generator, num_envs=envs, device=str(dev), **_CONSTRUCTION)
     phase("constructor")
     started = time.perf_counter_ns()
     gen = TrackGenerator(cfg, seeds=seed_array)
     phases["constructor"] = (time.perf_counter_ns() - started) * 1e-9
-    track = gen.program.result
+    body = _RawGeneratorBody(gen)
     stream = wp.get_stream(dev) if dev.is_cuda else None
-    checks = dict(capture_did_not_execute=None, epoch_and_generation=False,
-                  poison_overwritten=False, changed_valid_rows=0, warmup_calls=0,
-                  warmup_replay_seconds=0.)
-    _check_epoch(gen, track, 0, np)
+    checks = dict(capture_did_not_execute=None, epoch_and_effective_seed=False,
+                  raw_storage_overwritten=False, changed_raw_rows=0, proof_calls=0,
+                  warmup_calls=0, warmup_replay_seconds=0.)
+    _check_epoch(body, 0, np)
     if dev.is_cuda:
         phase("capture")
-        before = {name: getattr(track, name).numpy().tobytes()
-                  for name in ("center", "valid", "count", "generation")}
+        before = (body.raw.numpy().tobytes(), body.accepted.numpy().tobytes())
         started = time.perf_counter_ns()
         with wp.ScopedCapture(stream=stream) as cap:
-            gen.generate(stream=stream, advance=True, sync=False)
+            body.enqueue(LaunchContext.for_call(dev, stream))
         phases["capture"] = (time.perf_counter_ns() - started) * 1e-9
-        _check_epoch(gen, track, 0, np)
-        if any(getattr(track, name).numpy().tobytes() != value
-               for name, value in before.items()):
+        _check_epoch(body, 0, np)
+        if (body.raw.numpy().tobytes(), body.accepted.numpy().tobytes()) != before:
             raise BenchmarkGuardError("recording executed or modified result storage")
         checks["capture_did_not_execute"] = True
 
@@ -279,20 +320,19 @@ def run_case(generator, *, envs=4096, device="cpu", repeats=5, warmup_seconds=1.
         phases["capture"] = None
 
         def replay():
-            gen.generate(advance=True)
+            body.enqueue(LaunchContext.for_call(dev))
 
     previous = {}
     changed = set()
     calls = 0
     warm_replay_seconds = 0.
     warm_started = time.perf_counter_ns()
-    while calls < 3 or warm_replay_seconds < max(1., warmup_seconds):
+    # Prove three real recomputations first. These private owned buffers may be
+    # poisoned by this harness; public Program.tap views remain read-only to users.
+    for _ in range(3):
         phase("first_replay" if calls == 0 else "warmup", completed_calls=calls)
-        # In-place output poisoning proves the graph actually rewrites results.
-        track.center.fill_(wp.vec3f(123456.))
-        track.valid.fill_(-123456)
-        track.count.fill_(-123456)
-        track.generation.fill_(-123456)
+        body.raw.fill_(wp.vec2f(123456.))
+        body.accepted.fill_(-123456)
         if stream is not None:
             wp.synchronize_stream(stream)
         started = time.perf_counter_ns()
@@ -302,19 +342,27 @@ def run_case(generator, *, envs=4096, device="cpu", repeats=5, warmup_seconds=1.
         warm_replay_seconds += elapsed
         if calls == 1:
             phases["first_replay"] = elapsed
-        _check_epoch(gen, track, calls, np)
-        if (np.any(track.center.numpy() == 123456.)
-                or np.any(track.valid.numpy() == -123456)
-                or np.any(track.count.numpy() == -123456)):
-            raise BenchmarkGuardError("replay left poisoned output storage untouched")
-        current = _geometry(track, envs, cfg.N_max, np)
+        _check_epoch(body, calls, np)
+        if (np.any(body.raw.numpy() == 123456.)
+                or np.any(body.accepted.numpy() == -123456)):
+            raise BenchmarkGuardError("replay left poisoned raw output storage untouched")
+        current = _geometry(body, np)
         changed.update(e for e in previous.keys() & current.keys() if previous[e] != current[e])
         previous.update(current)
-    phases["warmup"] = (time.perf_counter_ns() - warm_started) * 1e-9 - phases["first_replay"]
     if not changed:
-        raise BenchmarkGuardError("no changing finite valid geometry observed across warm epochs")
-    checks.update(epoch_and_generation=True, poison_overwritten=True,
-                  changed_valid_rows=len(changed), warmup_calls=calls,
+        raise BenchmarkGuardError("no changing finite accepted raw geometry observed across warm epochs")
+    # Fast raw stages otherwise spend most warm-up on repeated host readback/hash.
+    # Keep warming by actual completed replay time, with one final epoch check.
+    phase("warmup", completed_calls=calls)
+    while warm_replay_seconds < max(1., warmup_seconds):
+        started = time.perf_counter_ns()
+        replay()
+        warm_replay_seconds += (time.perf_counter_ns() - started) * 1e-9
+        calls += 1
+    _check_epoch(body, calls, np)
+    phases["warmup"] = (time.perf_counter_ns() - warm_started) * 1e-9 - phases["first_replay"]
+    checks.update(epoch_and_effective_seed=True, raw_storage_overwritten=True,
+                  changed_raw_rows=len(changed), proof_calls=3, warmup_calls=calls,
                   warmup_replay_seconds=warm_replay_seconds)
     phase("epoch_reset")
     gen.seeds.reset_epoch(stream=stream)
@@ -341,11 +389,11 @@ def run_case(generator, *, envs=4096, device="cpu", repeats=5, warmup_seconds=1.
         device_ms = float(wp.get_event_elapsed_time(a, b)) if dev.is_cuda else None
         # No readback, hashing or host-side quality work is inside the interval.
         phase("diagnostics", epoch=epoch, total=repeats)
-        _check_epoch(gen, track, epoch, np)
-        samples.append(_sample(track, epoch, envs, wall_ms, device_ms, np))
+        _check_epoch(body, epoch, np)
+        samples.append(_sample(body, epoch, wall_ms, device_ms, np))
     mode = "cuda_graph" if dev.is_cuda else "cpu_eager"
-    result = dict(schema_version=1, status="ok", generator=generator, label=label,
-                  device=str(dev), mode=mode, config=dataclasses.asdict(gen.config),
+    result = dict(schema_version=2, status="ok", generator=generator, label=label,
+                  device=str(dev), mode=mode, config=body.config,
                   started_at_utc=started_at, completed_at_utc=_utc_now(),
                   seeds=dict(start=0, count=envs, dtype="int32",
                              sha256=hashlib.sha256(seeds.astype("<i4").tobytes()).hexdigest()),
@@ -460,7 +508,7 @@ def main(argv=None):
     for name in args.generators:
         protocol = _protocol(args.envs, args.repeats, args.warmup_seconds, args.device)
         envelope = dict(request=dict(device=args.device, envs=args.envs, repeats=args.repeats,
-                                     road=_ROAD, timeout_seconds=args.timeout_seconds),
+                                     generator_settings=_GENERATOR, timeout_seconds=args.timeout_seconds),
                         protocol=protocol, provenance=_provenance(revision, protocol),
                         started_at_utc=_utc_now())
         print(f"{name}: {args.envs} candidates on {args.device}", flush=True)
@@ -477,7 +525,7 @@ def main(argv=None):
         record.update(generator=name, label=args.label)
         _write_json(args.output_dir / f"{name}.json", record)
         records.append(record)
-        _write_json(args.output_dir / "manifest.json", dict(schema_version=1, records=records))
+        _write_json(args.output_dir / "manifest.json", dict(schema_version=2, records=records))
         print(f"{name}: {record['status']}", flush=True)
     return int(any(record["status"] != "ok" for record in records))
 

@@ -20,19 +20,20 @@ def _runner():
         pytest.fail("the dedicated generator benchmark runner is missing")
 
 
-def test_summary_preserves_failed_candidates_and_time_units():
+def test_raw_summary_reports_all_attempts_and_time_units_without_road_yield():
     bench = _runner()
-    samples = [dict(epoch=i, wall_ms=w, device_ms=d, valid_count=v, attempted_count=4)
-               for i, w, d, v in [(1, 8., 1., 2), (2, 12., 2., 0), (3, 16., 3., 4)]]
+    samples = [dict(epoch=i, wall_ms=w, device_ms=d, attempted_count=4)
+               for i, w, d in [(1, 8., 1.), (2, 12., 2.), (3, 16., 3.)]]
     cpu = bench.summarize(samples, mode="cpu_eager")
     gpu = bench.summarize(samples, mode="cuda_graph")
     assert cpu["median_ms"] == 12.
     assert gpu["median_ms"] == 2.
     assert cpu["min_ms"] == 8. and cpu["max_ms"] == 16.
-    assert cpu["valid_count"] == 6 and cpu["attempted_count"] == 12
-    assert cpu["yield"] == .5
+    assert cpu["attempted_count"] == 12
+    assert "yield" not in cpu and "valid_count" not in cpu
     assert cpu["attempted_tracks_per_second"] == pytest.approx(1000 / 3)
-    assert gpu["valid_tracks_per_second"] == pytest.approx(1000.)
+    assert gpu["attempted_tracks_per_second"] == pytest.approx(2000.)
+    assert "valid_tracks_per_second" not in gpu
     assert "p95_ms" not in cpu
 
 
@@ -57,14 +58,21 @@ def test_real_small_cpu_regeneration_checks_and_json_provenance():
     assert [s["epoch"] for s in result["samples"]] == [1, 2]
     assert [s["attempted_count"] for s in result["samples"]] == [4, 4]
     assert all(s["wall_ms"] > 0 and s["device_ms"] is None for s in result["samples"])
-    assert result["checks"]["epoch_and_generation"] is True
-    assert result["checks"]["poison_overwritten"] is True
-    assert result["checks"]["changed_valid_rows"] > 0
+    assert result["checks"]["epoch_and_effective_seed"] is True
+    assert result["checks"]["raw_storage_overwritten"] is True
+    assert result["checks"]["changed_raw_rows"] > 0
     assert result["checks"]["warmup_calls"] >= 3
     assert result["checks"]["warmup_replay_seconds"] >= 1.
-    assert result["config"]["N_max"] == 512
-    assert result["config"]["half_width"] == .03
-    assert result["config"]["spacing"] == .018
+    assert result["config"]["num_points"] == 256
+    assert result["config"]["scale"] == 1.
+    assert result["config"]["generator_params"]["size"] == 1.
+    assert "spacing" not in result["config"] and "relax_iters" not in result["config"]
+    assert result["schema_version"] == result["protocol"]["version"] == 2
+    assert result["protocol"]["pipeline"] == "generator_only"
+    assert result["checks"]["proof_calls"] == 3
+    assert "yield" not in result["summary"]
+    assert all("yield" not in sample and "valid_count" not in sample
+               for sample in result["samples"])
     assert result["seeds"]["count"] == 4 and result["seeds"]["dtype"] == "int32"
     assert result["summary"]["attempted_count"] == 8
     assert result["provenance"]["source_revision"] == "a" * 40
@@ -108,9 +116,9 @@ def test_actual_cuda_graph_records_then_recomputes_advancing_epochs():
                                 label="CUDA test")
     assert result["status"] == "ok" and result["mode"] == "cuda_graph"
     assert result["checks"]["capture_did_not_execute"] is True
-    assert result["checks"]["epoch_and_generation"] is True
-    assert result["checks"]["poison_overwritten"] is True
-    assert result["checks"]["changed_valid_rows"] > 0
+    assert result["checks"]["epoch_and_effective_seed"] is True
+    assert result["checks"]["raw_storage_overwritten"] is True
+    assert result["checks"]["changed_raw_rows"] > 0
     assert result["epochs"] == [1, 2]
     assert all(s["device_ms"] > 0 and s["wall_ms"] > 0 for s in result["samples"])
 
@@ -165,3 +173,55 @@ def test_worker_failure_retains_protocol_and_source_revision(tmp_path):
     assert result["provenance"]["source_revision"] == "c" * 40
     assert len(result["provenance"]["protocol_sha256"]) == 64
     assert "summary" not in result and "samples" not in result
+
+
+@pytest.mark.parametrize("family", ["bezier", "checkpoint", "hull", "polar", "voronoi", "repulsive"])
+def test_raw_body_matches_public_raw_tap_and_skips_every_common_stage(family, monkeypatch):
+    import numpy as np
+    from track_gen import TrackGenConfig, TrackGenerator
+    from track_gen.exec import LaunchContext
+
+    cfg = TrackGenConfig(generator=family, num_envs=1, device="cpu", num_points=256,
+                         N_max=512, half_width=.03, spacing=.018, scale=1., size=1.)
+    gen = TrackGenerator(cfg, seeds=7)
+    body = _runner()._RawGeneratorBody(gen)
+    program = gen.program
+    before_raw = program.tap("raw.xy").numpy().copy()
+    untouched = {name: getattr(program.result, name).numpy().tobytes()
+                 for name in ("center", "inner", "outer", "valid", "count", "fail_mask", "generation")}
+    before_cl = program.tap("cl.xy").numpy().tobytes()
+
+    def forbidden_common_stage(ctx):
+        pytest.fail("a shared road stage ran during the generator-only body")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(program, "_enqueues", [entry if index == body.index else forbidden_common_stage
+                      for index, entry in enumerate(program._enqueues)])
+        body.enqueue(LaunchContext.current("cpu"))
+    raw, accepted = body.raw.numpy().copy(), body.accepted.numpy().copy()
+    assert raw.shape == (256, 2) and body.raw_points == 256
+    assert not np.array_equal(raw, before_raw, equal_nan=True)
+    assert gen.seeds.epoch.numpy().tolist() == [1]
+    assert all(getattr(program.result, name).numpy().tobytes() == value
+               for name, value in untouched.items())
+    assert program.tap("cl.xy").numpy().tobytes() == before_cl
+
+    gen.seeds.reset_epoch()
+    gen.generate(advance=True)
+    np.testing.assert_array_equal(raw, program.tap("raw.xy").numpy())
+    np.testing.assert_array_equal(accepted, program.tap("gen.valid").numpy())
+    assert program.result.generation.numpy().tolist() == [1]
+
+
+def test_raw_guard_rejects_changing_geometry_with_all_generator_flags_rejected(monkeypatch):
+    bench = _runner()
+    original = bench._RawGeneratorBody.enqueue
+
+    def reject_all(self, ctx):
+        original(self, ctx)
+        ctx.fill(self.accepted, 0)
+
+    monkeypatch.setattr(bench._RawGeneratorBody, "enqueue", reject_all)
+    with pytest.raises(bench.BenchmarkGuardError, match="changing finite accepted raw geometry"):
+        bench.run_case("polar", envs=4, device="cpu", repeats=1, warmup_seconds=0,
+                       source_revision="a" * 40, label="Rejected raw test")
