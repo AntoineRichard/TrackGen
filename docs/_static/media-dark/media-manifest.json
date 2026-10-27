@@ -729,6 +729,16 @@
       "light_sha256": "0b3cf21fc65a339f34381f3fbe23bca4399dcd900e84b64d8593e27a82445f28",
       "producer": "relaxation-guide"
     },
+    "trackgen-circuit-wordmark.svg": {
+      "dark": "_static/media-dark/trackgen-circuit-wordmark.svg",
+      "dark_sha256": "3767cd6407841f3cf617562308d91d0808280374db22c30de290b6be61ca84ca",
+      "kind": "image",
+      "light": "_static/brand/trackgen-circuit-wordmark.svg",
+      "light_sha256": "39235980eb19799f1c228544782a8898145a8ba142ad47d7712ac8d652025cc1",
+      "producer": "branding",
+      "renderer_sha256": "5b5408e6949daf5a6a3e115bf7251f120af31af97accd35c6f0fdf92fd3c254f",
+      "source_revision": "42b35c860a86e786ccc6f62c9b14d19d4a7fe578"
+    },
     "utilities-overview.png": {
       "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",
       "dark": "_static/media-dark/utilities-overview.png",

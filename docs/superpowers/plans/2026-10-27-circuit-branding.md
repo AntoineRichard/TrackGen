@@ -33,7 +33,7 @@
 **Interfaces:** Consumes the approved pixel grid/letterforms. Produces static brand/ and media-dark/ assets, matching paths in Furo and README, and a source/output hash manifest.
 
 - [x] Create the deterministic asset renderer and verify scratch output, SVG/XML validity, exact ASCII and favicon sizes; use existing source/runtime rather than new dependencies. Asset-only work needs visual/integrity checks, not mirrored implementation tests.
-- [ ] Commit the renderer/design source before generating final assets; record that revision in the asset manifest.
-- [ ] Add native Furo/README integration and the new registry row, preserving all old rows.
-- [ ] Run strict docs and the required CPU lane; inspect desktop/mobile light/dark, accessible home name, images, favicon and unchanged video playback; self-review and independent scoped review.
+- [x] Commit the renderer/design source before generating final assets; record that revision in the asset manifest.
+- [x] Add native Furo/README integration and the new registry row, preserving all old rows.
+- [x] Run strict docs and the required CPU lane; inspect desktop/mobile light/dark, accessible home name, images, favicon and unchanged video playback; self-review and independent scoped review.
 - [ ] Commit/push validated assets/integration, update the hosted preview, and report the result. Keep PR4 draft for Racing and final-release approval.

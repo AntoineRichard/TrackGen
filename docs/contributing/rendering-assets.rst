@@ -136,3 +136,30 @@ reader guides. To add another explanation, use a static comparison for a setting
 result, and an animation when order or iteration is the point. Manim can be an optional
 tool for original mathematical diagrams; solver motion must continue to come from real
 TrackGen states.
+
+
+Circuit brand assets
+---------------------
+
+The Circuit identity is hand-designed pixel artwork, independent of generated track
+geometry. Its wordmarks, icons, monochrome variants and plain ASCII lettering share
+one source in ``viz.render_brand_assets``. The renderer needs Pillow from the
+existing development environment; it uses no fonts or runtime TrackGen imports.
+Render into scratch from committed source:
+
+.. code-block:: bash
+
+   python -m viz.render_brand_assets --out-dir /tmp/tg-brand --source-revision "$(git rev-parse HEAD)"
+
+Inspect the transparent light/dark wordmarks and the 16-, 24- and 32-pixel icons.
+Tiny PNG/ICO icons omit the checkered detail to preserve the circuit silhouette.
+Copy the ``brand`` outputs into ``docs/_static/brand`` and the two dark SVGs into
+``docs/_static/media-dark``. The brand manifest records the source revision,
+renderer hash, palettes, dimensions and output hashes.
+
+Furo selects the two sidebar wordmarks through its native theme options; the README
+uses the same pair. Merge their new hashes into the media registry while retaining
+all existing scientific-media entries and provenance. The final strict build must
+use the default registry. Rendering is an optional authoring step, never part of the
+site build. The :download:`ASCII wordmark <../_static/brand/trackgen-ascii.txt>` uses
+seven lines and fits in 47 columns without Unicode, fonts or terminal color codes.

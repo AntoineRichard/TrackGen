@@ -1,5 +1,10 @@
 # TrackGen
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/_static/media-dark/trackgen-circuit-wordmark.svg">
+  <img src="docs/_static/brand/trackgen-circuit-wordmark.svg" alt="TrackGen" width="420" height="96">
+</picture>
+
 **GPU-batched race tracks, gate courses, and the runtime signals to race
 them — pure [NVIDIA Warp](https://github.com/NVIDIA/warp), CUDA-graph
 native.**

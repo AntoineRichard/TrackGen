@@ -152,6 +152,14 @@ trackgen_api_exempt = {
 
 html_theme = "furo"
 html_static_path = ["_static"]
+templates_path = ["_templates"]
+html_theme_options = {
+    "light_logo": "brand/trackgen-circuit-wordmark.svg",
+    "dark_logo": "media-dark/trackgen-circuit-wordmark.svg",
+    "sidebar_hide_name": True,
+}
+html_favicon = "_static/brand/trackgen-circuit.ico"
+html_css_files = ["brand.css"]
 # Short generator-construction clips are copied verbatim; rendering stays optional.
 html_extra_path = [
     "assets/racing/generator-bezier-construction.mp4",
