@@ -85,8 +85,10 @@ Spacing defaults and sizing
 :term:`spacing` defaults to ``None``, which couples it to ``0.6 * half_width`` (the
 relax-friendly rule of thumb; ``0.06`` at the default ``half_width = 0.1``): a fixed
 spacing default would be wrong as ``half_width`` varies. Set it explicitly to override.
-A frozen config resolves this at construction; use ``dataclasses.replace(cfg,
-half_width=..., spacing=None)`` to derive it again for a replacement.
+``TrackGenConfig`` keeps ``spacing=None``; ``cfg.resolved_spacing`` computes the
+numeric step on each access. ``dataclasses.replace(cfg, half_width=...)`` follows
+the new width in automatic mode and preserves explicit spacing. Building a
+pipeline spec captures the concrete numeric step in its resample stage Params.
 
 **Size** ``N_max >= max(perimeter) / spacing + 1``: a track whose true count exceeds
 ``N_max`` is truncated (its closing segment would span the gap); the scan flags it in

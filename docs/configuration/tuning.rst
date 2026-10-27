@@ -162,10 +162,13 @@ TrackGen flags an overflow with ``truncated=1`` and invalidates it. The default
 preserves the failed candidate for diagnosis. Never treat the closing chord of a
 truncated candidate as a usable road. See :ref:`invalid-envs`.
 
-An explicit spacing does not follow a later width change. Configs resolve ``None``
-at construction; when replacing a config with a new width, pass ``spacing=None``
-again to recouple it. Imported centerlines use their supplied coordinates: set
-width, spacing and capacity for those units (:ref:`ingesting-centerlines`).
+``TrackGenConfig.spacing`` retains ``None`` for automatic spacing;
+``cfg.resolved_spacing`` computes the numeric step from the current width.
+``dataclasses.replace(cfg, half_width=...)`` therefore follows the new width
+automatically. An explicit spacing stays fixed across width replacements; pass
+``spacing=None`` to switch it back to automatic. Imported centerlines use their
+supplied coordinates: set width, spacing and capacity for those units
+(:ref:`ingesting-centerlines`).
 
 Live parameters and randomization
 ---------------------------------

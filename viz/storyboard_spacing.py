@@ -38,6 +38,7 @@ def capture(generator="polar", seed=7):
 
     samples, gen = sample_batch(generator, seeds=[seed], return_generator=True)
     sample, cfg = samples[0], gen.config
+    spacing = cfg.resolved_spacing
     public = {name: value.numpy().tobytes() for name, value in result_arrays(gen.program.result).items()}
     n = int(gen.program.tap("cl.count").numpy()[0])
     raw = gen.program.tap("raw.xy").numpy().copy()
@@ -53,7 +54,7 @@ def capture(generator="polar", seed=7):
     count = wp.empty(1, dtype=wp.int32, device="cpu")
     truncated = wp.empty(1, dtype=wp.int32, device="cpu")
     raw_wp = wp.array(raw, dtype=wp.vec2f, device="cpu")
-    ops.resample_constant_spacing(ctx, raw_wp, len(raw), cfg.spacing, cfg.N_max,
+    ops.resample_constant_spacing(ctx, raw_wp, len(raw), spacing, cfg.N_max,
                                   scratch, replay, count, truncated)
     assert replay.numpy().tobytes() == target_wp.numpy().tobytes()
     assert int(count.numpy()[0]) == n
@@ -68,10 +69,10 @@ def capture(generator="polar", seed=7):
     np.testing.assert_array_equal(uniform, sample["center"][:, :2])
     data = dict(generator=generator, seed=int(seed), raw=raw, target=target,
                 relaxed=relaxed, uniform=uniform, outer=sample["outer"], inner=sample["inner"],
-                raw_count=len(raw), count=n, spacing=float(cfg.spacing),
+                raw_count=len(raw), count=n, spacing=float(spacing),
                 raw_arc_total=raw_arc_total, relaxed_arc_total=relaxed_arc_total,
                 nominal_uniform_step=relaxed_arc_total / n,
-                closing_remainder=raw_arc_total - (n-1)*float(cfg.spacing),
+                closing_remainder=raw_arc_total - (n-1)*float(spacing),
                 truncated=bool(truncated.numpy()[0]), valid=bool(sample["valid"]),
                 constant_spacing_replay_equal=True, uniform_replay_equal=True,
                 public_results_unchanged=True)

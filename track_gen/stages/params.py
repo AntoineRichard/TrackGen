@@ -2,8 +2,9 @@
 
 Like the built-in generators' Params, every class
 keeps the FLAT ``TrackGenConfig`` field names and ``from_legacy(config)`` copies the flat
-values (no casts), except ``WidthFromChannelParams`` (dynamic ``scale`` / ``lo`` /
-``hi``) and ``StationsParams`` (``gates``, ``spacing_metric``), which have no
+values (no casts), except that ``ConstantSpacingParams`` resolves the config's
+optional spacing to its numeric step. ``WidthFromChannelParams`` (dynamic ``scale`` /
+``lo`` / ``hi``) and ``StationsParams`` (``gates``, ``spacing_metric``) have no
 ``TrackGenConfig`` counterpart. Every field is static except ``width.from_channel``'s and
 the elevation profiles' altitude window and shape knobs (``z_min`` / ``z_max`` of
 ``elevation.uniform`` / ``random_walk`` / ``noise``, ``z_max_step`` and
@@ -84,6 +85,11 @@ class ConstantSpacingParams(_FlatParams):
 
     spacing: float = static(0.6 * 0.1, doc="Constant arc-length step between points "
                                            "(> 0).")
+
+    @classmethod
+    def from_legacy(cls, cfg):
+        """Resolve automatic config spacing to the stage's concrete arc-length step."""
+        return cls(spacing=cfg.resolved_spacing)
 
     def validate(self, layout) -> None:
         if float(self.spacing) <= 0.0:

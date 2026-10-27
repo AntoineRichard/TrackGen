@@ -41,8 +41,9 @@ def test_config_defaults_instantiate():
     # Output params
     assert cfg.num_points == 256
     # constant_spacing is the only supported output mode.
-    # spacing defaults to None -> __post_init__ auto-couples it to 0.6*half_width.
-    assert math.isclose(cfg.spacing, 0.6 * cfg.half_width)
+    # None retains automatic intent; the numeric step follows half_width.
+    assert cfg.spacing is None
+    assert math.isclose(cfg.resolved_spacing, 0.6 * cfg.half_width)
     assert cfg.N_max == 384
     # Robustness params
     assert cfg.turning_tol == 0.1
@@ -386,7 +387,7 @@ def test_track_config_defaults_still_valid():
     from track_gen._src.types import TrackGenConfig
     cfg = TrackGenConfig()
     assert cfg.num_points <= cfg.N_max
-    assert cfg.spacing == 0.6 * cfg.half_width
+    assert cfg.resolved_spacing == 0.6 * cfg.half_width
 
 
 def test_gate_sequence_construct_from_warp_arrays_and_clone():

@@ -299,7 +299,9 @@ class TrackGenerator:
         ``generator_params`` normalised to its Params instance; for a generator built
         from a ``PipelineSpec``, that spec (immutable). ``TrackGenerator(gen.config,
         rng)`` builds an identical generator, with the construction-time (initial)
-        values of any DYNAMIC parameters. A later ``params[...].set(...)`` is not
+        values of any DYNAMIC parameters. A flat config retains ``spacing=None``
+        for automatic spacing; ``resolved_spacing`` is its numeric step.
+        A later ``params[...].set(...)`` is not
         reflected here: the current values are the live arrays,
         ``gen.params[stage_id][field]``.
 

@@ -1559,7 +1559,7 @@ def test_the_checkpoint_bound_holds_under_a_size_curriculum(explicit):
 
     n, spacing_cp = 16, 0.5
     cfg = _tcfg(num_envs=n)
-    bound = math.ceil(1.5 * cfg.N_max * cfg.spacing / spacing_cp)
+    bound = math.ceil(1.5 * cfg.N_max * cfg.resolved_spacing / spacing_cp)
     course = Course(CourseConfig(mode="track", gen=cfg, seeds=_seeds(np.arange(n) * 7 + 1),
                                  checkpoint_spacing=spacing_cp,
                                  max_checkpoints=bound if explicit else None))

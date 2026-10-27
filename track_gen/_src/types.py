@@ -415,8 +415,11 @@ class TrackGenConfig:
     spacing : float or None
         Constant arc-length step in coordinate units between adjacent output points.  ``None``
         (default) auto-couples to ``0.6 * half_width`` — the relaxation-friendly
-        value; a fixed default would be wrong as ``half_width`` varies.  Must
-        resolve to > 0 after auto-coupling.
+        value; a fixed default would be wrong as ``half_width`` varies.  The field
+        retains ``None`` so ``dataclasses.replace(config, half_width=...)`` derives
+        the new spacing automatically. Read ``resolved_spacing`` for the numeric
+        step. An explicit spacing stays fixed when the width changes. Must resolve
+        to > 0.
     N_max : int
         Output buffer width: maximum constant-spacing points per track.  Tracks
         whose true ``count[e]`` exceeds ``N_max`` are truncated, flagged in
@@ -625,6 +628,12 @@ class TrackGenConfig:
 
     on_invalid: str = "poison"
 
+    @property
+    def resolved_spacing(self) -> float:
+        """The explicit spacing, or ``0.6 * half_width`` when automatic (``None``)."""
+        # Preserve multiplication order for NumPy scalar widths as well as Python floats.
+        return float(0.6 * self.half_width) if self.spacing is None else float(self.spacing)
+
     def __post_init__(self):
         _validate_invalid_policy(self)
         if int(self.num_envs) < 1:
@@ -674,11 +683,8 @@ class TrackGenConfig:
         # Only constant_spacing is supported: a constant link SIZE (~0.6*half_width) relaxes
         # to smoother, higher-yield tracks than a constant point COUNT, which over-resolves
         # the centerline (jagged XPBD -> folded roads).
-        # Auto-couple spacing to half_width (~0.6*half_width relaxes to smoother tracks);
-        # a fixed spacing default would be wrong as half_width varies (too coarse -> degenerate).
-        if self.spacing is None:
-            object.__setattr__(self, "spacing", 0.6 * self.half_width)
-        if float(self.spacing) <= 0.0:
+        # Keep None as automatic intent so replacing half_width derives a new step.
+        if self.spacing is not None and float(self.spacing) <= 0.0:
             raise ValueError(f"spacing must be > 0, got {self.spacing!r}")
 
         if not isinstance(self.z_profile, str) or not self.z_profile:

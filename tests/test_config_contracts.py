@@ -5,6 +5,7 @@ import dataclasses
 
 import pytest
 
+from tests.conftest import DEVS
 from track_gen import GateGenConfig, TrackGenConfig
 
 
@@ -34,12 +35,91 @@ def test_frozen_config_subclasses_support_replace_and_spacing():
         plugin_radius: float = 0.5
 
     config = PluginConfig(half_width=0.2)
-    assert config.spacing == pytest.approx(0.12)
+    assert config.spacing is None
+    assert config.resolved_spacing == pytest.approx(0.12)
     changed = dataclasses.replace(config, half_width=0.3, plugin_radius=0.7)
     assert type(changed) is PluginConfig and changed.plugin_radius == 0.7
-    assert changed.spacing == config.spacing
-    assert dataclasses.replace(changed, spacing=None).spacing == pytest.approx(0.18)
+    assert changed.spacing is None
+    assert changed.resolved_spacing == pytest.approx(0.18)
     assert config.plugin_radius == 0.5 and config.half_width == 0.2
+    assert config.resolved_spacing == pytest.approx(0.12)
+
+
+def test_explicit_spacing_survives_width_replacement_and_can_be_reset():
+    config = TrackGenConfig(half_width=0.2, spacing=0.04)
+    changed = dataclasses.replace(config, half_width=0.3)
+    assert changed.spacing == config.spacing == 0.04
+    assert changed.resolved_spacing == 0.04
+    automatic = dataclasses.replace(changed, spacing=None)
+    assert automatic.spacing is None
+    assert automatic.resolved_spacing == pytest.approx(0.18)
+
+
+def test_automatic_spacing_preserves_numpy_scalar_rounding():
+    import numpy as np
+
+    from track_gen.stages.params import ConstantSpacingParams
+
+    width = np.float32(0.1234)
+    config = TrackGenConfig(half_width=width)
+    expected = float(0.6 * width)
+    assert config.resolved_spacing == expected
+    assert ConstantSpacingParams.from_legacy(config).spacing == expected
+
+
+@pytest.mark.parametrize("spacing", [None, 0.04])
+def test_config_spacing_serialization_preserves_automatic_intent(spacing):
+    import json
+
+    config = TrackGenConfig(half_width=0.2, spacing=spacing)
+    restored = TrackGenConfig(**json.loads(json.dumps(dataclasses.asdict(config))))
+    assert restored.spacing == spacing
+    changed = dataclasses.replace(restored, half_width=0.3)
+    assert changed.spacing == spacing
+    assert changed.resolved_spacing == pytest.approx(0.18 if spacing is None else spacing)
+
+
+@pytest.mark.parametrize("spacing", [None, 0.04])
+def test_config_spacing_resolves_before_stage_and_spec_serialization(spacing):
+    from track_gen.pipeline import PipelineSpec, legacy
+    from track_gen.stages.params import ConstantSpacingParams
+
+    config = dataclasses.replace(TrackGenConfig(device="cpu", half_width=0.2,
+                                              spacing=spacing), half_width=0.3)
+    expected = 0.18 if spacing is None else spacing
+    params = ConstantSpacingParams.from_legacy(config)
+    assert isinstance(params.spacing, float)
+    assert params.spacing == pytest.approx(expected)
+    spec = legacy.to_pipeline_spec(config)
+    assert spec.stages[1].params.spacing == pytest.approx(expected)
+    restored = PipelineSpec.from_dict(spec.to_dict())
+    assert restored.stages[1].params["spacing"] == pytest.approx(expected)
+    assert config.spacing == spacing
+
+
+@pytest.mark.parametrize("dev", DEVS)
+@pytest.mark.parametrize("spacing", [None, 0.04])
+def test_replaced_width_matches_a_fresh_explicit_spacing_generator(dev, spacing):
+    import numpy as np
+    import warp as wp
+
+    from track_gen import TrackGenerator
+    from track_gen.testing.capture import result_arrays
+
+    config = TrackGenConfig(generator="polar", device=dev, num_envs=2,
+                            half_width=0.05, spacing=spacing, on_invalid="keep")
+    changed = dataclasses.replace(config, half_width=0.1)
+    explicit = dataclasses.replace(changed, spacing=0.06 if spacing is None else spacing)
+    automatic_gen = TrackGenerator(changed, seeds=7)
+    explicit_gen = TrackGenerator(explicit, seeds=7)
+    mask = wp.array(np.array([1, 0], dtype=np.int32), device=dev)
+    for options in ({}, {"advance": True, "mask": mask}):
+        actual = result_arrays(automatic_gen.generate(**options))
+        expected = result_arrays(explicit_gen.generate(**options))
+        assert actual.keys() == expected.keys()
+        for name in actual:
+            assert actual[name].numpy().tobytes() == expected[name].numpy().tobytes(), name
+    assert automatic_gen.config.spacing == spacing
 
 
 @pytest.mark.parametrize("kind", ["track", "gates"])

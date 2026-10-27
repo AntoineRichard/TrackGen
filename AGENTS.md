@@ -12,8 +12,8 @@ the architecture and the roadmap, and `CHANGELOG.md` for what shipped.
 - The combined working candidate is **0.3.0rc3**. Immutable `v0.3.0rc2` remains
   `a42759a3f999a8668a200cddc3f04e0508478dd1`; never recreate an existing candidate tag.
   Draft PR #4 (`v3` to `main`) prepares 0.3.0. PR4 review findings #1–#3 and #5–#14
-  were addressed in rc2; #4 (auto-spacing after `dataclasses.replace`) remains deferred
-  until the user answers its review thread. Do not change that public contract.
+  were addressed in rc2. The user authorized #4 (automatic spacing after
+  `dataclasses.replace`) on 2026-10-27; follow the approved contract below.
 - The release-blocking Repulsive repair and the racing documentation are combined.
   Finish the candidate validation/tag steps below, then STOP for the user's racing
   validation. Final release, merge to `main` and docs deployment need explicit approval.
@@ -42,6 +42,21 @@ themes. Normal CI on `3ba86e3` also passed. The generator-only correction passed
 all-six-generator/two-epoch CUDA raw/public byte parity. All 18 new measurements
 and 90 timing samples passed independent integrity review. Its new CI must be
 distinguished from those earlier exact-head results.
+
+## Automatic spacing follow-up (user authorization, 2026-10-27)
+
+The user approved PR4 finding #4 in chat. `TrackGenConfig.spacing` retains the
+requested value: `None` means automatic. Read `resolved_spacing` for the explicit
+float or `0.6 * half_width`; replacing an automatic config's width follows that
+width, while explicit spacing stays fixed. Params/specs always carry concrete
+spacing. Update numeric readers, including oracle/reference adapters, without
+changing numerical operations or any golden. Validate against fresh same-machine
+rc3 full/gate snapshots, CPU, strict docs/snippets and CUDA/full Spark before push.
+
+Immutable rc3 and its downstream Racing validation remain unchanged; this fix is
+on `v3` after that tag. Do not retag rc3, cut a new candidate, merge or release
+without the user's authorization. Reply to finding #4 with the validated SHA and
+resolve it after the fix passes. See `docs/superpowers/plans/2026-10-27-auto-spacing.md`.
 
 ## Generator benchmark scope (user correction, 2026-10-26)
 
@@ -72,7 +87,7 @@ Preserve the other generators' outputs, RNG salts/draw order, lightweight import
 ctx launches, fixed buffers and CPU/CUDA capture. The immutable rc2 tag stays unchanged;
 new Repulsive fingerprints/statistics require correctness evidence and explicit review.
 No final release is authorized; a validated next candidate needs racing validation.
-The separate auto-spacing review finding #4 remains deferred.
+The separate auto-spacing review finding #4 was authorized on 2026-10-27.
 
 ## Documentation work and release progress
 - The repaired solver and its parallel implementation have independent code reviews,

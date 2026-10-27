@@ -86,7 +86,9 @@ valid = track.valid.numpy()                  # [E]: 0 for an env that failed a c
 Invalid envs have `count=0` and NaN geometry by default. Check `valid` before using
 points; set `on_invalid="keep"` explicitly on a preset or config to inspect failed
 geometry. Configs are frozen values: use `dataclasses.replace` for static changes
-and `gen.params` for dynamic curricula.
+and `gen.params` for dynamic curricula. `TrackGenConfig.spacing=None` stays
+automatic; read `cfg.resolved_spacing` for the numeric step. Replacing
+`half_width` updates automatic spacing, while explicit spacing stays fixed.
 
 …or let one object run the sim-time side — checkpoints, progress,
 out-of-bounds checks, per-env regeneration:

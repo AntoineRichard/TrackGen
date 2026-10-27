@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Resolve PR #4 finding #4: `TrackGenConfig.spacing` retains `None` for automatic
+  spacing. Read `resolved_spacing` for the numeric step (`0.6 * half_width`, or
+  the explicit spacing). `dataclasses.replace(cfg, half_width=...)` now follows
+  the new width automatically; explicit spacing remains fixed. Config-to-spec
+  conversion stores concrete numeric spacing. This supersedes the reset-to-`None`
+  guidance and deferred status recorded in earlier candidate notes below.
+
 ## 0.3.0rc3 (release candidate, tag `v0.3.0rc3`)
 
 The third candidate repairs Repulsive's growth and full-road obstacle contract,

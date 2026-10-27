@@ -288,9 +288,10 @@ and build a new generator for a static change. Generator snapshots are frozen to
 Dynamic curricula continue through ``gen.params``; a config's initial values do not
 track later device parameter updates.
 
-``spacing=None`` is resolved when a Track config is constructed. Replacing
-``half_width`` alone preserves that resolved spacing. Reset it to ``None`` to derive
-``0.6 * half_width`` again:
+``TrackGenConfig.spacing`` retains ``None`` for automatic spacing. Read
+``cfg.resolved_spacing`` for the numeric step: it computes ``0.6 * half_width``
+on each access, or returns the explicit spacing. Replacing ``half_width`` alone
+therefore updates automatic spacing; explicit spacing remains fixed:
 
 .. code-block:: python
 
@@ -298,9 +299,19 @@ track later device parameter updates.
    from track_gen import TrackGenConfig
 
    cfg = TrackGenConfig(num_envs=4, device="cpu", half_width=0.05)
-   wider = dataclasses.replace(cfg, half_width=0.1, spacing=None)
-   assert abs(wider.spacing - 0.06) < 1e-12
-   assert abs(cfg.spacing - 0.03) < 1e-12
+   wider = dataclasses.replace(cfg, half_width=0.1)
+   assert cfg.spacing is wider.spacing is None
+   assert abs(wider.resolved_spacing - 0.06) < 1e-12
+   assert abs(cfg.resolved_spacing - 0.03) < 1e-12
+
+   fixed = dataclasses.replace(cfg, spacing=0.02)
+   assert dataclasses.replace(fixed, half_width=0.1).resolved_spacing == 0.02
+
+Code that reads ``cfg.spacing`` as a number must use ``cfg.resolved_spacing``.
+``dataclasses.asdict(cfg)`` preserves the requested ``None`` or explicit spacing;
+config-to-spec conversion stores the concrete numeric step in the resample
+stage Params. A saved spec therefore captures the resolved step without retaining
+the config's automatic-spacing intent.
 
 Decorate config subclasses as frozen dataclasses too; Python refuses a non-frozen
 dataclass subclass of a frozen base:

@@ -81,11 +81,17 @@ Config classes
    :no-members:
 
 Both configs are frozen dataclasses. Build a replacement with ``dataclasses.replace``
-instead of assigning fields, and make dataclass subclasses frozen too. When changing
-``half_width``, pass ``spacing=None`` in the same replacement to derive spacing again. ``on_invalid`` defaults to ``"poison"`` on both configs;
-``"keep"`` explicitly retains invalid geometry for diagnostics. Config-to-spec and
-spec-to-config conversion preserve this choice. A missing policy in a saved ``/2``
-spec defaults to ``"poison"``.
+instead of assigning fields, and make dataclass subclasses frozen too.
+
+``TrackGenConfig.spacing`` retains ``None`` for automatic spacing. Read
+``cfg.resolved_spacing`` for the numeric step: it computes ``0.6 * half_width``
+on each access, or returns the explicit spacing. Replacing ``half_width`` alone
+updates automatic spacing; explicit spacing remains fixed. Config-to-spec
+conversion stores the concrete numeric step in the resample stage Params.
+
+``on_invalid`` defaults to ``"poison"`` on both configs; ``"keep"`` explicitly
+retains invalid geometry for diagnostics. Config-to-spec conversion preserves
+this policy. A missing policy in a saved ``/2`` spec defaults to ``"poison"``.
 
 .. _gate-width-config:
 

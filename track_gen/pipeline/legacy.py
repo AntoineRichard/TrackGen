@@ -28,7 +28,9 @@ def to_pipeline_spec(config, *, registry=None) -> PipelineSpec:
     profile, else ``lift.elevated``). A generator that provides ``"z"`` has no
     elevation (``lift.elevated``), one that provides ``"half_width"`` no width stage.
     Each stage's params are its Params class's ``from_legacy(config)``
-    (the flat field names); the generator's are its resolved ``generator_params``.
+    (the flat field names); constant-spacing resampling records the concrete
+    ``config.resolved_spacing``. The generator's params are its resolved
+    ``generator_params``.
     ``relax_solver`` and ``z_profile`` name any stage registered under ``relax`` /
     ``elevation``; a ``half_width`` field of their Params is ``config.half_width`` (the
     stages with the field share the nominal width).

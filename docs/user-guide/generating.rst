@@ -800,7 +800,9 @@ stage needs its plugin installed to build).
 
 The device is saved with the batch: to load a spec on another device, edit
 ``d["batch"]["device"]`` before ``from_dict``. A ``TrackGenConfig`` is saved through its
-spec: ``legacy.to_pipeline_spec(cfg).to_dict()``.
+spec: ``legacy.to_pipeline_spec(cfg).to_dict()``. The spec stores the concrete
+numeric resampling step from ``cfg.resolved_spacing``; it does not retain the
+config's automatic-spacing intent.
 
 .. _pipeline-spec-format:
 

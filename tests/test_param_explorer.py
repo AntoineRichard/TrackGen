@@ -64,7 +64,7 @@ def test_build_config_maps_and_clamps():
     assert abs(cfg.handle_clamp_frac - 0.10) < 1e-9  # the overshoot-clamp knob round-trips
     cfg2 = px.build_config(_params(spacing=0.3, n_max=384))
     assert cfg2.N_max == 384
-    assert abs(cfg2.spacing - 0.3) < 1e-9
+    assert abs(cfg2.resolved_spacing - 0.3) < 1e-9
 
 
 def test_build_config_auto_spacing():
@@ -72,7 +72,8 @@ def test_build_config_auto_spacing():
     p = _params(half_width=0.5)
     p["spacing"] = None
     cfg = px.build_config(p)
-    assert abs(cfg.spacing - 0.6 * 0.5) < 1e-9
+    assert cfg.spacing is None
+    assert abs(cfg.resolved_spacing - 0.6 * 0.5) < 1e-9
 
 
 def test_build_config_maps_hull_shape_knobs():

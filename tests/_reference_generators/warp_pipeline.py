@@ -325,7 +325,7 @@ def _run_pipeline(
 
     # 2. Constant-spacing resample (gen centerline -> bridge buffers).
     resample_constant_spacing(
-        scratch.gen_centerline, float(config.spacing), n_max,
+        scratch.gen_centerline, float(config.resolved_spacing), n_max,
         out_wp=scratch.cs_center, count_wp=scratch.count,
         seg_wp=scratch.cs_seg, s_wp=scratch.cs_s, truncated_wp=out.truncated,
         ctx=ctx,

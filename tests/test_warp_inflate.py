@@ -66,7 +66,7 @@ def _build_cs(dev: str, config: TrackGenConfig):
     n_max = config.N_max
     out_wp = wp.empty(E * n_max, dtype=wp.vec2f, device=dev)
     count_wp = wp.empty(E, dtype=wp.int32, device=dev)
-    wpl.resample_constant_spacing(cf, float(config.spacing), n_max,
+    wpl.resample_constant_spacing(cf, float(config.resolved_spacing), n_max,
                                   out_wp=out_wp, count_wp=count_wp)
     return out_wp, count_wp
 
