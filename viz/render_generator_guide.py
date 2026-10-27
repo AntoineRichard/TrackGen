@@ -26,7 +26,7 @@ import numpy as np
 import warp as wp
 from matplotlib.animation import FFMpegWriter
 
-from viz.racing_theme import get_palette, plotting_theme, save_figure, apply_plot_theme, geometry_digest, render_variants, rendered_geometry, video_canvas_size
+from viz.racing_theme import add_video_branding, get_palette, plotting_theme, save_figure, apply_plot_theme, geometry_digest, render_variants, rendered_geometry, video_canvas_size
 
 from track_gen import TrackGenConfig, TrackGenerator
 from track_gen._version import __version__
@@ -568,6 +568,15 @@ def draw_construction_step(ax, sample, stage, progress):
     return dict(active_curve=active)
 
 
+def _construction_raw_preview(raw_ax, sample):
+    _line(raw_ax, sample["raw"], color=BLUE, lw=1.8)
+    raw_ax.set_title("Generator output: raw centerline\n" +
+                     (f"polygon fallback ({sample['construction']['crossings']} crossings)"
+                      if sample["construction"].get("crossings", 0) else "normalized output coordinates"), fontsize=11)
+    _limits(raw_ax, [sample["raw"]])
+    _style(raw_ax)
+
+
 def _construction_result_axes(raw_ax, road_ax, sample):
     _line(raw_ax, sample["raw"], color=BLUE, lw=1.8)
     raw_ax.set_title("Generator output: raw centerline\n" +
@@ -597,16 +606,17 @@ def _render_simple_construction(out_dir, sample, *, movies=True):
     if name == "repulsive":
         return
     stages = construction_stages(sample)
-    footer = ("Illustrative drawing of recorded geometry: stage order is algorithm order, not elapsed runtime.\n"
-              "Construction view uses pre-normalization coordinates; raw/final views at right use output coordinates.")
+    footer = ("Recorded geometry: stage order explains the algorithm, not elapsed runtime.\n"
+              "Construction uses pre-normalization coordinates; the raw preview uses output coordinates.")
     fig = plt.figure(figsize=video_canvas_size(12, dpi=120))
-    grid = fig.add_gridspec(2, 3, width_ratios=(1, 1, 1), left=.025, right=.98,
-                           bottom=.13, top=.86, wspace=.14, hspace=.18)
-    ax = fig.add_subplot(grid[:, :2])
-    _construction_result_axes(fig.add_subplot(grid[0, 2]), fig.add_subplot(grid[1, 2]), sample)
+    grid = fig.add_gridspec(1, 2, width_ratios=(3.25, 1), left=.025, right=.98,
+                           bottom=.15, top=.84, wspace=.18)
+    ax = fig.add_subplot(grid[0, 0])
+    _construction_raw_preview(fig.add_subplot(grid[0, 1]), sample)
     heading = fig.text(.34, .95, "", ha="center", fontsize=17)
     explanation = fig.text(.34, .9, "", ha="center", fontsize=10)
-    fig.text(.5, .035, footer, ha="center", fontsize=10)
+    fig.text(.04, .035, footer, ha="left", fontsize=9)
+    add_video_branding(fig)
 
     def show(i, progress):
         stage = stages[i]
@@ -639,7 +649,9 @@ def _render_simple_construction(out_dir, sample, *, movies=True):
         ax.set_title(textwrap.fill(f"{i+1}. {stage['title']}", width=39), fontsize=11)
     _construction_result_axes(axes[0, 2], axes[1, 2], sample)
     fig.suptitle(f"{name.capitalize()} construction · actual geometry, illustrative drawing", fontsize=16)
-    fig.text(.5, .025, footer, ha="center", fontsize=10)
+    fig.text(.5, .025, "Illustrative drawing of recorded geometry: stage order is algorithm order, not elapsed runtime.\n"
+             "Construction view uses pre-normalization coordinates; raw/final views at right use output coordinates.",
+             ha="center", fontsize=10)
     fig.tight_layout(rect=(0, .08, 1, .93))
     if name == "checkpoint":
         # Detailed grid panels need room for both their outer stage title and the
@@ -797,7 +809,7 @@ def capture_repulsive(sample):
 
 def render_growth(out_dir, sample, *, movies=True):
     frames, matches = capture_repulsive(sample)
-    fig, (ax, final_ax) = plt.subplots(1, 2, figsize=video_canvas_size(12, dpi=120), gridspec_kw={"width_ratios": (1.55, 1)})
+    fig, ax = plt.subplots(figsize=video_canvas_size(12, dpi=120))
     samples = sample["construction"]["force_samples"]
     draw_repulsive_forces(ax, samples)
     ax.legend(loc="upper left", fontsize=8, framealpha=.95)
@@ -805,26 +817,22 @@ def render_growth(out_dir, sample, *, movies=True):
     label = ax.text(.02, .02, "", transform=ax.transAxes, fontsize=10, color=INK,
                     bbox=dict(facecolor="white", edgecolor="none", alpha=.9))
     radius = samples["domain_radius"]
-    for axis in (ax, final_ax):
-        axis.set_xlim(-1.12*radius, 1.12*radius)
-        axis.set_ylim(-1.12*radius, 1.12*radius)
-        _style(axis, ticks=True)
-    _road(final_ax, sample, raw=True)
-    draw_repulsive_forces(final_ax, samples)
-    final_ax.set_title("Finished road after shared pipeline\n" + _label(sample), fontsize=11,
-                       color=GREEN if sample["valid"] else RED)
+    ax.set_xlim(-1.12*radius, 1.12*radius)
+    ax.set_ylim(-1.12*radius, 1.12*radius)
+    _style(ax, ticks=True)
     ax.set_title("Repulsive · actual raw growth states\nseed " + str(sample["seed"]) + " · fixed viewpoint", fontsize=14)
-    fig.text(.5, .025, "Filled discs and outer wall are hard barriers; dotted curves reserve the absolute road half-width.\n"
-             "Disc/wall soft forces remain enabled. Final validity also checks every four-vertex road-cell hull. Playback is not runtime.",
-             ha="center", fontsize=10)
-    fig.tight_layout(rect=(0, .11, 1, 1))
+    fig.text(.04, .035, "Filled discs and outer wall are hard barriers; dotted curves reserve the road half-width.\n"
+             "Disc and wall forces stay active during raw growth. Playback does not show execution time.",
+             ha="left", fontsize=9)
+    fig.tight_layout(rect=(0, .15, 1, 1))
+    add_video_branding(fig)
 
     def draw(frame):
         line.set_data(*_close(frame["xy"]).T)
         label.set_text(f"iteration {frame['iteration']} · N={frame['n']}\n"
                        f"perimeter {frame['perimeter']:.3f} · ratchet {frame['target']:.3f} / final {frame['target_final']:.3f}\n"
                        f"ratchet complete={frame['ratchet_complete']} · frozen={frame['frozen']}" +
-                       ("\nfinal output after resample check" if frame.get("final") else ""))
+                       ("\nraw generator output after resample check" if frame.get("final") else ""))
     if movies:
         writer = _writer()
         with writer.saving(fig, str(out_dir / "generator-repulsive-growth.mp4"), dpi=120):

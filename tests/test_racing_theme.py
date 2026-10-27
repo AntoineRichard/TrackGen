@@ -177,3 +177,29 @@ def test_geometry_audit_traverses_child_and_grandchild_axes_without_drawing(dept
     ax.child_axes.append(child)
     assert theme.figure_geometry_digest(fig)==after  # one identity, even through two paths
     plt.close(fig)
+
+
+@pytest.mark.parametrize('name', ['light', 'dark'])
+def test_video_branding_reserves_footer_and_preserves_scientific_geometry(name):
+    theme = _theme()
+    assert hasattr(theme, 'add_video_branding'), 'Movies need the reusable Circuit brand artist'
+    fig, ax = plt.subplots(figsize=theme.video_canvas_size(12), dpi=120)
+    ax.plot([0., 1.], [1., 0.])
+    before = theme.figure_geometry_digest(fig)
+    mark = theme.add_video_branding(fig, name)
+    fig.canvas.draw()
+    bounds = mark.get_window_extent(fig.canvas.get_renderer()).transformed(fig.transFigure.inverted())
+    assert .82 <= bounds.x0 < bounds.x1 <= .99
+    assert .01 <= bounds.y0 < bounds.y1 <= .10
+    assert len(fig.axes) == 1
+    assert theme.figure_geometry_digest(fig) == before
+    rgba = np.asarray(mark.get_array())
+    assert rgba.shape == (32, 140, 4)
+    assert rgba[0, 0, 3] == 0  # transparent around the original art
+    expected = np.rint(np.array(colors.to_rgba(theme.get_palette(name).blue))*255).astype(np.uint8)
+    assert np.any(np.all(rgba == expected, axis=-1))
+    pixels = np.asarray(fig.canvas.buffer_rgba())
+    x0, y0, x1, y1 = map(round, mark.get_window_extent().extents)
+    crop = pixels[pixels.shape[0]-y1:pixels.shape[0]-y0, x0:x1]
+    assert np.unique(crop.reshape(-1, 4), axis=0).shape[0] > 1
+    plt.close(fig)

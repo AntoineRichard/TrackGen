@@ -11,8 +11,9 @@ require plotting/video libraries. Reproduction information lives beside the asse
 Render to scratch first
 ------------------------
 
-Use a development environment with Matplotlib. Commands below run on CPU and write
-light/dark pairs to separate scratch directories; inspect both before copying them.
+Use a development environment with Matplotlib and FFmpeg for movies. Commands below
+run on CPU and write light/dark pairs to separate scratch directories; inspect both
+before copying them.
 Commit runtime and rendering sources first so final captures have an exact source
 revision. The generator and native UI capture commands enforce this requirement.
 
@@ -32,7 +33,7 @@ revision. The generator and native UI capture commands enforce this requirement.
      - What it explains
      - Data and interpretation
    * - ``render_generator_guide`` / ``generator-*``, ``generators-*``
-     - Six families, centerlines/final roads, knob comparisons and construction clips
+     - Six families, raw centerlines, finished roads, knob comparisons and generator-only construction clips
      - Fixed seeds and real buffers; construction phases are labeled; repulsive growth records actual iterations
    * - ``render_course_guide`` / ``controls-*``
      - Size/width, sampling/capacity, elevation, gate sources, spacing and frames
@@ -80,8 +81,15 @@ A visually settled shape can still fail checks.
 
 All movies and their video posters use a native 16:9 canvas. Use
 ``viz.racing_theme.video_canvas_size`` before placing axes or labels; it returns
-encoder-safe even pixel dimensions. Keep the separate static construction diagrams
+encoder-safe even pixel dimensions. Add the reusable
+``viz.racing_theme.add_video_branding`` footer to every movie and its poster;
+it places the graphical Circuit wordmark in the matching theme. Reserve its
+footer area when placing labels. Keep the separate static construction diagrams
 at the aspect ratio their labels need.
+
+The six generator movies follow construction through the raw centerline. Use a
+raw centerline preview for the five construction stories and the full growth view for
+Repulsive. Shared sampling and XPBD movies explain the downstream road stages.
 
 Videos use a fixed view and a short final hold. Keep a poster and a nearby written
 explanation, use player controls, and avoid autoplay. The generator MP4 files are copied
@@ -133,16 +141,15 @@ data/counts/checks and inspect the render.
 For simulator utility figures, ``viz.render_utility_assets`` provides additional
 checkpoint/progress/props illustrations. Prefer the focused racing renderers for the
 reader guides. To add another explanation, use a static comparison for a setting's
-result, and an animation when order or iteration is the point. Manim can be an optional
-tool for original mathematical diagrams; solver motion must continue to come from real
-TrackGen states.
+result, and an animation when order or iteration is the point. Use Matplotlib and
+FFmpeg for these movies; solver motion must come from recorded TrackGen states.
 
 
 Circuit brand assets
 ---------------------
 
 The Circuit identity is hand-designed pixel artwork, independent of generated track
-geometry. Its wordmarks, icons, monochrome variants and plain ASCII lettering share
+geometry. Its wordmarks, icons and monochrome variants share
 one source in ``viz.render_brand_assets``. The renderer needs Pillow from the
 existing development environment; it uses no fonts or runtime TrackGen imports.
 Render into scratch from committed source:
@@ -161,5 +168,4 @@ Furo selects the two sidebar wordmarks through its native theme options; the REA
 uses the same pair. Merge their new hashes into the media registry while retaining
 all existing scientific-media entries and provenance. The final strict build must
 use the default registry. Rendering is an optional authoring step, never part of the
-site build. The :download:`ASCII wordmark <../_static/brand/trackgen-ascii.txt>` uses
-seven lines and fits in 47 columns without Unicode, fonts or terminal color codes.
+site build.

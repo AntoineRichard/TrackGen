@@ -118,12 +118,12 @@ How it is constructed
    not illustrate a local spline repair or an optional toggle.
 
 .. figure:: ../assets/racing/generator-hull-construction.png
-   :alt: Ten cell-bounded illustrative Hull anchors on an 8 by 8 grid, beside the resulting curve and finished road.
+   :alt: Ten cell-bounded illustrative Hull anchors on an 8 by 8 grid, beside the resulting curve and raw centerline.
    :align: center
 
    Construction illustration: ten anchors on an 8×8 grid, with cell-bounded jitter
-   for clarity. Only the anchor inputs are remapped; the curve and finished road
-   come from the real Hull and road stages. The movie separates anchor placement,
+   for clarity. Only the anchor inputs are remapped; the curve and raw centerline
+   come from the real Hull stages. The movie separates anchor placement,
    midpoint displacement, spline evaluation and a real whole-loop fallback.
 
 .. raw:: html
@@ -138,18 +138,18 @@ How it is constructed
 **Text alternative:** Ten selected cells lead to blue anchors through short orange
 offset vectors. Every anchor enters the angle-sorted cycle. A separate stage keeps
 those anchors fixed and moves each inserted midpoint radially, using the actual
-``hull_displacement=0.15`` operation. The real Catmull–Rom spline and road pipeline
-produce the displayed curve and road from those same illustrated anchors. A
-separate default seed-23 example marks crossings of a rejected smooth candidate
-and selects its entire augmented polygon. Raw and finished-road counts remain
-distinct.
+``hull_displacement=0.15`` operation. The real Catmull–Rom spline and fixed-count
+arc sampling produce the displayed raw centerline from those same illustrated
+anchors. A separate default seed-23 example marks crossings of a rejected smooth
+candidate and selects its entire augmented polygon. The output preview shows
+256 raw centerline points.
 
 The illustration uses ``min_num_points=max_num_points=10`` and
 ``min_point_distance=0.0625``. It preserves Hull seed 7's grid addresses and random
 draws, but maps each anchor to ``origin + (noise + 0.5) * pitch``. This bounds
 illustrative anchor jitter to its cell; it is not a public sampler option or a
 change to the production offsets described above. Midpoint displacement, spline
-evaluation, sampling, relaxation and validity remain the actual operations.
+evaluation and raw sampling remain the actual generator operations.
 The rejected default spline is recorded before fallback overwrites it. Timing is
 explanatory. Continue with the
 :ref:`shared sampling and relaxation stages <sampling-stages>`.

@@ -131,7 +131,7 @@ road pipeline complete the course.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%" poster="../generator-voronoi-construction-poster.png" aria-label="Progressive drawing of sampled sites, selected anchor order, Chaikin corner cuts and curve sampling, from actual voronoi geometry.">
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:contain" poster="../generator-voronoi-construction-poster.png" aria-label="Progressive drawing of sampled sites, selected anchor order, Chaikin corner cuts and curve sampling, from actual voronoi geometry.">
      <source src="../generator-voronoi-construction.mp4" type="video/mp4">
      Progressive drawing of sampled sites, selected anchor order, Chaikin corner cuts and curve sampling, from actual voronoi geometry.
    </video>
@@ -140,8 +140,8 @@ road pipeline complete the course.
 
 **Text alternative:** The drawing reveals the actual site field, then numbers selected sites
 in anchor order. Orange points show the recorded 25%/75% Chaikin corner cuts before the
-curve or selected polygon fallback is drawn. The normalized raw centerline and finished road
-remain visible at right.
+curve or selected polygon fallback is drawn. The right-hand preview shows the
+normalized raw centerline. The static diagram above also includes the finished road.
 
 The geometry comes from recorded construction buffers. Prefix drawing explains
 algorithm order. Playback timing is illustrative, with no position morph

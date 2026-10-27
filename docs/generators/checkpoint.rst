@@ -138,7 +138,7 @@ closure is a construction step; it is not an exact simplicity guarantee.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%" poster="../generator-checkpoint-construction-poster.png" aria-label="Progressive drawing of radial targets, the actual open walk, closed candidates and crossing-score selection, from actual checkpoint geometry.">
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:contain" poster="../generator-checkpoint-construction-poster.png" aria-label="Progressive drawing of radial targets, the actual open walk, closed candidates and crossing-score selection, from actual checkpoint geometry.">
      <source src="../generator-checkpoint-construction.mp4" type="video/mp4">
      Progressive drawing of radial targets, the actual open walk, closed candidates and crossing-score selection, from actual checkpoint geometry.
    </video>
@@ -148,7 +148,8 @@ closure is a construction step; it is not an exact simplicity guarantee.
 **Text alternative:** The drawing follows the selected candidate's actual open walk, with an
 orange dot marking its advancing end. It then reveals the separately closed candidates in
 enlarged views with shared fixed axes and their proper-crossing scores; the first minimum is
-selected. The normalized raw centerline and finished road remain visible at right.
+selected. The right-hand preview shows the normalized raw centerline. The static
+diagram above also includes the finished road.
 
 The geometry comes from recorded construction buffers. Prefix drawing explains
 algorithm order. Playback timing is illustrative, with no position morph

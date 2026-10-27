@@ -144,8 +144,7 @@ def construction_stages(sample):
         ("Resample to a fixed raw count",
          f"{dense} dense parameter samples → {raw} arc-length samples. These are the actual canonical resampling outputs, before normalization."),
         ("Normalize the raw curve's extent",
-         f"Recenter the raw bounding box and scale its longest side. {raw} raw points → {data['final_count']} finished-road points; "
-         "the shared spacing/relaxation guide explains the next steps."),
+         f"Recenter the raw bounding box and scale its longest side, retaining all {raw} raw centerline points."),
     ]
     return [dict(key=key, title=title, explanation=explanation,
                  progressive_curve=(key == "spline"))
@@ -256,7 +255,7 @@ def draw_step(ax, sample, stage, progress, theme="light"):
             r = float(np.linalg.norm(radial[selected]))
             bound = data["angular_bound_degrees"]
             ax.add_patch(Wedge((0, 0), r*1.04, angle-bound, angle+bound,
-                               facecolor=palette.orange, edgecolor="none", alpha=.10, zorder=1))
+                               facecolor=palette.orange, edgecolor="none", linewidth=0, alpha=.10, zorder=1))
             ax.add_patch(Arc((0, 0), 2*r, 2*r, theta1=min(angle, angle+offset),
                              theta2=max(angle, angle+offset), color=palette.orange, lw=2., zorder=5))
             ax.scatter(*active.T, s=35, color=palette.blue, zorder=6)
@@ -333,38 +332,21 @@ def draw_step(ax, sample, stage, progress, theme="light"):
                             color=palette.ink, fontsize=10)
         ax.annotate("", xy=(.56, .17), xytext=(.45, .17), xycoords="axes fraction",
                     arrowprops=dict(arrowstyle="->", color=palette.orange, lw=1.5))
-        ax.text(.5, .02, f"{len(after)} raw points → {data['final_count']} finished points\n"
-                "Next: shared spacing, XPBD and uniform resampling", transform=ax.transAxes,
+        ax.text(.5, .02, f"{len(after)} raw centerline points\n"
+                "Normalization retains the sample count", transform=ax.transAxes,
                 ha="center", va="bottom", color=palette.ink, fontsize=10)
     return dict(stage=key, active_curve=active.copy(), references_are_counterfactual=True,
                 raw_count=len(data["raw"]), final_count=data["final_count"],
                 base_radius=1., theme=palette.name)
 
 
-def _previews(raw_ax, road_ax, sample, palette):
-    from matplotlib.collections import PolyCollection
+def _raw_preview(ax, sample, palette):
     raw = sample["raw"]
-    raw_ax.plot(*_closed(raw).T, color=palette.blue, lw=1.2)
-    raw_ax.scatter(*raw.T, s=3, color=palette.blue)
-    raw_ax.set_title(f"Actual raw · {len(raw)} points", fontsize=10, color=palette.ink)
-    inner, outer, center = (sample[key] for key in ("inner", "outer", "center"))
-    cells = np.stack((inner, outer, np.roll(outer, -1, axis=0),
-                      np.roll(inner, -1, axis=0)), axis=1)
-    road_ax.add_collection(PolyCollection(cells, facecolors=palette.road, edgecolors="none"))
-    for points in (inner, outer):
-        road_ax.plot(*_closed(points).T, color=palette.muted, lw=.7)
-    road_ax.plot(*_closed(center).T, color=palette.blue, lw=1.1)
-    road_ax.scatter(*center.T, s=5, color=palette.blue)
-    status = "valid" if sample["valid"] else "INVALID"
-    road_ax.set_title(f"Finished road · seed {sample['seed']}\n{sample['count']} points · {status} · fail=0x{sample['fail']:x}",
-                      fontsize=10, color=palette.green if sample["valid"] else palette.red)
-    for ax in (raw_ax, road_ax):
-        _style(ax, palette, output=True, small=True)
-        _limits(ax, [raw, inner, outer])
-    # Both previews use the same output coordinates; avoid repeating x labels
-    # in the narrow gap above the finished-road status.
-    raw_ax.set_xlabel("")
-    raw_ax.tick_params(labelbottom=False)
+    ax.plot(*_closed(raw).T, color=palette.blue, lw=1.5)
+    ax.scatter(*raw.T, s=4, color=palette.blue)
+    ax.set_title(f"Actual raw · {len(raw)} points", fontsize=11, color=palette.ink)
+    _style(ax, palette, output=True, small=True)
+    _limits(ax, [raw])
 
 
 def _writer():
@@ -382,23 +364,24 @@ def render(out_dir, sample, movies=True, theme="light", writer_factory=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from viz.racing_theme import apply_plot_theme, plotting_theme, save_figure, video_canvas_size
+    from viz.racing_theme import add_video_branding, apply_plot_theme, plotting_theme, save_figure, video_canvas_size
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     data = capture(sample)
     stages = construction_stages(sample)
     footer = ("Construction explanation, not execution timing. Radius/angle reference views use the same seeded draws.\n"
-              "No point morph is implied; the shared spacing/relaxation guide explains the finished road.")
+              "No point morph is implied; the preview shows the actual normalized raw centerline.")
     with plotting_theme(theme) as palette:
         fig = plt.figure(figsize=video_canvas_size(12, dpi=120))
-        grid = fig.add_gridspec(2, 3, width_ratios=(1, 1, 1), left=.045, right=.98,
-                               bottom=.15, top=.79, wspace=.20, hspace=.25)
-        ax = fig.add_subplot(grid[:, :2])
-        _previews(fig.add_subplot(grid[0, 2]), fig.add_subplot(grid[1, 2]), sample, palette)
+        grid = fig.add_gridspec(1, 2, width_ratios=(3.25, 1), left=.045, right=.98,
+                               bottom=.15, top=.79, wspace=.20)
+        ax = fig.add_subplot(grid[0, 0])
+        _raw_preview(fig.add_subplot(grid[0, 1]), sample, palette)
         heading = fig.text(.34, .955, "", ha="center", color=palette.ink, fontsize=17)
         explanation = fig.text(.34, .875, "", ha="center", va="center", color=palette.ink, fontsize=11)
-        fig.text(.5, .035, footer, ha="center", color=palette.ink, fontsize=9)
+        fig.text(.04, .035, footer, ha="left", color=palette.ink, fontsize=9)
+        add_video_branding(fig, theme)
 
         def show(index, progress):
             stage = stages[index]

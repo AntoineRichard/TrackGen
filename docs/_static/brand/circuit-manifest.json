@@ -1,10 +1,6 @@
 {
   "artwork": "Original hand-designed Circuit branding; not a simulation capture.",
   "logical_sizes": {
-    "ascii": [
-      47,
-      7
-    ],
     "icon": [
       32,
       32
@@ -15,14 +11,6 @@
     ]
   },
   "outputs": {
-    "brand/trackgen-ascii.txt": {
-      "bytes": 336,
-      "sha256": "adc42b49670ce8feb05c2e30ed2d787ce73cb6a0ad50fc267e3c1ce6d1f2682b",
-      "size": [
-        47,
-        7
-      ]
-    },
     "brand/trackgen-circuit-icon-16.png": {
       "bytes": 136,
       "sha256": "849455d1a19325dd5c176f052da875acfadc061ff7751c978fb48be33fa7fb57",
@@ -166,7 +154,7 @@
     }
   },
   "renderer": "viz/render_brand_assets.py",
-  "renderer_sha256": "5b5408e6949daf5a6a3e115bf7251f120af31af97accd35c6f0fdf92fd3c254f",
+  "renderer_sha256": "9830a38739d1ce506ab8fa96be5af61469af38c6f4a8725bf0468b3f46b4e894",
   "schema_version": 1,
-  "source_revision": "42b35c860a86e786ccc6f62c9b14d19d4a7fe578"
+  "source_revision": "a3b4badcfbfa03dd4de5a9b899faabe14005f1a3"
 }

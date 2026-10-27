@@ -736,8 +736,8 @@
       "light": "_static/brand/trackgen-circuit-wordmark.svg",
       "light_sha256": "39235980eb19799f1c228544782a8898145a8ba142ad47d7712ac8d652025cc1",
       "producer": "branding",
-      "renderer_sha256": "5b5408e6949daf5a6a3e115bf7251f120af31af97accd35c6f0fdf92fd3c254f",
-      "source_revision": "42b35c860a86e786ccc6f62c9b14d19d4a7fe578"
+      "renderer_sha256": "9830a38739d1ce506ab8fa96be5af61469af38c6f4a8725bf0468b3f46b4e894",
+      "source_revision": "a3b4badcfbfa03dd4de5a9b899faabe14005f1a3"
     },
     "utilities-overview.png": {
       "capture_commit": "0da98417b18b9064250c6014f9fb5254ca825fdb",

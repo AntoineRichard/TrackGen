@@ -123,8 +123,8 @@ How it is constructed
 **Text alternative:** Dashed rays and the unit ring establish regular slots. Move
 out to the sampled radii, then use arcs to show the actual independent angular
 changes. Draw the periodic spline and compare its dense parameter samples with
-256 actual arc samples. Before/after panels explain normalization; the finished
-seed-7 road has 75 beads after the shared tail.
+256 actual arc samples. Before/after panels explain normalization, and the output
+preview shows the normalized raw centerline.
 
 The radius-only reference uses the canonical sampler with angular jitter suppressed,
 keeping the same random draws. It explains the components of the sample, rather

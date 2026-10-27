@@ -27,7 +27,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from viz.racing_theme import (save_figure, get_palette, geometry_digest,
-                              rendered_geometry, render_variants, video_canvas_size)
+                              rendered_geometry, render_variants, video_canvas_size, add_video_branding)
 import numpy as np
 import warp as wp
 
@@ -199,7 +199,8 @@ def _frame(path,data,envs,limits,metadata,gates):
     fig.suptitle(title,fontsize=16,fontweight="bold",y=.98)
     footer=("Actual rounds; radius=0.13, target=0.2600000. Selected examples; no yield claim."
             if gates else "Each prefix shown after uniform resampling + inflation. Selected examples; no yield claim.")
-    fig.text(.5,.015,footer,ha="center",fontsize=9,color="#344253")
+    fig.text(.04,.025,footer,ha="left",fontsize=9,color="#344253")
+    add_video_branding(fig)
     fig.subplots_adjust(left=.05,right=.99,top=.79,bottom=.14,wspace=.25)
     save_figure(fig, path,facecolor="white")
     frame_size=list(fig.canvas.get_width_height())

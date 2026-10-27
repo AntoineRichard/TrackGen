@@ -50,17 +50,18 @@ Watch actual growth
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%" poster="../_images/generator-repulsive-growth.png" aria-label="Actual repulsive-growth states from a fixed seed and viewpoint, labeled by iteration and resolution.">
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:contain" poster="../_images/generator-repulsive-growth.png" aria-label="Actual repulsive-growth states from a fixed seed and viewpoint, labeled by iteration and resolution.">
      <source src="../generator-repulsive-growth.mp4" type="video/mp4">
      Actual repulsive-growth states from a fixed seed and viewpoint, labeled by iteration and resolution.
    </video>
 
 :download:`Download the animation <../assets/racing/generator-repulsive-growth.mp4>`.
 
-The clip records the initial circle and intermediate CPU states from the actual
-growth loop. Playback time is not runtime. Its final recorded raw curve is checked
-for exact equality with an ordinary generation from the same seed/configuration.
-Target attainment, optional freezing and final road validity are separate labels.
+The full-width view follows the initial circle through recorded CPU states from
+the actual growth loop to the final raw centerline. Playback time is not runtime.
+Its final recorded raw curve is checked for exact equality with an ordinary
+generation from the same seed/configuration. Target attainment and optional
+freezing describe growth; the shared tail checks final road validity separately.
 A feasible curve can reach its target and finish valid at the iteration budget
 while remaining unfrozen; validity does not promise an energy minimum.
 

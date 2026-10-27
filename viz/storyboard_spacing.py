@@ -16,7 +16,7 @@ import warp as wp
 from track_gen import ops
 from track_gen.exec import LaunchContext
 from track_gen.testing.capture import result_arrays
-from viz.racing_theme import get_palette, plotting_theme, save_figure, apply_plot_theme, geometry_digest, video_canvas_size
+from viz.racing_theme import get_palette, plotting_theme, save_figure, apply_plot_theme, geometry_digest, video_canvas_size, add_video_branding
 
 STAGES = (
     ("Raw curve: a fixed number of samples", "The generator returns 256 raw samples. This is a point-count choice."),
@@ -159,7 +159,8 @@ def render(out_dir, *, movies=True, theme="light", writer_factory=None):
         road.set_title(f"Finished road · {data['count']} points", fontsize=11, color=p.green)
         title = fig.text(.5, .95, "", ha="center", fontsize=18, color=p.ink)
         text = fig.text(.5, .89, "", ha="center", fontsize=11, color=p.ink)
-        fig.text(.5, .035, footer, ha="center", fontsize=10, color=p.ink)
+        fig.text(.04, .035, footer, ha="left", fontsize=10, color=p.ink)
+        add_video_branding(fig, theme)
         def frame(stage, progress):
             ax.clear(); ruler.clear()
             title.set_text(STAGES[stage][0]); text.set_text(STAGES[stage][1])

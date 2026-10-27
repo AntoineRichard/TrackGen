@@ -12,12 +12,11 @@ from pathlib import Path
 import textwrap
 
 import matplotlib.pyplot as plt
-from matplotlib.collections import PolyCollection
 from matplotlib.patches import Rectangle
 import numpy as np
 import warp as wp
 
-from .racing_theme import (apply_plot_theme, get_palette, plotting_theme, save_figure,
+from .racing_theme import (add_video_branding, apply_plot_theme, get_palette, plotting_theme, save_figure,
                            video_canvas_size)
 
 
@@ -337,7 +336,7 @@ def construction_stages(sample):
         ])
     stages.extend([
         ('If it crosses, replace the whole loop', f'A separate default seed {_FALLBACK_SEEDS[name]} shows the automatic branch: reject the smooth loop and choose its entire polygon. No local spline edit or user toggle.'),
-        ('Produce fixed-count raw samples', 'The generator stops at num_points raw samples. The shared spacing, XPBD and uniform stages determine the finished road and bead count.'),
+        ('Produce fixed-count raw samples', 'Resample the selected loop by arc length to produce num_points raw centerline samples.'),
     ])
     if sample.get('illustrative_inputs') and name == 'bezier':
         stages = [
@@ -346,7 +345,7 @@ def construction_stages(sample):
             ('Order around the centroid', 'Sort all 10 points by their angle around the centroid.'),
             ('Join corners with cubic handles', 'Tangent directions and two handles join each pair of corners with a cubic.'),
             ('Separate real example: whole-loop fallback', 'Default seed 97 rejects its crossing smooth loop and selects its entire polygon.'),
-            ('Resample, then build the road', 'The Bezier stage writes 256 raw samples; the shared road pipeline produces the finished beads.'),
+            ('Resample the raw centerline', 'The real Bezier stage resamples the selected loop to 256 raw centerline points.'),
         ]
     if sample.get('illustrative_inputs') and name == 'hull':
         stages = [
@@ -356,7 +355,7 @@ def construction_stages(sample):
             ('Displace inserted midpoints', 'Real Hull displacement moves one midpoint per edge radially; the original anchors stay fixed.'),
             ('Join with a Catmull–Rom spline', 'The real closed spline passes through the anchors and displaced midpoints.'),
             ('Separate real example: whole-loop fallback', 'Default seed 23 rejects its crossing smooth loop and selects its entire augmented polygon.'),
-            ('Resample, then build the road', 'The Hull stage writes 256 raw samples; the shared road pipeline produces the finished beads.'),
+            ('Resample the raw centerline', 'The real Hull stage resamples the selected loop to 256 raw centerline points.'),
         ]
     smooth_stage = 3 if name == 'bezier' else 4
     return [dict(title=title, explanation=explanation, progressive_curve=i == smooth_stage)
@@ -506,60 +505,43 @@ def draw_step(ax, sample, stage, progress, theme='light'):
         active = _prefix(data['raw'], progress)
         _line(ax, data['raw'], p.muted, closed=True, lw=.8)
         _scatter(ax, active, p.blue, size=11)
-        ax.text(0., 1.02, f"Primary seed {data['seed']} · {len(data['raw'])} fixed-count raw samples → {data['final_count']} finished beads",
+        ax.text(0., 1.02, f"Primary seed {data['seed']} · {len(data['raw'])} fixed-count raw centerline samples",
                 transform=ax.transAxes, va='bottom', color=p.ink, fontsize=11)
-        ax.text(.02, .02, 'num_points controls the raw count; final spacing belongs to the shared pipeline.',
+        ax.text(.02, .02, 'num_points controls this raw centerline count.',
                 transform=ax.transAxes, color=p.ink, fontsize=10)
     else:
         raise ValueError(f'unknown storyboard stage {stage}')
     return dict(active_curve=active, theme=theme, seed=data['seed'])
 
 
-def _result_axes(raw_ax, road_ax, data, p):
-    limits = data['limits']
-    for ax in (raw_ax, road_ax):
-        _style(ax, p, limits)
-        ax.set_xlabel('')
-        ax.set_ylabel('')
-        ax.set_xticks([])
-        ax.set_yticks([])
-    _line(raw_ax, data['raw'], p.blue, closed=True, lw=2)
+def _raw_preview(ax, data, p):
+    _style(ax, p, data['limits'])
+    ax.set_xlabel('')
+    ax.set_ylabel('')
+    ax.set_xticks([])
+    ax.set_yticks([])
+    _line(ax, data['raw'], p.blue, closed=True, lw=2)
     raw_title = (("Bézier curve" if data['name'] == 'bezier' else "Hull curve")
                  if data.get('illustrative_inputs') else
                  f"Primary seed {data['seed']}\nraw n={len(data['raw'])}")
-    raw_ax.set_title(raw_title, color=p.ink, fontsize=12)
-    outer, inner = data['final_outer'], data['final_inner']
-    cells = np.stack([outer, np.roll(outer, -1, axis=0), np.roll(inner, -1, axis=0), inner], axis=1)
-    road_ax.add_collection(PolyCollection(cells, facecolors=p.road, edgecolors='none'))
-    for points in (outer, inner):
-        _line(road_ax, points, p.muted, closed=True, lw=.7)
-    _line(road_ax, data['final_center'], p.blue, closed=True, lw=1.5)
-    _scatter(road_ax, data['final_center'], p.blue, size=7)
-    road_title = (f"Finished road · n={data['final_count']} · "
-                  f"{'valid' if data['final_valid'] else 'invalid'}" if data.get('illustrative_inputs')
-                  else f"Finished road · n={data['final_count']}\n"
-                       f"{'valid' if data['final_valid'] else 'invalid'}")
-    road_ax.set_title(road_title, color=p.green if data['final_valid'] else p.red, fontsize=12)
+    ax.set_title(raw_title, color=p.ink, fontsize=12)
 
 
 def _frame(sample, theme):
     p, data = get_palette(theme), capture(sample)
     fig = plt.figure(figsize=video_canvas_size(14, dpi=120), facecolor=p.background)
-    grid = fig.add_gridspec(2, 3, width_ratios=(1, 1, .9), left=.06, right=.97,
-                           bottom=.15, top=.80, hspace=.25, wspace=.22)
-    ax = fig.add_subplot(grid[:, :2])
-    _result_axes(fig.add_subplot(grid[0, 2]), fig.add_subplot(grid[1, 2]), data, p)
+    grid = fig.add_gridspec(1, 2, width_ratios=(3.25, 1), left=.06, right=.97,
+                           bottom=.15, top=.80, wspace=.18)
+    ax = fig.add_subplot(grid[0, 0])
+    _raw_preview(fig.add_subplot(grid[0, 1]), data, p)
     heading = fig.text(.5, .95, '', ha='center', color=p.ink, fontsize=18)
     explanation = fig.text(.5, .875, '', ha='center', va='center', color=p.ink, fontsize=12)
     if sample.get('illustrative_inputs'):
         fig.text(.5, .915, 'Cell-bounded jitter for clarity',
                  ha='center', color=p.ink, fontsize=12)
-        footer = ''
-    else:
-        footer = ('Recorded geometry; staged explanation, not elapsed runtime.\n'
-                  'Shared tail: fixed-distance targets → XPBD → same-count uniform redistribution (see the spacing guide).')
-    if footer:
-        fig.text(.5, .055, footer, ha='center', color=p.ink, fontsize=10)
+    fig.text(.04, .045, 'Recorded generator geometry; staged explanation, not elapsed runtime.',
+             ha='left', color=p.ink, fontsize=10)
+    add_video_branding(fig, theme)
     return fig, ax, heading, explanation
 
 
@@ -572,40 +554,41 @@ def render(out_dir, sample, movies=True, theme='light', writer_factory=None):
     name = data['name']
     frames, fps = 144, 6
     with plotting_theme(theme):
-        if movies:
-            if writer_factory is None:
-                from .render_generator_guide import _writer
-                writer_factory = _writer
-            fig, ax, heading, explanation = _frame(sample, theme)
-            writer = writer_factory()
-            allocations = np.full(len(stages), frames//len(stages), dtype=int)
-            allocations[:frames % len(stages)] += 1
-            with writer.saving(fig, str(out_dir/f'generator-{name}-construction.mp4'), dpi=120):
-                for i, (stage, count) in enumerate(zip(stages, allocations)):
-                    if sample.get('illustrative_inputs'):
-                        heading.set_text(('Bézier' if name == 'bezier' else 'Hull')
-                                         + ' construction illustration · 10 points · 8 × 8 grid')
-                        explanation.set_text(f"{i+1}/{len(stages)} · {stage['title']}\n"
-                                             + textwrap.fill(stage['explanation'], width=112))
-                    else:
-                        heading.set_text(f"{name.capitalize()} · {i+1}/{len(stages)} · {stage['title']}")
-                        explanation.set_text(textwrap.fill(stage['explanation'], width=112))
-                    for progress in [*np.linspace(.02, 1., int(count)-5), *([1.]*5)]:
-                        ax.clear()
-                        draw_step(ax, sample, i, progress, theme=theme)
-                        apply_plot_theme(fig, theme)
-                        writer.grab_frame()
-            plt.close(fig)
         fig, ax, heading, explanation = _frame(sample, theme)
-        heading.set_text(("Bézier" if name == "bezier" else "Hull")
-                         + " construction illustration · 10 points · 8 × 8 grid"
-                         if sample.get("illustrative_inputs") else f"{name.capitalize()} · grid addresses and actual offsets")
-        explanation.set_text(textwrap.fill(stages[1]['explanation'], width=112))
-        draw_step(ax, sample, 1, 1., theme=theme)
-        save_figure(fig, out_dir/f'generator-{name}-construction.png', theme=theme, dpi=120)
-        plt.close(fig)
+
+        def show(index, progress):
+            stage = stages[index]
+            if sample.get('illustrative_inputs'):
+                heading.set_text(('Bézier' if name == 'bezier' else 'Hull')
+                                 + ' construction illustration · 10 points · 8 × 8 grid')
+                explanation.set_text(f"{index+1}/{len(stages)} · {stage['title']}\n"
+                                     + textwrap.fill(stage['explanation'], width=112))
+            else:
+                heading.set_text(f"{name.capitalize()} · {index+1}/{len(stages)} · {stage['title']}")
+                explanation.set_text(textwrap.fill(stage['explanation'], width=112))
+            ax.clear()
+            draw_step(ax, sample, index, progress, theme=theme)
+            apply_plot_theme(fig, theme)
+
+        try:
+            if movies:
+                if writer_factory is None:
+                    from .render_generator_guide import _writer
+                    writer_factory = _writer
+                writer = writer_factory()
+                allocations = np.full(len(stages), frames//len(stages), dtype=int)
+                allocations[:frames % len(stages)] += 1
+                with writer.saving(fig, str(out_dir/f'generator-{name}-construction.mp4'), dpi=120):
+                    for i, count in enumerate(allocations):
+                        for progress in [*np.linspace(.02, 1., int(count)-5), *([1.]*5)]:
+                            show(i, progress)
+                            writer.grab_frame()
+            show(1, 1.)
+            save_figure(fig, out_dir/f'generator-{name}-construction.png', theme=theme, dpi=120)
+        finally:
+            plt.close(fig)
     from .render_generator_guide import _record
-    record = dict(kind=(f'construction illustration with remapped inputs and real {"Bezier" if name == "bezier" else "Hull"}/road stages'
+    record = dict(kind=(f'raw construction illustration with remapped inputs and real {"Bezier" if name == "bezier" else "Hull"}/road stages verified downstream'
                         if sample.get('illustrative_inputs') else
                         'progressive construction drawing of recorded geometry'), sample=_record(sample),
                 stage_titles=[stage['title'] for stage in stages], stages=len(stages),

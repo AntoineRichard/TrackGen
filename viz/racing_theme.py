@@ -70,6 +70,41 @@ def video_canvas_size(width_inches, dpi=120):
     return width / dpi, (width * 9 // 16) / dpi
 
 
+def add_video_branding(fig, theme=None):
+    """Place the original Circuit wordmark in a reserved movie footer corner.
+
+    The image belongs to the Figure, not a data Axes, so decorative theme pixels
+    stay outside the scientific coordinate audit. Call once when building a scene;
+    reserve the rightmost 18% of the bottom 10% for the wordmark.
+    """
+    from matplotlib.image import BboxImage
+    from matplotlib.transforms import Bbox, TransformedBbox
+    from viz.render_brand_assets import CHECKER, GLYPHS, PALETTES, ROAD
+
+    palette = PALETTES[get_palette(theme).name]
+    pixels = np.zeros((32, 140, 4), dtype=np.uint8)
+    for points, role in ((ROAD - CHECKER, 'ink'),
+                         ({(x, y) for x, y in CHECKER if (x + y) % 2}, 'accent')):
+        rgba = np.rint(np.asarray(colors.to_rgba(palette[role])) * 255).astype(np.uint8)
+        for x, y in points:
+            pixels[y, x] = rgba
+    for index, letter in enumerate('TRACKGEN'):
+        rgba = np.rint(np.asarray(colors.to_rgba(palette['accent' if index >= 5 else 'ink'])) * 255).astype(np.uint8)
+        for row, line in enumerate(GLYPHS[letter]):
+            for col, bit in enumerate(line):
+                if bit == '1':
+                    x, y = 40 + 2 * (index * 6 + col), 9 + 2 * row
+                    pixels[y:y+2, x:x+2] = rgba
+    width = .145
+    height = width * fig.get_figwidth() / fig.get_figheight() * 32 / 140
+    bounds = TransformedBbox(Bbox.from_bounds(.835, .025, width, height), fig.transFigure)
+    mark = BboxImage(bounds, interpolation='nearest', origin='upper', resample=False, zorder=20)
+    mark.set_data(pixels)
+    mark.set_gid('trackgen-circuit-brand')
+    fig.add_artist(mark)
+    return mark
+
+
 def get_palette(theme=None) -> Palette:
     name = _ACTIVE.get() if theme is None else theme
     try:

@@ -140,22 +140,22 @@ How it is constructed
    edit or an optional switch. The clip uses default seed 97 to show a real branch.
 
 .. figure:: ../assets/racing/generator-bezier-construction.png
-   :alt: Labelled 10-point construction illustration with cell-bounded inputs, the real Bezier curve and its finished road.
+   :alt: Labelled 10-point construction illustration with cell-bounded inputs, the real Bezier curve and its raw centerline.
    :align: center
 
    **Construction illustration: 10 points on an 8 × 8 grid.** Cell-bounded jitter
    makes the point selection easier to follow. Seed 7's real cell IDs and random
    draws are remapped with ``origin + (original_noise + .5) * pitch``, at pitch
-   ``.125``. The unchanged Bezier and road stages then produce the matching curve
-   and 51-point valid road. This mapping applies only to the illustrated inputs;
+   ``.125``. The unchanged Bezier stages then produce the matching curve and
+   256 raw centerline points. This mapping applies only to the illustrated inputs;
    the production sampler is unchanged. Default seed 97 separately shows a real
    crossing/fallback case.
 
 .. raw:: html
 
-   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:contain" poster="../_images/generator-bezier-construction.png" aria-label="Bezier construction illustration: 10 cell-bounded points on an 8 by 8 grid, followed by the real curve and road stages.">
+   <video controls preload="none" style="width:100%;max-width:100%;aspect-ratio:16/9;object-fit:contain" poster="../_images/generator-bezier-construction.png" aria-label="Bezier construction illustration: 10 cell-bounded points on an 8 by 8 grid, followed by the real curve and raw centerline samples.">
      <source src="../generator-bezier-construction.mp4" type="video/mp4">
-     Bezier construction illustration with 10 cell-bounded inputs, the real curve and its road.
+     Bezier construction illustration with 10 cell-bounded inputs, the real curve and its raw centerline.
    </video>
 
 :download:`Download the animation <../assets/racing/generator-bezier-construction.mp4>`.
@@ -165,10 +165,10 @@ seed 7, ``min_num_points=max_num_points=10`` and ``min_point_distance=.0625``. F
 each orange vector to its illustrated point inside its selected cell.
 Connect the angle-sorted corners, inspect both handles, and draw the actual dense
 cubic. A labelled seed-97 inset marks the rejected smooth crossings and the selected
-entire polygon. Finish with 256 raw samples and the matching 51-point finished road.
+entire polygon. Finish with 256 raw samples in the generator-output preview.
 
-The illustration records the real curve and road stages; playback is not elapsed
-runtime. Next, :ref:`watch how the shared pipeline turns raw samples into
+The illustration follows construction through the raw centerline; playback is not
+elapsed runtime. Next, :ref:`watch how the shared pipeline turns raw samples into
 road beads <sampling-stages>`.
 
 Continue with :doc:`/how-it-works/pipeline`, :doc:`/configuration/tuning`,
