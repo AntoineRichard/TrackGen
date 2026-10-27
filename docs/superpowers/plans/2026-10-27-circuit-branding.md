@@ -4,7 +4,7 @@
 
 **Goal:** Integrate the user-approved Circuit logo in documentation and README.
 
-**Architecture:** One optional deterministic pixel renderer produces static SVG, favicon and ASCII assets. Furo's native theme selection displays the matching wordmark; no runtime or new browser logic is involved.
+**Architecture:** One optional deterministic pixel renderer produces static SVG and favicon assets. Furo's native theme selection displays the matching wordmark; no runtime or new browser logic is involved.
 
 **Tech Stack:** Python standard library/Pillow for optional asset exports, SVG, Sphinx/Furo, existing browser tooling.
 
@@ -13,9 +13,10 @@
 ## Global Constraints
 
 - Preserve the approved stepped loop and 5×7 wordmark; original art has no font dependency.
-- Transparent light/dark wordmarks have identical geometry; monochrome and ASCII derive from the same source.
+- Transparent light/dark wordmarks have identical geometry; monochrome derives from the same source.
 - Retain every prior media byte and provenance entry; add the branding pair only.
 - Leave navigation, public runtime, dependencies, package versions, goldens and immutable tags unchanged.
+- Follow the updated user preference: graphical identity only; no ASCII banner export or download.
 - Keep optional rendering out of the docs build. Preserve user files and review worktree.
 
 ## Review Focus
@@ -32,7 +33,7 @@
 
 **Interfaces:** Consumes the approved pixel grid/letterforms. Produces static brand/ and media-dark/ assets, matching paths in Furo and README, and a source/output hash manifest.
 
-- [x] Create the deterministic asset renderer and verify scratch output, SVG/XML validity, exact ASCII and favicon sizes; use existing source/runtime rather than new dependencies. Asset-only work needs visual/integrity checks, not mirrored implementation tests.
+- [x] Create the deterministic asset renderer and verify scratch output, SVG/XML validity, favicon sizes; use existing source/runtime rather than new dependencies. Asset-only work needs visual/integrity checks, not mirrored implementation tests.
 - [x] Commit the renderer/design source before generating final assets; record that revision in the asset manifest.
 - [x] Add native Furo/README integration and the new registry row, preserving all old rows.
 - [x] Run strict docs and the required CPU lane; inspect desktop/mobile light/dark, accessible home name, images, favicon and unchanged video playback; self-review and independent scoped review.

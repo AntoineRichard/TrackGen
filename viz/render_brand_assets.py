@@ -101,10 +101,6 @@ def render(out_dir: Path, source_revision: str | None = None) -> None:
             write(f"{folder}/trackgen-circuit-{kind}{suffix}.svg",
                   _svg(wordmark, palette), [140 if wordmark else 32, 32])
 
-    rows = [" ".join("".join("#" if bit == "1" else " " for bit in GLYPHS[c][row])
-                     for c in "TRACKGEN").rstrip() for row in range(7)]
-    write("brand/trackgen-ascii.txt", ("\n".join(rows) + "\n").encode("ascii"), [47, 7])
-
     # Tiny exports omit the checker so every opaque pixel belongs to the same loop.
     base = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
     for point in ROAD:
@@ -126,7 +122,7 @@ def render(out_dir: Path, source_revision: str | None = None) -> None:
         "source_revision": source_revision,
         "renderer": "viz/render_brand_assets.py",
         "renderer_sha256": sha256(Path(__file__).read_bytes()).hexdigest(),
-        "logical_sizes": {"wordmark": [140, 32], "icon": [32, 32], "ascii": [47, 7]},
+        "logical_sizes": {"wordmark": [140, 32], "icon": [32, 32]},
         "palette": {**PALETTES, "favicon": FAVICON_COLOR},
         "outputs": outputs,
     }
