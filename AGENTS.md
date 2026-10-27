@@ -43,6 +43,26 @@ all-six-generator/two-epoch CUDA raw/public byte parity. All 18 new measurements
 and 90 timing samples passed independent integrity review. Its new CI must be
 distinguished from those earlier exact-head results.
 
+## Generator movie and Circuit follow-up (2026-10-27)
+
+Committed renderer source `a25ef61c6a1d52ae4a87b42f970c326a0730bb8f` now makes
+all six generator movies focus on construction and raw centerlines; shared sampling
+and the two XPBD movies retain their pipeline result views. All nine movies and
+posters embed the graphical Circuit identity in both themes. The ASCII export was
+withdrawn by the user. All eighteen clips retain native 16:9, frame counts, durations
+and numerical capture signatures. Exactly eighteen registry pairs were refreshed;
+the other 65 pairs retain their files and provenance. Detailed static construction
+diagrams stay unchanged where they are separate from the movie poster.
+
+Validation passed: 3,792 CPU tests (four optional UI skips), strict docs with all
+83 pairs, 119 focused media tests using CPU captures on Spark, 36 desktop/mobile
+player cases in both themes, and independent source/encoded-media reviews plus
+executor self-review. Runtime, package metadata and goldens remain unchanged from
+fully validated `79f1ceb`. These media checks do not replace or relabel the earlier
+CUDA/full-suite results. Inspect actual CI state for the final integration head.
+See `docs/superpowers/reviews/2026-10-27-generator-movies.md`. Navigation changes,
+final merge/release and public docs deployment remain outside this follow-up.
+
 ## Automatic spacing follow-up (user authorization, 2026-10-27)
 
 The user approved PR4 finding #4 in chat. `TrackGenConfig.spacing` retains the

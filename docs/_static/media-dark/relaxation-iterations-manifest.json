@@ -96,7 +96,7 @@
     "on_invalid": "keep"
   },
   "display": "re-uniformised and inflated view of each solver prefix",
-  "source_commit": "c3ed4b8810d936721413c6843cdfc1c9cd2bdd13",
+  "source_commit": "a25ef61c6a1d52ae4a87b42f970c326a0730bb8f",
   "warp_version": "1.18.0",
   "numpy_version": "2.5.4",
   "command": "python -m viz.render_relaxation_video --device cpu --batch 24 --seed 0 --sweeps 50 --rounds 16 --smooth-passes 5 --polish 10 --out-dir DIR --theme both",
@@ -1978,7 +1978,7 @@
     "frame_0073.png": "8f604976a3741e05000ed99416b67d3b78ce0721ccd9930302a8f053afbadfb3"
   },
   "source": {
-    "git_commit": "c3ed4b8810d936721413c6843cdfc1c9cd2bdd13",
+    "git_commit": "a25ef61c6a1d52ae4a87b42f970c326a0730bb8f",
     "source_tree_dirty": false,
     "python_source_sha256": {
       "track_gen/__init__.py": "73ed2669e4c3e5c889e8d8bdebf26deb61c2ce5f5ea61bbf9753a217056be017",
@@ -2013,8 +2013,8 @@
       "track_gen/_src/rng_kernels.py": "62b27bd17f5545fe31ac7bb3dbe31aec0a9b6eebaa51306786a5e5747cec5bed",
       "track_gen/_src/rng_utils.py": "0689b24f73bbeaa4c453b1d1a3336a646c0425203be02542207ddf0ed9fe4616",
       "track_gen/_src/runtime.py": "09541e280dbcde7241c200f71fee9d03968c7bb625f06790c1627a147ced1ae9",
-      "track_gen/_src/track_generator.py": "ec3d1aca9f66d40d5e4bc790d99c2c4dc91370071c732de6ef12483d3373b93b",
-      "track_gen/_src/types.py": "56c12ac68ed324482274670427f82907c8600e25263ba8dd78e7e543c558a932",
+      "track_gen/_src/track_generator.py": "ec80ed8332b71b3ca2bac4345e310234ad5926f89448e9a2eddd794862af7831",
+      "track_gen/_src/types.py": "4f724b661c28034849f734939525aa114cb6800b2e1b8de30a9f03d9bf000ab1",
       "track_gen/_src/warp_gate.py": "6998009f8e468def278112fa5b060c88dabba62a086bb78d792df81d8ca5d23e",
       "track_gen/_src/warp_generate.py": "c8a3e7d3493b3d79f2edb5580d6a43a3a7f352665b5865d291734216195240ea",
       "track_gen/_src/warp_generate_checkpoint.py": "f208864a14e20cb5b258100d03900388b7c6be95de2d65974665b73f010f8c97",
@@ -2058,7 +2058,7 @@
       "track_gen/ops/sampling.py": "3826ca2d72a2dff9ee3a1433f91b2b5ba1037905062869735244df39b0f71a3d",
       "track_gen/pipeline/__init__.py": "ff713e5847f662784f6c785e21284a2f51fca3ea80a39063db282f95ab783101",
       "track_gen/pipeline/ingest.py": "db710f00e4a0fbe95991caeaed0c245e315a8f77cf3d2157dc39fcdfb2652afb",
-      "track_gen/pipeline/legacy.py": "58af26caae38b1ffac71b9950ba3584d723f516bef5743919111209d2dde8700",
+      "track_gen/pipeline/legacy.py": "ac1208a27236dd5d88dca71a574094a398239bb0e0ec55fd4d7a8959ce43664c",
       "track_gen/pipeline/planner.py": "4df9808bf939f23d76998c11f55676391e714517216f1b49a619ecf1236858aa",
       "track_gen/pipeline/presets.py": "5331f9480bb8b434ee2bb2736e7cae20ce4f4b001dd17db9fce76afb55ee9222",
       "track_gen/pipeline/producer.py": "8a68b64db6e2fc61fd719a17b2524cfc5f7a1dc9aea9a2b9d9bdd8477bab4a15",
@@ -2078,7 +2078,7 @@
       "track_gen/stages/commit.py": "f10cadddb1466256941f1767de00e2fb9dd04222ec4d0289f9470671335f6df0",
       "track_gen/stages/external.py": "b1d4f11a10918eab8892dc2ca961f81729b7726a51c65a40344300c546d8527e",
       "track_gen/stages/gates.py": "5450cb2c32d18cec7e549345fb5d615277587b52e082c88b227e21c02b1fb17d",
-      "track_gen/stages/params.py": "23e829d89055f7d7c79338faab3b2d64b37e78e63f4b161cb6bc51ca1d3998e3",
+      "track_gen/stages/params.py": "4b11038893833b0091361acfbd1f78126e19aa2915d269841b703ebaea1efe2e",
       "track_gen/stages/randomize.py": "a03e26273c3708e5d681bd77587a1952d5b46baf4dc4d261a7d8c1f2c7e02fab",
       "track_gen/stages/track.py": "2f025fc1b184001a8ffc4418b3f321d8b0c7e017b352d41e66ef11c0fbc32670",
       "track_gen/testing/__init__.py": "9e6d8dadeb433708281bb23f85341b8e721cfa429d69195eb5ba648d65c3efc6",
@@ -2100,29 +2100,30 @@
       "viz/plot_tracks.py": "2d5be8920e4edcf4fc85f7a137d95ad892592dc41c7d2876cac24db67b3ccbe2",
       "viz/plot_tracks_3d.py": "d48f65453c2aff6ac6951600413c3b8260181c622ccdde40702714f124fdfc38",
       "viz/plot_z_profiles.py": "7462c6ed64d16f90f810bf9ed3cdb31955a718aa4bff3c562a8bf3ec18f4655f",
-      "viz/racing_theme.py": "07a1f2f9cae256da9344211fb6c9a91bbf9bafc96218eaf70d31651e31f68d28",
+      "viz/racing_theme.py": "961a821dafa11100adaa48dbce3ccf18283884cef904758c07b06b1e1899a02d",
+      "viz/render_brand_assets.py": "9830a38739d1ce506ab8fa96be5af61469af38c6f4a8725bf0468b3f46b4e894",
       "viz/render_collision_guide.py": "7514428ddbb6309979f5fe8c565e3de295a6baf9ba60caa650686d84ac103d55",
       "viz/render_course_guide.py": "3b1d02d219503fb2093155a90624e0dc6eebf95f18f1cbec39d52236650b36fc",
       "viz/render_data_guide.py": "57b0899bd6f9dd2ab37d090aca89fb26dad0e1a64b38df45aa201bbe2c74e77f",
-      "viz/render_generator_guide.py": "6a9bcd57722b10991b1e4214ebfe2cd2fa29c185d8c3bd4a799d3979cc10ea74",
+      "viz/render_generator_guide.py": "42302888a8977814f5ea432f80ad926b0d0dd6ae96c307a36409e121e283cd86",
       "viz/render_readme_assets.py": "752f8e53853aafdcaa2dcec65fb95b80127e3d5ce692a0a277e5df983f8758af",
       "viz/render_relaxation_guide.py": "454fb741f4e93fa47c18a2f4b50f559666a410c39d9507a5d1d1c8675ee131ba",
-      "viz/render_relaxation_video.py": "1f59a8d779f580e000f89080df85a1c19d4a3e22a5317b4755de4c5e4dfa6512",
+      "viz/render_relaxation_video.py": "6a4cf705adff10c557c3c0a56960a4137a718cbc1966dde1048d18078a9825fb",
       "viz/render_utility_assets.py": "f4e36737e66c2bc66f30fa7751ff6fb2ada58d677573b17d5bd4f472be41c541",
-      "viz/storyboard_bezier_hull.py": "a463c7b1b8c3baf4e74ca9a79e77cb18d27aaa432be661fe5be48f0c47e5f4f7",
-      "viz/storyboard_polar.py": "03f5bbe7b763f5660c7e73d42cd09b93855dbcc830863fe0192aaa767b7e2c2d",
-      "viz/storyboard_spacing.py": "08327ecfd115f28e0aa8917dcf670f163033fb0f49d36ff079160855f9d3ee6c"
+      "viz/storyboard_bezier_hull.py": "da645224a25ebcfdf3b96a8242dfb1ee05cd62f652dd424d79a45c4bf717e591",
+      "viz/storyboard_polar.py": "8d8219a307d0769f0552d0ff5f48e8c5fb7c9b3d544ad0e06a16bcd5f5635dc4",
+      "viz/storyboard_spacing.py": "11c74a3628f8e63d4913b4d6db370abad7b22228288ed7faef82e53b55372ee4"
     },
     "theme": "dark",
-    "renderer_sha256": "1f59a8d779f580e000f89080df85a1c19d4a3e22a5317b4755de4c5e4dfa6512",
-    "palette_sha256": "a6509a087b4df1335adc35330b563b093e08de11f5dc31309f460f5bcae1d55f",
+    "renderer_sha256": "6a4cf705adff10c557c3c0a56960a4137a718cbc1966dde1048d18078a9825fb",
+    "capture_command": "python -m viz.render_relaxation_video --device cpu --batch 24 --seed 0 --sweeps 50 --rounds 16 --smooth-passes 5 --polish 10 --out-dir DIR --theme both",
     "python_version": "3.12.14",
     "matplotlib_version": "3.11.2",
     "numpy_version": "2.5.4",
-    "capture_command": "python -m viz.render_relaxation_video --device cpu --batch 24 --seed 0 --sweeps 50 --rounds 16 --smooth-passes 5 --polish 10 --out-dir DIR --theme both"
+    "palette_sha256": "a6509a087b4df1335adc35330b563b093e08de11f5dc31309f460f5bcae1d55f"
   },
   "asset_sha256": {
-    "relaxation-iterations.mp4": "0839284624d61814fb844161423c0e6b540befd482dbd7762f71e2953a6708d7",
-    "relaxation-iterations-poster.png": "bfa2641a699c9b2e3b6926f05ddc8fcc12327ec9307a1891c1841b593b19d767"
+    "relaxation-iterations.mp4": "64463b6a7d56e6b49c201b16a8ea9fd6adfe3ff735fdc152660dd83154b7b597",
+    "relaxation-iterations-poster.png": "b9f2fd6f838d3d721c70620099d657482a6ebf517873d2ff0d37eb2bed5137c6"
   }
 }

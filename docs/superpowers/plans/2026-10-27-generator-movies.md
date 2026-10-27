@@ -17,10 +17,10 @@ Logo/footer overlap across movie phases; real raw geometry after pane removal; i
 
 ## Tasks
 
-- [ ] Finish the already-started graphics-only export cleanup and record its validation.
-- [ ] Add focused failing tests for reusable branding bounds/theme/data digest; implement add_video_branding(fig, theme=None) in viz/racing_theme.py. Integrate it in sampling and XPBD figures, retaining their result views and reserving the footer.
-- [ ] Delegate generator scene changes and tests in storyboard_bezier_hull.py, storyboard_polar.py and render_generator_guide.py. Remove finished-road axes, keep raw references, fix visible captions and reserve the same footer corner.
-- [ ] Delegate matching reader caption/maintainer guide edits, preserving useful downstream explanations.
-- [ ] Review source, run focused media tests; commit source before final capture.
-- [ ] Render nine clips/posters in both themes, inspect decoded phases and compare held geometry. Promote intended media only and merge accurate source/hash registry entries.
-- [ ] Run required CPU and strict docs/snippets; review independently and self-review; update preview, commit/push validated work, report remaining Racing approval.
+- [x] Finish the already-started graphics-only export cleanup and record its validation.
+- [x] Add focused failing tests for reusable branding bounds/theme/data digest; implement add_video_branding(fig, theme=None) in viz/racing_theme.py. Integrate it in sampling and XPBD figures, retaining their result views and reserving the footer.
+- [x] Delegate generator scene changes and tests in storyboard_bezier_hull.py, storyboard_polar.py and render_generator_guide.py. Remove finished-road axes, keep raw references, fix visible captions and reserve the same footer corner.
+- [x] Delegate matching reader caption/maintainer guide edits, preserving useful downstream explanations.
+- [x] Review source, run focused media tests; commit source before final capture.
+- [x] Render nine clips/posters in both themes, inspect decoded phases and compare held geometry. Promote intended media only and merge accurate source/hash registry entries.
+- [x] Run required CPU and strict docs/snippets; review independently and self-review; update preview, commit/push validated work, report remaining Racing approval.
