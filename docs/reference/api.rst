@@ -3,11 +3,9 @@
 API reference
 =============
 
-Every name documented in this reference is public API. A deprecated name emits a
-``DeprecationWarning`` attributed to your code and keeps working through 0.x; deprecated
-names are removed in 1.0 (:ref:`upgrading-removals` lists them). Private names (a leading
-underscore, anything under ``track_gen._src``) and the modules this reference does not
-list may change in any release.
+Every name documented in this reference is public API. Private names (a leading underscore,
+anything under ``track_gen._src``) and the modules this reference does not list may
+change in any release.
 
 The reference is split by module. This page holds the module map, the top-level
 ``track_gen`` names, every exception and warning the library raises, and the environment
@@ -48,7 +46,8 @@ last column lists only what a module loads beyond ``import track_gen``.
      - :ref:`reference-plugin`
      - The registry module. The registry itself fills on its first lookup: the
        built-ins, then every installed entry point.
-   * - ``track_gen.ops``, ``track_gen.ops.funcs``, ``track_gen.ops.constants``
+   * - ``track_gen.ops``, ``track_gen.ops.funcs``, ``track_gen.ops.constants``,
+       ``track_gen.ops.rng``
      - :ref:`reference-ops`
      - Nothing more.
    * - ``track_gen.exec``, ``track_gen.seeds``
@@ -102,8 +101,6 @@ Top-level names
    * - The submodules ``results``, ``tools``, ``collision``, ``props``,
        ``checkpoints``, ``progress``, ``localize``, ``course``, ``heightfield``
      - :ref:`reference-results` and :ref:`reference-runtime`.
-   * - ``set_capturing``
-     - Deprecated no-op, removed in 1.0: :func:`track_gen.course.set_capturing`.
 
 .. py:data:: __version__
    :module: track_gen
@@ -140,8 +137,8 @@ Errors and warnings
 -------------------
 
 The exceptions and warnings TrackGen defines, with the usual cause and fix. Besides
-these, the library raises ``TypeError`` / ``ValueError`` for a bad argument (naming it),
-and emits ``DeprecationWarning`` for a deprecated name (attributed to your code).
+these, the library raises ``TypeError`` / ``ValueError`` for an invalid argument,
+with a message naming the setting or data that needs attention.
 
 .. list-table::
    :header-rows: 1
@@ -168,11 +165,6 @@ and emits ``DeprecationWarning`` for a deprecated name (attributed to your code)
      - Call it outside the capture (it then runs eagerly), or use stages that can be
        recorded; ``PipelineSpec(require_caller_capturable=True)`` rejects ``HOST`` stages
        when the spec is built. See :ref:`capture-troubleshooting`.
-   * - :class:`~track_gen.exec.LegacyPluginStreamError` (``CaptureError``)
-     - A ``GeneratorSpec`` plugin registered without ``accepts_ctx=True`` (it launches
-       on Warp's current stream) is recorded into a capture on another stream.
-     - Capture Warp's current stream, or port the plugin to ``accepts_ctx=True``
-       (:ref:`plugin-abis`).
    * - :class:`~track_gen.pipeline.PlanError` (``ValueError``)
      - :func:`~track_gen.pipeline.build` (hence ``TrackGenerator(spec)`` /
        ``GateGenerator(spec)``) refuses a spec: a :term:`channel` read before any

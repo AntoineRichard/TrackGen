@@ -3,9 +3,9 @@
 The toys use only the public plugin surface (``track_gen.plugin``, ``track_gen.exec``):
 
 - ``toy.circle`` (kind ``"generator"``): a pure-Warp kernel writing a circle of
-  ``config.num_points`` points per env (radius jittered per seed), ``accepts_ctx=True``.
+  ``config.num_points`` points per env (radius jittered per seed), using the supplied context.
 - ``toy.ring`` (kind ``"gate_generator"``): eight gate anchors on a jittered ring,
-  ``supported_orderings={"raw"}``, ``accepts_ctx=True``.
+  a gate Stage with ``orderings={"raw"}``.
 
 Every launch goes through the ``LaunchContext`` (stream-explicit), so the toys also run
 under the no-host-sync and stream-explicit probes.
@@ -15,7 +15,7 @@ from __future__ import annotations
 import warp as wp
 
 from track_gen.exec import LaunchContext, resolve
-from track_gen.plugin import ENTRY_POINT_GROUP, GateGeneratorSpec, GeneratorSpec
+from track_gen.plugin import ENTRY_POINT_GROUP, GeneratorSpec, Stage
 
 TOY_GATES = 8
 _CIRCLE_RADIUS = 0.6   # in units of config.scale (bezier-like extent of ~1.2)
@@ -81,17 +81,31 @@ TOY_CIRCLE = GeneratorSpec(
     name="toy.circle",
     alloc_scratch=toy_circle_alloc_scratch,
     generate=toy_circle_generate,
-    accepts_ctx=True,
 )
 
-TOY_RING = GateGeneratorSpec(
-    name="toy.ring",
-    alloc_scratch=toy_ring_alloc_scratch,
-    generate=toy_ring_generate,
-    max_gates=toy_ring_max_gates,
-    supported_orderings=frozenset({"raw"}),
-    accepts_ctx=True,
-)
+class ToyRing(Stage):
+    kind = "gate_generator"
+    name = "toy.ring"
+    output = "anchors"
+    writes = {"xy": "anchors.xy", "count": "anchors.count"}
+    orderings = frozenset({"raw"})
+    preferred = {"order": "raw"}
+
+    def capacity(self, p, layout):
+        return {"gates": TOY_GATES}
+
+    def build(self, b, p):
+        xy = b.write("xy", wp.vec2f, per="anchors")
+        count = b.write("count", wp.int32)
+        radius = _CIRCLE_RADIUS * float(b.scale)
+
+        def enqueue(ctx):
+            ctx.launch(_toy_ring_k, (b.E, TOY_GATES),
+                       [b.seed, TOY_GATES, TOY_GATES, radius, xy, count])
+        return enqueue
+
+
+TOY_RING = ToyRing
 
 
 def register_toys(reg) -> None:
@@ -162,7 +176,7 @@ def install_entry_points(monkeypatch, *eps: FakeEntryPoint) -> list:
 # - ``toy.wobble_host``: the same with ``capture = HOST``.
 # - ``toy.wobble_input``: also declares a per-env input ``difficulty`` (default 0.5) that
 #   scales ``amp``.
-# - ``toy.lobed``: a legacy ``GeneratorSpec`` with a static ``params=`` class; its generate
+# - ``toy.lobed``: a simple ``GeneratorSpec`` with a static ``params=`` class; its generate
 #   reads ``config.generator_params.lobes``.
 
 import dataclasses as _dc  # noqa: E402
@@ -291,7 +305,6 @@ TOY_LOBED = GeneratorSpec(
     name="toy.lobed",
     alloc_scratch=toy_circle_alloc_scratch,
     generate=toy_lobed_generate,
-    accepts_ctx=True,
     params=ToyLobedParams,
 )
 

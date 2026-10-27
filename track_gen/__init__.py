@@ -22,7 +22,6 @@ from . import results
 from . import tools
 from .results import (HasBand, HasCenterline, HasCheckpoints, HasGateFrames, HasGates,
                       HasGeneration, HasValidity)
-from .course import set_capturing
 
 __all__ = [
     "TrackGenerator",
@@ -49,6 +48,5 @@ __all__ = [
     "localize",
     "course",
     "heightfield",
-    "set_capturing",
     "__version__",
 ]

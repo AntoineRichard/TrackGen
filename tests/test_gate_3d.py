@@ -83,7 +83,7 @@ def _run_validity(positions, tangents, cnt, grade, gate_width=0.0,
     check can flip validity."""
     from track_gen._src import warp_gate
 
-    warp_gate._init()
+    wp.init()
     G = positions.shape[0]
     pos = wp.array(positions.astype(np.float32), dtype=wp.vec3f, device="cpu")
     tan = wp.array(tangents.astype(np.float32), dtype=wp.vec3f, device="cpu")
@@ -204,7 +204,7 @@ def test_frame_fallback_counter_increments_on_near_vertical():
     from track_gen._src import warp_gate
     from track_gen._src.collision_geom import _safe_normalize3  # noqa: F401 (kernel dep)
 
-    warp_gate._init()
+    wp.init()
     E1, G1 = 1, 2
     dev = "cpu"
     nan3 = np.full(3, np.nan, np.float32)

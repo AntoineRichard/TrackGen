@@ -35,7 +35,7 @@ are:
   ``checkpoint_angle_jitter`` and ``checkpoint_turn_rate`` (``checkpoint``). The polar,
   voronoi and checkpoint **gate** generators have the same ring knobs (not
   ``checkpoint_turn_rate``: they do not steer). Each generator page gives their bounds,
-  effective range and measured yield (:ref:`generators-per-env`);
+  effects, visual examples and failure cases (:ref:`generators-per-env`);
 - the course **size** (``size``, ``[0.1, 10]``) of every built-in generator but
   ``external``: ``generator.size`` on tracks and on the ``bezier`` / ``hull`` gate
   generators, ``normalize.size`` (the ``normalize.extent`` stage) for the ``polar``,
@@ -169,10 +169,7 @@ The built-in dynamic knobs
 The elevation stages are the same classes on a track, on gates
 (:ref:`pipeline-gate-elevation`) and on the centerline before the stations
 (:ref:`pipeline-stations-xyz`), so the same keys (``"elevation.z_max"``) work in all
-three. ``external`` has no dynamic field: it ingests your geometry as given. ``bezier``'s
-deprecated ``style_sampling`` draws ``rad`` / ``handle_clamp_frac`` / its scale itself
-when their ranges are set; such a field cannot also take a randomizer or a ``set``. Use
-``randomize=`` instead (:ref:`bezier-style-vs-randomize`, :ref:`upgrading-style-sampling`).
+three. ``external`` has no dynamic field: it ingests your geometry as given.
 
 Curricula: writing the live arrays
 ----------------------------------
@@ -310,7 +307,7 @@ a field a randomizer draws):
   array, every scalar ``set`` (checked on the host) and every randomizer draw (clamped
   when drawn). Write in-range values, or book the clamp. Exceptions, used as written:
   ``width.from_channel``'s ``scale`` / ``lo`` / ``hi`` (it clamps its output), a
-  randomizer's ``lo`` / ``hi`` (it clamps its draw), ``style_sampling``'s draws, and, in
+  randomizer's ``lo`` / ``hi`` (it clamps its draw), and, in
   a ``Course`` in gates mode, ``gate_frames.gate_width`` (its floor ``> 0`` is checked
   by ``set`` on a scalar only: an array value ``<= 0`` is used as ``0``).
 - **When it is current.** The arrays are written on the generation's stream: read them
@@ -436,8 +433,14 @@ Size: the sizing rule
 ``size`` is a per-env factor on the core ``scale``, applied where each generator applies
 ``scale``: the corner grid of ``bezier`` and ``hull`` (and their gate generators), the
 normalization target of ``polar``, ``voronoi`` and ``checkpoint`` (on gates, the
-``normalize.extent`` stage), the output of ``repulsive`` (whose ``scale`` sets its
-physics domain instead). At ``size = 1`` every output is byte-identical to a pipeline
+``normalize.extent`` stage), and the raw output and obstacle domain of
+``repulsive``. Repulsive also reserves the absolute road width in unscaled
+coordinates using ``half_width / size`` when constant width is known. It uses
+the same effective ``size`` in ``[0.1, 10]`` for geometry and barrier metadata;
+array writes outside that range are clamped, while NaN remains invalid. Its raw
+obstacle layout and curve shape can therefore change with size; it does not
+promise a scaled copy of one curve (:ref:`repulsive-dynamic`). At ``size = 1``
+every output is byte-identical to a pipeline
 without it; ``bezier`` / ``hull`` at ``scale = 1`` and ``size = s`` are bitwise ``scale =
 s``, the normalized generators within one ``float32`` rounding of it. ``external`` has
 no ``size``: it ingests your geometry as given (a size would move a circuit ingested in
@@ -450,79 +453,42 @@ world coordinates about the data's origin); scale ``centerline.xy`` in your own 
   (``num_envs``).
 - **A route that cannot apply it raises** ``ValueError`` instead of ignoring it: a flat
   ``size != 1`` with a generator that declares no ``size`` (``external``, a plugin whose
-  Params lack it, a legacy ``GeneratorSpec``), ``presets.track(generator="external",
-  size=2.0)``, ``size=`` together with ``generator_params={"size": ...}``, and the frozen
-  legacy module functions (``generate_*_warp``) given a config with ``size != 1``.
+  Params lack it, a ``GeneratorSpec``), ``presets.track(generator="external",
+  size=2.0)`` or ``size=`` together with ``generator_params={"size": ...}``.
 
-**Plan view only.** ``size`` scales xy. The widths (``half_width``, ``spacing``, the relax
+**Plan view only.** ``size`` scales xy, with Repulsive's width-reservation effect
+above. The widths (``half_width``, ``spacing``, the relax
 bands, ``gate_radius``, ``gate_width``) and z (``z_min`` / ``z_max``, the noise
 amplitude, ``z_valid_grade``) are absolute: ``size`` is the "course larger relative to
 the car" axis. So:
 
-- under constant spacing a larger course has more points (the rule below), and small
-  sizes lose yield to the absolute road width (self-overlap after the offset): for
-  ``bezier``, 0.945 valid at ``size = 0.5``;
+- under constant spacing a larger course needs more points, while smaller courses have
+  less room for the same absolute road width;
 - ``elevation.uniform`` places its knots at arc fractions and ``noise`` runs its harmonics
-  in normalized arc length, so their **grades fall as** ``~1 / size`` (``uniform`` with
-  ``z_max = 0.3``: median per-track maximum grade 0.666 / 0.337 / 0.225 at size 1 / 2 /
-  3): scale ``z_max`` / ``z_noise_amplitude`` with the size to keep the grade.
+  in normalized arc length, so stretching the same altitude profile over a larger
+  course reduces its grade. Scale altitude ranges/amplitude with size when you want
+  similar slopes.
   ``random_walk``'s ``z_max_step`` is a grade cap per unit arc and does not depend on
   the size. On gates the spacing grows with the size, so the ``z_valid_grade`` check
   passes more envs. A joint size and hills curriculum is therefore not orthogonal.
 
 **Truncation.** Size changes no buffer and no launch. The constant-spacing resample emits
-``floor(size * L / spacing) + 1`` points (``L`` the raw perimeter at size 1) into
+``floor(size * L / spacing) + 1`` points (``L`` the unscaled raw perimeter;
+Repulsive's curve can change with size) into
 ``n_max`` slots; a track that needs more is flagged in ``Track.truncated`` and fails
 validity (:ref:`invalid-envs`). A gate pipeline with ``source="relaxed_stations"`` fails
 the same way (its centerline is resampled into ``n_max``); anchor-sourced gates have a
-fixed count and are not affected (their spacing grows). At the defaults (``n_max = 384``,
-``half_width = 0.1``, spacing ``0.06``; CPU), the longest loop (rounded up) and its p99
-over 8192 envs (seeds ``0..4095`` and ``7919 * e + 13`` for ``e < 4096``) and the yields
-over ``E = 256`` (seeds ``7919 * e + 13``); ``repulsive``: both over ``E = 32``, seeds
-``7919 * e + 13``:
+fixed count and are not affected (their spacing grows).
 
-.. list-table::
-   :header-rows: 1
-   :widths: 16 26 24 34
-
-   * - generator
-     - longest raw loop at size 1 (p99)
-     - ``n_max = 384`` truncates from
-     - valid at size 0.5 / 1 / 2 / 3
-   * - ``bezier``
-     - 8.68 (7.17)
-     - ~2.6
-     - 0.945 / 1.000 / 0.996 / 0.996
-   * - ``hull``
-     - 8.30 (6.90)
-     - ~2.8
-     - 0.828 / 0.992 / 1.000 / 1.000
-   * - ``polar``
-     - 6.24 (5.67)
-     - ~3.7
-     - 0.961 / 1.000 / 1.000 / 1.000
-   * - ``voronoi``
-     - 5.01 (4.78)
-     - ~4.6
-     - 0.996 / 1.000 / 1.000 / 1.000
-   * - ``checkpoint``
-     - 7.26 (6.18)
-     - ~3.2
-     - 0.902 / 0.992 / 0.996 / 0.992
-   * - ``repulsive``
-     - 14.48 (bound 14.83)
-     - ~1.6
-     - — / 1.000 / 0.000 (every env truncated) / —
-
-**The sizing rule**, for a size range up to ``size_hi`` (``L_max`` from the table, times
-``scale``, or measured on your configuration with ``gen.program.tap("raw.xy")``):
+**The sizing rule**, for a size range up to ``size_hi`` (``L_max`` measured on your
+configuration with ``gen.program.tap("raw.xy")``). For Repulsive, the analytic
+target-perimeter bound is ``grow_mult_max * 2π * r_init``
+(:ref:`repulsive-dynamic`):
 
 1. ``n_max >= size_hi * L_max / spacing + 1`` (else truncation, an invalid env);
 2. ``num_points >= size_hi * L_max / spacing``: the raw loop keeps its static
-   ``num_points``, so its point spacing is ``size * L / num_points`` (``bezier``, 256
-   points: median per-env largest raw segment 0.019 / 0.038 / 0.057 at size 1 / 2 / 3,
-   against the output spacing 0.06); a coarser raw loop makes the constant-spacing
-   resample interpolate a polyline;
+   ``num_points``, so a larger course can expose the raw polyline's resolution. Use
+   enough raw points for the highest-curvature shape and largest size you need;
 3. the utilities' capacities and resolutions (`Size and the utilities`_).
 
 .. code-block:: python
@@ -548,13 +514,11 @@ over ``E = 256`` (seeds ``7919 * e + 13``); ``repulsive``: both over ``E = 32``,
 
 **Build-time warning.** When the generator is built, a ``generator.size`` randomizer whose
 ``hi`` (or a construction value) would truncate the generator's nominal longest loop
-emits one ``UserWarning`` naming the ``n_max`` that fits. The nominal loop is exact for
-``repulsive`` (from its parameters); for the others it is the longest loop of the table
-(so the warning fires from the "truncates from" column), scaled by the knobs that
+emits one ``UserWarning`` naming the ``n_max`` that fits. Repulsive uses its
+analytic target-perimeter bound. The others use a nominal bound, scaled by knobs that
 lengthen it: ``bezier`` / ``hull``'s ``max_num_points`` (``(max_num_points / 13) **
 0.6`` above 13), ``hull_displacement`` (its initial value or the ``hi`` of its
-randomizer: ``1 + 0.6 * (d - 0.15)`` above 0.15) and ``style_sampling``'s
-``scale_range``. It is not checked when ``polar``'s ``polar_num_knots`` /
+randomizer: ``1 + 0.6 * (d - 0.15)`` above 0.15). It is not checked when ``polar``'s ``polar_num_knots`` /
 ``polar_radial_jitter``, ``voronoi``'s ``voronoi_num_sites`` /
 ``voronoi_control_points`` / ``voronoi_angular_jitter``, or ``checkpoint``'s
 ``checkpoint_count`` / ``checkpoint_radius_min_frac`` / ``checkpoint_angle_jitter`` /

@@ -3,7 +3,7 @@
 The anchors come from the same public ``track_gen.ops`` samplers (and RNG salts) the
 bezier/hull track generators use, so a gate layout reproduces the track generator's
 corner/point draw for the same seed. Both are ``gate_generator`` Stages
-(``output="anchors"``, roadmap PR11): they write an UNORDERED anchor cloud
+(``output="anchors"``): they write an UNORDERED anchor cloud
 (``anchors.xy``, ``max_num_points`` rows per env, and ``anchors.count``); the gate
 pipeline orders it (``order.ccw`` by default; ``order.raw`` is excluded: a cloud has no
 loop order). Roadmap PR13d: their dynamic ``size`` multiplies the anchor grid after

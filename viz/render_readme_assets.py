@@ -11,11 +11,15 @@ Run from the repository root:
 from __future__ import annotations
 
 from pathlib import Path
+import argparse
+import json
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from viz.racing_theme import (save_figure, get_palette,
+                              rendered_geometry, render_variants)
 import numpy as np  # noqa: E402
 import warp as wp  # noqa: E402
 
@@ -324,6 +328,30 @@ def _load_samples() -> dict[str, tuple]:
     return samples
 
 
+def render_pipeline_stages(output_dir: Path = OUT_DIR, *, data=None) -> Path:
+    """The current published pipeline figure, without unrelated generator galleries."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    raw, cs, relaxed, final_center, outer, inner, valid, relax_half_width = _generate_pipeline_sample() if data is None else data
+    fig, axes = plt.subplots(1, 4, figsize=(12.2, 3.0), dpi=180, facecolor="white")
+    _draw_centerline_stage(axes[0], raw, color="#2563eb", title="Raw Centerline", dots=False)
+    _draw_centerline_stage(axes[1], cs, color="#0f766e", title="Constant Spacing", dots=True)
+    _draw_relaxed_stage(axes[2], relaxed, relax_half_width=relax_half_width)
+    _draw_final_stage(axes[3], final_center, outer, inner, valid=valid)
+    fig.suptitle(
+        "Generated centerline to final road band",
+        fontsize=15,
+        fontweight="bold",
+        y=1.02,
+        color="#111827",
+    )
+    fig.tight_layout(w_pad=0.55)
+    pipeline_path = output_dir / "readme-pipeline-stages.png"
+    save_figure(fig, pipeline_path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+    return pipeline_path
+
+
 def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     samples = _load_samples()
@@ -356,26 +384,10 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
     )
     fig.tight_layout(rect=(0.055, 0.0, 1.0, 0.965), h_pad=0.45, w_pad=0.20)
     grid_path = output_dir / "readme-generator-grid.png"
-    fig.savefig(grid_path, bbox_inches="tight", facecolor="white")
+    save_figure(fig, grid_path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
-    raw, cs, relaxed, final_center, outer, inner, valid, relax_half_width = _generate_pipeline_sample()
-    fig, axes = plt.subplots(1, 4, figsize=(12.2, 3.0), dpi=180, facecolor="white")
-    _draw_centerline_stage(axes[0], raw, color="#2563eb", title="Raw Centerline", dots=False)
-    _draw_centerline_stage(axes[1], cs, color="#0f766e", title="Constant Spacing", dots=True)
-    _draw_relaxed_stage(axes[2], relaxed, relax_half_width=relax_half_width)
-    _draw_final_stage(axes[3], final_center, outer, inner, valid=valid)
-    fig.suptitle(
-        "Generated centerline to final road band",
-        fontsize=15,
-        fontweight="bold",
-        y=1.02,
-        color="#111827",
-    )
-    fig.tight_layout(w_pad=0.55)
-    pipeline_path = output_dir / "readme-pipeline-stages.png"
-    fig.savefig(pipeline_path, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
+    pipeline_path = render_pipeline_stages(output_dir)
 
     fig, axes = plt.subplots(1, len(GENERATORS), figsize=(12.0, 2.75), dpi=180, facecolor="white")
     for ax, (name, label) in zip(axes, GENERATORS):
@@ -384,7 +396,7 @@ def render_readme_assets(output_dir: Path = OUT_DIR) -> list[Path]:
         ax.set_title(label, fontsize=12, fontweight="bold", color="#111827", pad=8)
     fig.tight_layout(w_pad=0.45)
     strip_path = output_dir / "readme-generator-strip.png"
-    fig.savefig(strip_path, bbox_inches="tight", facecolor="white")
+    save_figure(fig, strip_path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
     gate_strip_path = render_gate_assets(output_dir)
@@ -421,7 +433,7 @@ def render_generator_panels(output_dir: Path = OUT_DIR,
                      fontweight="bold", color="#111827")
         fig.tight_layout(rect=(0, 0, 1, 0.92), w_pad=0.4)
         path = output_dir / f"generator-{name}.png"
-        fig.savefig(path, bbox_inches="tight", facecolor="white")
+        save_figure(fig, path, bbox_inches="tight", facecolor="white")
         plt.close(fig)
         written.append(path)
     return written
@@ -450,7 +462,7 @@ def render_gate_assets(output_dir: Path = OUT_DIR) -> Path:
                  fontsize=15, fontweight="bold", y=1.0, color="#111827")
     fig.tight_layout(rect=(0.08, 0.0, 1.0, 0.96), h_pad=0.6, w_pad=0.3)
     path = output_dir / "readme-gate-strip.png"
-    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    save_figure(fig, path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return path
 
@@ -504,7 +516,7 @@ def render_batch_of_tracks(output_dir: Path = OUT_DIR) -> Path:
                  fontsize=14, fontweight="bold", y=1.0, color="#111827")
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95), w_pad=0.25, h_pad=0.4)
     path = output_dir / "batch-of-tracks.png"
-    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    save_figure(fig, path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return path
 
@@ -666,7 +678,7 @@ def render_relaxation_smoothing(output_dir: Path = OUT_DIR) -> Path:
                  fontsize=14, fontweight="bold", y=1.0, color="#111827")
     fig.tight_layout(rect=(0.10, 0.0, 1.0, 0.96), h_pad=0.7, w_pad=0.3)
     path = output_dir / "relaxation-smoothing.png"
-    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    save_figure(fig, path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return path
 
@@ -705,7 +717,7 @@ def render_relaxation_before_after(output_dir: Path = OUT_DIR) -> Path:
                  fontsize=14, fontweight="bold", y=1.0, color="#111827")
     fig.tight_layout(rect=(0.09, 0.0, 1.0, 0.96), h_pad=0.7, w_pad=0.3)
     path = output_dir / "relaxation-before-after.png"
-    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    save_figure(fig, path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return path
 
@@ -740,7 +752,7 @@ def render_relaxation_same_seeds(output_dir: Path = OUT_DIR) -> Path:
                  fontsize=14, fontweight="bold", y=1.0, color="#111827")
     fig.tight_layout(rect=(0.09, 0.0, 1.0, 0.96), h_pad=0.7, w_pad=0.3)
     path = output_dir / "relaxation-same-seeds.png"
-    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    save_figure(fig, path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return path
 
@@ -804,7 +816,7 @@ def render_relaxation_convergence(
     ax.legend(loc="lower right", fontsize=8.5, frameon=False)
     fig.tight_layout()
     path = output_dir / "relaxation-convergence.png"
-    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    save_figure(fig, path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return path
 
@@ -823,9 +835,23 @@ def render_relaxation_assets(output_dir: Path = OUT_DIR) -> list[Path]:
     return paths
 
 
-def main() -> None:
-    for path in render_readme_assets():
-        print(path)
+def main(argv=None) -> None:
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out-dir",type=Path,default=OUT_DIR)
+    parser.add_argument("--theme",choices=("light","dark","both"),default="light")
+    parser.add_argument("--published-only",action="store_true",
+                        help="render the two current reader figures, excluding historical galleries")
+    args=parser.parse_args(argv)
+    pipeline=_generate_pipeline_sample() if args.published_only else None
+    def render(out):
+        paths=([render_pipeline_stages(out,data=pipeline),render_batch_of_tracks(out)]
+               if args.published_only else render_readme_assets(out))
+        manifest=dict(theme=get_palette().name,render_geometry=rendered_geometry(),
+                      assets=[p.name for p in paths],published_only=args.published_only)
+        (out/"readme-media-manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
+        return manifest
+    render_variants(args.out_dir,args.theme,render)
+    print(args.out_dir)
 
 
 if __name__ == "__main__":

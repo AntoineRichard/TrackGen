@@ -714,8 +714,8 @@ def test_alloc_fills_on_the_current_stream_before_a_side_stream_warm_up():
 @pytest.mark.parametrize("kind", ["track", "gate"])
 def test_validate_names_a_field_on_the_wrong_device(kind):
     """A CPU array in a CUDA result: ``validate()`` names the field, the expected
-    device (canonical ``cuda:0``) and the array's (``cpu``), with the stored layout and
-    with an inferred one."""
+    device (canonical ``cuda:0``) and the array's (``cpu``), with canonical and
+    shorthand explicit layouts."""
     spec = _spec(kind, "bezier")
     gen = _gen_cls(spec)(spec, seeds=11)
     out = gen.program.result
@@ -730,7 +730,7 @@ def test_validate_names_a_field_on_the_wrong_device(kind):
     with pytest.raises(ValueError, match=msg):
         bad.validate()
     with pytest.raises(ValueError, match=msg):
-        dataclasses.replace(bad, layout=None).validate()
+        dataclasses.replace(bad, layout=Layout(E, gen.program.layout.stride, "cuda")).validate()
 
 
 def test_hand_set_cuda_layout_matches_the_canonical_device():

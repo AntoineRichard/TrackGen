@@ -8,16 +8,16 @@ A Stage is a class that allocates everything it needs ONCE, through the
 
 - ``"generator"`` (``output="centerline"``): the raw closed centerline, selected with
   ``TrackGenConfig(generator=MyStage.name)``;
-- ``"gate_generator"`` (``output="anchors"``, roadmap PR11): gate anchors, selected with
+- ``"gate_generator"`` (``output="anchors"``): gate anchors, selected with
   ``GateGenConfig(generator=MyStage.name)`` or
   :func:`track_gen.pipeline.presets.gates`;
-- ``"relax"``, ``"width"``, ``"elevation"``, ``"validity"`` (roadmap PR10b): a stage of
+- ``"relax"``, ``"width"``, ``"elevation"``, ``"validity"``: a stage of
   the track pipeline, selected with :func:`track_gen.pipeline.presets.track` (or the
   flat shortcuts ``TrackGenConfig.relax_solver`` / ``z_profile``). It reads and writes
   named channels through :meth:`StageBuilder.read` / :meth:`StageBuilder.write`.
   ``elevation`` and ``validity`` stages also run in the gate pipeline (an elevation's
   ``cl.*`` ports are rewired to their ``gates.*`` counterparts by the planner);
-- ``"order"`` and ``"stations"`` (roadmap PR11): the gate pipeline's ordering (anchors
+- ``"order"`` and ``"stations"``: the gate pipeline's ordering (anchors
   -> gate slots) and the anchors a centerline generator's loop yields.
 
 The other track and gate stages (resample, frames, offset, lift, normalize, carry,
@@ -27,7 +27,7 @@ A generator stage writes the raw closed centerline (channel ``"raw.xy"``,
 ``[E * raw]`` ``vec2f``, ``raw`` from :meth:`Stage.capacity`, default
 ``TrackGenConfig.num_points``) and optionally a per-env validity flag (``"gen.valid"``,
 ``[E]`` ``int32``; when it is never written the orchestrator sets it to 1 once). It may
-also write per-point attributes (roadmap PR13a): the altitude ``"raw.z"`` and the
+also write per-point attributes: the altitude ``"raw.z"`` and the
 half-width ``"raw.half_width"`` it ``provides`` (``{"z"}`` / ``{"half_width"}``), and
 its own ``"raw.<package>.<name>"`` channels, each with an ``interp=`` policy; the
 resamples carry every one to the centerline (``cl.<attr>``), and ``export=True`` makes
@@ -50,8 +50,7 @@ plus the per-anchor attributes it ``provides`` (``"anchors.z"``, ``"anchors.tang
 attributes (carried to the gate slots by index: ``orderings={"raw"}``); it declares the
 orders it supports
 (:attr:`Stage.orderings` or :attr:`Stage.excluded_orderings`) and may prefer one
-(:attr:`Stage.preferred`). A legacy :class:`~track_gen.plugin.GateGeneratorSpec` still
-works (deprecated) through an adapter.
+(:attr:`Stage.preferred`).
 """
 from __future__ import annotations
 
@@ -63,6 +62,7 @@ from typing import TYPE_CHECKING, Any, Callable, ClassVar, Mapping
 import warp as wp
 
 from .._src.types import Layout
+from .._src.repulsive_clearance import RepulsiveBarriers
 from .params import NoParams, _fields
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -71,7 +71,8 @@ if TYPE_CHECKING:  # pragma: no cover
 __all__ = ["CaptureClass", "Layout", "Stage", "StageBuilder"]
 
 # The channels a PR8 generator stage may write: name -> (dtype, per).
-_GENERATOR_CHANNELS = {"raw.xy": (wp.vec2f, "raw"), "gen.valid": (wp.int32, "env")}
+_GENERATOR_CHANNELS = {"raw.xy": (wp.vec2f, "raw"), "gen.valid": (wp.int32, "env"),
+                       "gen.repulsive.barriers": (RepulsiveBarriers, "env")}
 # The catalogue attributes a centerline generator may provide (roadmap PR13a): channel ->
 # the ``provides`` name. Carried to cl.<attr> by the constant-spacing resample.
 _RAW_PROVIDABLE = {"raw.z": "z", "raw.half_width": "half_width"}
@@ -136,7 +137,7 @@ def _dtype_name(dtype) -> str:
 
 def _check_family_write(channel: str, dtype, interp, export, *, first: bool,
                         per: "str | None" = None) -> "tuple[object, str | None, object]":
-    """The ``interp=`` / ``export=`` rules of a write of ``channel`` (roadmap PR13a);
+    """The ``interp=`` / ``export=`` rules of a write of ``channel``;
     returns ``(dtype, interp, export_key)`` (``export_key``: the result key, or
     ``None``). ``first``: the channel's first writer (only it may pass them)."""
     from ..stages.channels import CHANNELS, channel_domain, family_key, is_plugin_channel
@@ -525,6 +526,10 @@ class StageBuilder:
         if per != want_per:
             raise TypeError(f"channel {channel!r} is per={want_per!r}, got per={per!r}")
         self._written[port] = channel
+        if channel not in self._outputs:
+            resolve = self._outputs.get(_FAMILY_RESOLVER)
+            self._outputs[channel] = resolve(channel, dtype, None, None) if resolve else \
+                self.scratch(channel, dtype, self._length(per))
         return self._outputs[channel]
 
     def _adapter_attribute(self, port: str, channel: str, dtype, per, interp,
@@ -929,8 +934,9 @@ class StageBuilder:
         ``hash32_host(fnv1a_32(f"{stage_id}/{stream}".encode()))``.
 
         Frozen for plugin API version 1, so outputs stay reproducible across releases.
-        Key the per-env RNG as ``wp.rand_init(int32(hash32(uint32(seed[e]) ^ salt) &
-        0x7FFFFFFF))``. Idempotent per stream; two streams whose salts collide raise
+        Key the per-env RNG with :func:`track_gen.ops.rng.init`
+        (``init(seed[e], salt)``), or :func:`~track_gen.ops.rng.init_at` for an indexed
+        stream. Idempotent per stream; two streams whose salts collide raise
         ``ValueError``.
         """
         stream = str(stream)
@@ -1113,7 +1119,7 @@ def _check_generator_ports(label: str, writes: Mapping, provides) -> None:
 
 
 def _declared_of(spec, params) -> "tuple[Mapping[str, str], frozenset]":
-    """``(writes, provides)`` of a centerline generator for ``params`` (roadmap PR13b):
+    """``(writes, provides)`` of a centerline generator for ``params``:
     a Stage's :meth:`Stage.declare` (``params``: its static view), a legacy spec's
     nothing (``({}, frozenset())``). Every read of a generator's declared ports goes
     through here."""

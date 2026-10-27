@@ -1,4 +1,4 @@
-"""Per-point half-width variants of the width consumers (roadmap PR13a).
+"""Per-point half-width variants of the width consumers.
 
 The track pipeline's per-point half-width is the channel ``cl.half_width``. At constant
 width (``width.constant``, whose version the planner records constant) the consumers run

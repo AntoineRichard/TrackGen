@@ -101,8 +101,8 @@ Title
 
 .. code-block:: python
 
-   import track_gen
-   track_gen.set_capturing(False)
+   import warnings
+   warnings.warn('example', DeprecationWarning)
    assert len(seen) == 1
 
 .. snippet: skip=signature

@@ -339,7 +339,6 @@ def xpbd_solve_inplace(
     count_wp: "wp.array",
     n_max: int,
     config,
-    capturing: bool = False,
     sep_cache_idx_wp: "wp.array | None" = None,
     sep_cache_count_wp: "wp.array | None" = None,
     sep_cache_overflow_wp: "wp.array | None" = None,
@@ -362,8 +361,6 @@ def xpbd_solve_inplace(
         n_max:      int buffer stride (== total points per env slot).
         config:     TrackGenConfig (half_width, relax_margin, relax_iters, relax_*_relax,
                     relax_sep_every, relax_sep_cache_slots, relax_sep_cache_skin).
-        capturing:  Deprecated and ignored. The solve never host-synchronizes, so
-                    there is nothing to suppress during CUDA graph capture.
         sep_cache_idx_wp: [E*n_max*relax_sep_cache_slots] int32 candidate indices. Required
                     only when relax_sep_cache_slots > 0 and relax_sep_every > 1.
         sep_cache_count_wp: [E*n_max] int32 candidate count per bead for cached separation.
@@ -516,7 +513,6 @@ def band_l0_inplace(
     l0_wp: "wp.array",
     count_wp: "wp.array",
     config,
-    capturing: bool = False,
     ctx: "LaunchContext | None" = None,
 ) -> None:
     """Relaxation setup — precompute the per-env separation band + rest length L0.
@@ -532,7 +528,6 @@ def band_l0_inplace(
         l0_wp:      [E] wp.float32 output — rest segment length per env.
         count_wp:   [E] wp.int32 real bead count per env.
         config:     TrackGenConfig (uses half_width, relax_band).
-        capturing:  Deprecated and ignored (this setup never host-synchronizes).
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """

@@ -1,9 +1,12 @@
 import numpy as np
+from dataclasses import replace
+
 import pytest
 import warp as wp
 
 from track_gen._src.types import GateGenConfig
 from track_gen._src import warp_zprofile
+from tests._reference_generators import apply_profile, apply_knots
 
 E, G = 8, 16
 
@@ -32,7 +35,7 @@ def _run(profile, **kw):
                      device="cpu")
     cum, perim, z = warp_zprofile.alloc_z_scratch(E, G, "cpu")
     warp_zprofile.gate_cum_perim(pos2, count, G, cum, perim)
-    warp_zprofile.apply_z_profile(cfg, seeds, count, G, cum, perim, z)
+    apply_profile(cfg, seeds, count, G, cum, perim, z)
     return z.numpy().reshape(E, G), counts, pos_np.reshape(E, G, 2)
 
 
@@ -108,7 +111,7 @@ def test_apply_z_profile_track_parameterization():
     z = wp.zeros(E * S, dtype=wp.float32, device="cpu")
     count = wp.array(np.full(E, n, np.int32), dtype=wp.int32, device="cpu")
     seeds = wp.array(np.array([3, 9], np.int32), dtype=wp.int32, device="cpu")
-    warp_zprofile.apply_z_profile(cfg, seeds, count, S, cum, perim, z)
+    apply_profile(cfg, seeds, count, S, cum, perim, z)
     zz = z.numpy().reshape(E, S)
     for e in range(E):
         # periodic in frac: harmonic sum at frac=0 equals frac=1 exactly;
@@ -122,12 +125,12 @@ def test_apply_z_profile_track_parameterization():
 def test_apply_z_profile_rejects_unknown_profile():
     """An unknown profile name raises instead of silently running "noise".
 
-    Config validation rejects bad names at construction, but configs are mutable, so
-    a name set afterwards reaches the dispatcher. It must fail loudly and launch nothing.
+    Configs accept registered elevation names; the low-level dispatcher must reject
+    an unknown built-in name without launching anything.
     """
     cfg = GateGenConfig(device="cpu", num_envs=E, max_gates=G, gate_width=0.05,
                         z_profile="noise")
-    cfg.z_profile = "bogus"
+    cfg = replace(cfg, z_profile="bogus")
     pos_np, counts = _ring()
     pos2 = wp.array(pos_np, dtype=wp.vec2f, device="cpu")
     count = wp.array(counts, dtype=wp.int32, device="cpu")
@@ -136,5 +139,5 @@ def test_apply_z_profile_rejects_unknown_profile():
     warp_zprofile.gate_cum_perim(pos2, count, G, cum, perim)
     z.fill_(-123.0)
     with pytest.raises(ValueError, match="bogus"):
-        warp_zprofile.apply_z_profile(cfg, seeds, count, G, cum, perim, z)
+        apply_profile(cfg, seeds, count, G, cum, perim, z)
     assert (z.numpy() == -123.0).all()

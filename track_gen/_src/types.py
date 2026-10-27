@@ -10,9 +10,7 @@ fields are ``wp.array``).
 import dataclasses
 import math
 import operator
-import sys
 import types
-import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -52,6 +50,12 @@ def _validate_z_fields(cfg) -> None:
         )
 
 
+def _validate_invalid_policy(cfg) -> None:
+    """Check the invalid-output policy without loading generators or plugins."""
+    if cfg.on_invalid not in ("keep", "poison"):
+        raise ValueError(f"on_invalid must be 'keep' or 'poison', got {cfg.on_invalid!r}")
+
+
 def _check_generator_params(cfg) -> None:
     """Registry-free type check of ``generator_params`` (the generator resolves and
     validates the value at construction)."""
@@ -62,49 +66,11 @@ def _check_generator_params(cfg) -> None:
                         f"fields, or None; got {type(gp).__name__}")
 
 
-# TrackGenConfig fields TrackGenerator does not use (torch-oracle / experimental only;
-# it only rejects smooth_finish=True): setting one to a value other than its class's
-# default emits a DeprecationWarning. ``output_mode`` is
-# deprecated too, but its own ValueError already rejects every non-default value.
-_DEAD_TRACK_FIELDS = (
-    "energy_steps", "energy_lr", "energy_w_sep", "energy_w_len", "energy_w_bend",
-    "energy_w_anchor", "tp_iters", "tp_tau", "tp_alpha", "tp_beta",
-    "smooth_finish", "smooth_finish_iters", "smooth_finish_tau",
-    "relax_chunk_size", "relax_use_warp", "max_regen_iters", "min_angle",
-    "num_harmonics", "decay_p", "amplitude", "num_centerline_samples",
-)
-
-
-def _warn_dead_fields(cfg) -> None:
-    # Defaults of the config's own class: a subclass that changes one is not "set".
-    defaults = {f.name: f.default for f in dataclasses.fields(type(cfg))}
-    names = [n for n in _DEAD_TRACK_FIELDS if getattr(cfg, n) != defaults[n]]
-    if names:
-        # Point at the code constructing the config: skip every frame of this object's
-        # construction (the generated __init__, and each __post_init__ of a subclass
-        # chain that calls super().__post_init__()).
-        level, frame = 2, sys._getframe(1)
-        while frame is not None and frame.f_locals.get("self") is cfg:
-            frame, level = frame.f_back, level + 1
-        warnings.warn(
-            f"TrackGenConfig fields {names} are deprecated and unused by TrackGenerator "
-            f"(oracle/experimental only; smooth_finish=True is rejected); they will be "
-            f"removed in 1.0",
-            DeprecationWarning, stacklevel=level)
-
-
-@dataclass
+@dataclass(frozen=True)
 class TrackGenConfig:
     """Single configuration object passed to every stage of the pipeline.
 
-    Fields configure the fixed-shape Warp pipeline. Scalar style knobs are used by
-    default; opt-in per-env style sampling is available through ``style_sampling`` and
-    the ``*_range`` fields for the Bezier generator. Only ``relax_solver="xpbd"`` is
-    used by the runtime path; the ``energy_*``, ``tp_*``, and ``smooth_finish*`` fields
-    serve the torch oracle backends in ``tests/_oracle/`` and are **not used by
-    TrackGenerator**. The Fourier fields (``num_harmonics``, ``decay_p``,
-    ``amplitude``, ``num_centerline_samples``) are retained only for compatibility with
-    ``track_gen._experimental.fourier`` and older experiment sweeps.
+    Fields configure the fixed-shape Warp pipeline.
 
     Per-generator parameters: each generator declares its own Params class
     (``track_gen.plugin.registry.describe("generator", name).params_schema``). Set
@@ -114,12 +80,6 @@ class TrackGenConfig:
     different values. The generator-specific rules (``voronoi_control_points >= 6``,
     the ``repulsive_*`` rules, ...) are checked when the generator is constructed, and
     only for the selected generator.
-
-    Deprecated (a ``DeprecationWarning`` when set to a non-default value; removed in
-    1.0): ``energy_*``, ``tp_*``, ``smooth_finish*``, ``relax_chunk_size``,
-    ``relax_use_warp``, ``max_regen_iters``, ``min_angle``, ``num_harmonics``,
-    ``decay_p``, ``amplitude``, ``num_centerline_samples`` (and ``output_mode``, which
-    only accepts its default).
 
     Attributes
     ----------
@@ -156,10 +116,6 @@ class TrackGenConfig:
         Minimum grid-cell spacing for corner-position sampling.  Must be in
         ``(0, 0.5]``.  Governs the cell grid as
         ``num_cells = int(1 / (min_point_distance * 2))``.
-    min_angle : float
-        Minimum interior angle (radians) at constrained Bezier corners; default
-        ~0.218 rad (12.5 deg).  Used by the gate-angle validity kernel in
-        ``warp_generate.py``; not applied directly to track-centerline generation.
     rad : float
         Cubic-Bezier handle length as a fraction of the segment chord — the primary
         curviness dial.  Typical range ``[0.2, 0.6]``.  Only live when
@@ -204,7 +160,7 @@ class TrackGenConfig:
         ``[0, 1)``.  The CarRacing canonical value 0.33 gives the inlets.  Dynamic
         (per env): ``set`` and ``randomize=`` accept the declared bound ``1.0``
         (every checkpoint on the outer radius), and a per-env array value is clamped
-        to ``[0, 1]``; the configured value keeps the legacy ``[0, 1)`` rule.
+        to ``[0, 1]``; construction requires a configured value in ``[0, 1)``.
     checkpoint_angle_jitter : float
         Angular jitter as a fraction of the per-checkpoint angular slot
         (``slot = 2*pi/C``).  Must be in ``[0, 1]`` (dynamic, per env); below 1 each
@@ -234,36 +190,6 @@ class TrackGenConfig:
         the first self-crossing of the selected centerline is clipped: split at the
         intersection point, keep the longer sub-loop arc, resample to ``num_points``.
         A capture-time Python branch; the captured graph stays fixed either way.
-
-    style_sampling : bool
-        Opt-in per-env Bezier style randomisation (default ``False``).  When
-        ``False``, ``scale`` is the scalar for all envs and ``rad`` /
-        ``handle_clamp_frac`` are their per-env dynamic arrays (the configured value
-        in every env unless you ``set`` or randomize them).  When ``True``, each env
-        draws its own values from the ``*_range`` fields via the per-env Warp RNG, so
-        a single batch spans a *family* of styles.  Resolved at CUDA-graph capture time (a Python branch);
-        per-env values are device data so the captured graph remains fixed.
-        **Deprecated** (a ``DeprecationWarning`` once per built generator;
-        removed in 1.0): draw per-env knobs with ``randomize=`` instead
-        (``scale_range=(a, b)`` -> ``{"generator.size": (a / scale, b / scale)}``,
-        ``rad_range`` -> ``{"generator.rad": ...}``, ``handle_clamp_frac_range`` ->
-        ``{"generator.handle_clamp_frac": ...}``).
-    rad_range : tuple of float or None
-        ``(lo, hi)`` range for per-env ``rad`` when ``style_sampling=True``.
-        ``None`` leaves ``rad`` to its per-env array (the configured ``rad`` unless
-        you ``set`` or randomize it).  Superseded by
-        ``randomize={"generator.rad": (lo, hi)}`` (still supported).
-    scale_range : tuple of float or None
-        ``(lo, hi)`` range for per-env ``scale`` when ``style_sampling=True``.
-        ``None`` collapses to the scalar ``scale`` for all envs.  Deprecated with
-        ``style_sampling``: ``randomize={"generator.size": (lo / scale, hi /
-        scale)}`` (the draws compose multiplicatively with ``size``).
-    handle_clamp_frac_range : tuple of float or None
-        ``(lo, hi)`` range for per-env ``handle_clamp_frac`` when
-        ``style_sampling=True``.  ``None`` leaves ``handle_clamp_frac`` to its
-        per-env array (the configured value unless you ``set`` or randomize it).
-        Superseded by
-        ``randomize={"generator.handle_clamp_frac": (lo, hi)}`` (still supported).
 
     polar_num_knots : int
         *Polar generator only.*  Number of periodic cubic-spline control knots.
@@ -310,13 +236,13 @@ class TrackGenConfig:
     repulsive_grow_mult_min : float
         *Repulsive generator only.*  Lower bound of the per-env target-perimeter
         multiplier draw ``U(min, max)``: the grown loop's target perimeter is
-        ``grow_mult * 2π * r_init``.  Higher → denser mazes at some yield cost.
+        ``grow_mult * 2π * r_init``. Default 2.0. Higher targets may be infeasible
+        under the permanent obstacle and road-width constraints.
 
         .. warning::
 
-            The ``repulsive`` generator is an iterative optimizer — about **two orders
-            of magnitude slower** than ``bezier`` (its cost table is in
-            :doc:`/generators/repulsive`).  It is
+            The ``repulsive`` generator runs a bounded iterative optimizer; measure
+            its cost for your batch and device (:doc:`/generators/repulsive`). It is
             graph-captured on CUDA like the other generators; its loop has a fixed
             iteration bound (its own graph on CUDA 12.4+ and eager ``cpu`` calls stop
             at the first stall window after every env has frozen; eager ``cuda`` calls
@@ -349,17 +275,16 @@ class TrackGenConfig:
         Must be >= ``repulsive_obstacle_radius_min_frac``.
     repulsive_ratchet_rate : float
         *Repulsive generator only.*  Per-iteration length-growth factor of the hard
-        ratchet.  Must be > 0.  ``<= 0.013`` holds full yield with folds; ``>= 0.016``
-        collapses the folds (physical limit).
+        target ratchet. Must be > 0. Only feasible growth is accepted; an unmet
+        target at the iteration bound reports invalid.
     repulsive_alpha : float
-        *Repulsive generator only.*  Tangent-point energy exponent alpha.  Must be > 0.
+        *Repulsive generator only.*  Tangent-point exponent alpha. Must be > 1.
     repulsive_beta : float
         *Repulsive generator only.*  Tangent-point energy exponent beta; obstacle
-        inverse power is ``p = beta - alpha``.  Must be > 0.
+        inverse power is ``p = beta - alpha``. Requires ``alpha + 2 <= beta < 2*alpha + 1``.
     repulsive_tau : float
-        *Repulsive generator only.*  Normalized flow step size.
-    repulsive_w_len : float
-        *Repulsive generator only.*  Weight of the small inert length regularizer.
+        *Repulsive generator only.* Energy-scaled gradient step with bounded
+        backtracking. Must be > 0; stationarity is measured independently of this value.
     repulsive_stages : tuple of int
         *Repulsive generator only.*  Coarse-to-fine resolution schedule ``N = 64 →
         128 → 256``.  Must be non-empty, strictly increasing, and each a positive
@@ -368,32 +293,16 @@ class TrackGenConfig:
     repulsive_settle_iters : int
         *Repulsive generator only.*  Settle-phase iteration budget above the ratchet.
     repulsive_resample_every : int
-        *Repulsive generator only.*  Periodic arc-length reparameterization interval.
+        *Repulsive generator only.* Interval between arc-length resampling proposals;
+        proposals must preserve clearance and decrease the shape energy.
     repulsive_stall_window : int
-        *Repulsive generator only.*  Iterations between per-env stall checks (an env
-        whose area has stopped changing is frozen on device).
+        *Repulsive generator only.* Iterations between optional early-stop checks.
+        A frozen environment remains unchanged through the remaining growth windows.
     repulsive_stall_area_tol : float
-        *Repulsive generator only.*  Freeze an env once it is past target length AND
-        its enclosed-area relative change over a stall window is below this
-        (reparameterization-invariant shape-convergence tolerance).
-    repulsive_deactivate_obstacles : bool
-        *Repulsive generator only.*  When ``True`` (default), zero the inner-disc
-        obstacle weights once an env reaches its target length (the wall stays live),
-        closing the disc halos.
-
-    num_harmonics : int
-        *Fourier / experimental — not used by the runtime path.*  Number of Fourier
-        harmonics (``K``).  Retained for compatibility with
-        ``track_gen._experimental.fourier`` and older sweeps.
-    decay_p : int
-        *Fourier / experimental — not used by the runtime path.*  Fourier amplitude
-        decay exponent: amplitude ~ ``amp / k ** decay_p``.
-    amplitude : float
-        *Fourier / experimental — not used by the runtime path.*  Fourier base
-        amplitude.
-    num_centerline_samples : int
-        *Fourier / experimental — not used by the runtime path.*  Dense sample count
-        for the Fourier generator (``M_max``).
+        *Repulsive generator only.* Early-stop tolerance for relative area change,
+        accepted motion per mean edge, and dimensionless projected stationarity.
+        Actual target length and genuine progress or numerical stationarity are also
+        required. A feasible budget output can be valid while still unfrozen.
 
     half_width : float
         Track half-width in the same coordinate units as the centerline.  Must be
@@ -415,14 +324,6 @@ class TrackGenConfig:
         unknown one.  ``"energy"`` (Adam) and ``"tp_sobolev"`` are oracle-only
         backends in ``tests/_oracle/relaxation.py``, not relax stages:
         ``TrackGenerator`` rejects them.
-    relax_chunk_size : int or None
-        *Energy oracle backend only — not used by the runtime path.*  Env-chunk
-        size for the dense ``[E, N, N]`` interaction term in the energy backend.
-        ``None`` disables chunking.
-    relax_use_warp : bool or None
-        *Oracle-only — not used by the runtime path.*  When ``False``, oracle tests
-        redirect relaxation to the pure-torch path instead of Warp.  Ignored by
-        ``TrackGenerator`` and ``warp_relax.py``.
     relax_tol : float
         Validity thickness tolerance.  The minimum valid track half-width is
         ``(1 - relax_tol) * half_width``.  Default 0.02 (2% tolerance).
@@ -441,8 +342,8 @@ class TrackGenConfig:
         (default) applies Chebyshev semi-iterative acceleration (Macklin et al.
         2014): after ``relax_cheby_start`` plain warmup sweeps, each sweep blends
         the Jacobi update with the current and previous iterates using a
-        host-precomputed omega recurrence, converging ~3x faster per sweep.
-        ``"none"`` runs plain damped Jacobi (the legacy behaviour).
+        host-precomputed omega recurrence. Its benefit depends on the constraint system;
+        ``"none"`` runs plain damped Jacobi.
     relax_cheby_rho : float
         Chebyshev spectral-radius estimate of the underlying Jacobi iteration.
         Must be in ``[0, 1)``.  Default 0.98.  Larger values accelerate the
@@ -479,8 +380,7 @@ class TrackGenConfig:
         narrowphase still runs every sweep on cached candidates.  Default 20: the
         broadphase is built at sweep 0 and refreshed only at multiples of this
         interval, so runs shorter than ``relax_sep_every`` sweeps never refresh it
-        mid-solve — the cadence dropped from 40 alongside the ``relax_iters``
-        150 -> 50 default so the accelerated solve still refreshes mid-solve.
+        mid-solve. Choose the cadence and skin together to retain candidate contacts.
     relax_sep_cache_slots : int
         Broadphase candidate cache capacity per bead.  0 disables the cache (uses
         the dense cadenced scan).  When > 0, each bead stores up to this many
@@ -508,74 +408,26 @@ class TrackGenConfig:
         ``target = 2 * half_width * (1 + relax_margin)``.  Default 0.15 (15%
         margin).  Leaves room for the downstream thickness validity gate.
 
-    energy_steps : int
-        *Energy oracle backend — not used by the runtime path.*  Adam optimiser
-        steps for the ``"energy"`` oracle backend in ``tests/_oracle/relaxation.py``.
-    energy_lr : float
-        *Energy oracle backend — not used by the runtime path.*  Adam learning rate.
-    energy_w_sep : float
-        *Energy oracle backend — not used by the runtime path.*  Separation loss
-        weight.
-    energy_w_len : float
-        *Energy oracle backend — not used by the runtime path.*  Edge-length loss
-        weight.
-    energy_w_bend : float
-        *Energy oracle backend — not used by the runtime path.*  Bending loss weight.
-    energy_w_anchor : float
-        *Energy oracle backend — not used by the runtime path.*  Anchor loss weight.
-
-    tp_iters : int
-        *TP-Sobolev oracle backend — not used by the runtime path.*  Flow steps for
-        the ``"tp_sobolev"`` oracle backend in ``tests/_oracle/relaxation.py``.
-    tp_tau : float
-        *TP-Sobolev oracle backend — not used by the runtime path.*  Step size for
-        the TP-Sobolev flow.
-    tp_alpha : float
-        *TP-Sobolev oracle backend — not used by the runtime path.*  Sobolev kernel
-        exponent alpha; shared with the ``smooth_finish`` finisher.
-    tp_beta : float
-        *TP-Sobolev oracle backend — not used by the runtime path.*  Sobolev kernel
-        exponent beta; shared with the ``smooth_finish`` finisher.
-    smooth_finish : bool
-        *Oracle-only — not used by the runtime path.*  When ``True``, a
-        tangent-point/Sobolev smoothing finisher runs after the primary relaxation
-        solve.  ``TrackGenerator`` rejects ``smooth_finish=True`` at construction
-        time.
-    smooth_finish_iters : int
-        *Oracle-only — not used by the runtime path.*  Flow steps for the smoothing
-        finisher.
-    smooth_finish_tau : float
-        *Oracle-only — not used by the runtime path.*  Step size for the smoothing
-        finisher.
-
     num_points : int
         Intermediate dense-resample resolution (``N``) used before the
         constant-spacing step.  Default 256.  The constant-spacing resampler then
         derives ``count[e] = floor(perimeter / spacing) + 1`` real points per env.
-    output_mode : str
-        Output resampling mode.  The only supported value is
-        ``"constant_spacing"`` (enforced by ``__post_init__``).  Constant arc
-        spacing produces smoother XPBD convergence and higher valid-track yield than
-        a fixed point count.
     spacing : float or None
-        Constant arc-length step (m) between adjacent output points.  ``None``
+        Constant arc-length step in coordinate units between adjacent output points.  ``None``
         (default) auto-couples to ``0.6 * half_width`` — the relaxation-friendly
-        value; a fixed default would be wrong as ``half_width`` varies.  Must
-        resolve to > 0 after auto-coupling.
+        value; a fixed default would be wrong as ``half_width`` varies.  The field
+        retains ``None`` so ``dataclasses.replace(config, half_width=...)`` derives
+        the new spacing automatically. Read ``resolved_spacing`` for the numeric
+        step. An explicit spacing stays fixed when the width changes. Must resolve
+        to > 0.
     N_max : int
         Output buffer width: maximum constant-spacing points per track.  Tracks
         whose true ``count[e]`` exceeds ``N_max`` are truncated, flagged in
         ``Track.truncated`` and fail validity.
-        Default 384: ample headroom at ``half_width = 0.1`` (spacing ≈ 0.06,
-        ~141 max points), full coverage to ``half_width ≈ 0.05`` (~281 max), and
-        ~98% of the ``half_width = 0.03`` regime (~468 max).  Raise ``N_max`` or
-        coarsen ``spacing`` for finer/larger-scale regimes.
+        Default 384. Budget at least ``floor(max_perimeter / spacing) + 1``
+        slots, with headroom for the largest size and post-relaxation perimeter.
+        Raise ``N_max`` or coarsen ``spacing`` for finer or larger courses.
 
-    max_regen_iters : int
-        *Vestigial on the Warp runtime path.*  Maximum regeneration iterations for
-        the torch oracle's accept-first-valid loop in
-        ``tests/_oracle/generators.py``.  Ignored by ``_run_pipeline``, which is
-        single-pass with no host-side retry loop.
     turning_tol : float
         Absolute angular tolerance in radians for the turning-number validity gate.
         Tracks whose signed curvature integral deviates from the expected full turn by
@@ -586,10 +438,11 @@ class TrackGenConfig:
         geometry that passes the global thickness check.
     validity_border_check : bool
         When ``True``, an explicit border self-intersection check is added to the
-        validity gate.  Default ``False``.  Redundant with the thickness/separation
-        gate (a self-crossing fat band drives
-        ``separation_min → 0 → thickness < half_width → invalid``), so the default
-        saves two ``O(N²)`` passes with no change to the valid mask.
+        validity gate. Default ``False``. It tests proper nonadjacent segment
+        crossings within each inner/outer border, adding two ``O(N²)`` passes.
+        Thickness uses sampled bead distances and local curvature; it is not an
+        exact segment-separation proof, so the optional check can add rejections.
+        It does not test crossings between the inner and outer loops.
 
     z_profile : str
         Per-point altitude (Z) profile: the name of a registered ``elevation``
@@ -672,7 +525,6 @@ class TrackGenConfig:
     max_num_points: int = 13
     num_points_per_segment: int = 30
     min_point_distance: float = 0.05
-    min_angle: float = (12.5 / 180) * math.pi
     rad: float = 0.4
     edgy: float = 0.0
     scale: float = 1.0
@@ -691,11 +543,6 @@ class TrackGenConfig:
     checkpoint_best_of_k: int = 4
     checkpoint_clip_fallback: bool = False
 
-    # --- Per-env style sampling (method #1: "Per-env style randomization") ---
-    style_sampling: bool = False
-    rad_range: tuple[float, float] | None = None
-    scale_range: tuple[float, float] | None = None
-    handle_clamp_frac_range: tuple[float, float] | None = None
 
     # --- Polar / Fourier params ---
     polar_num_knots: int = 12
@@ -709,8 +556,8 @@ class TrackGenConfig:
     voronoi_radial_variation: float = 0.62
     voronoi_angular_jitter: float = 0.08
     # --- Repulsive-growth generator params (generator="repulsive") ---
-    repulsive_grow_mult_min: float = 4.5
-    repulsive_grow_mult_max: float = 5.5
+    repulsive_grow_mult_min: float = 2.0
+    repulsive_grow_mult_max: float = 3.0
     repulsive_domain_frac: float = 0.35
     repulsive_domain_init_ratio: float = 4.0
     repulsive_obstacle_count_min: int = 8
@@ -721,20 +568,12 @@ class TrackGenConfig:
     repulsive_alpha: float = 3.0
     repulsive_beta: float = 6.0
     repulsive_tau: float = 0.4
-    repulsive_w_len: float = 30.0
     repulsive_stages: tuple[int, ...] = (64, 128, 256)
     repulsive_settle_iters: int = 40
     repulsive_resample_every: int = 25
     repulsive_stall_window: int = 16
     repulsive_stall_area_tol: float = 0.05
-    repulsive_deactivate_obstacles: bool = True
 
-    # Experimental torch-only Fourier generator fields retained for compatibility with
-    # track_gen._experimental.fourier and older sweeps.
-    num_harmonics: int = 5  # K
-    decay_p: int = 2  # decay exponent: amplitude ~ amp / k**decay_p
-    amplitude: float = 1.0
-    num_centerline_samples: int = 256  # Fourier dense sample count (M_max)
 
     # --- Width params ---
     half_width: float = 0.1
@@ -742,8 +581,6 @@ class TrackGenConfig:
     # --- Relaxation: backend selection + scale ---
     relax_enable: bool = True
     relax_solver: str = "xpbd"            # {"xpbd","energy","tp_sobolev"}
-    relax_chunk_size: int | None = None
-    relax_use_warp: bool | None = None
     relax_tol: float = 0.02
     relax_band: int | None = None
     relax_iters: int = 50
@@ -761,31 +598,13 @@ class TrackGenConfig:
     relax_bend_relax: float = 1.5
     relax_margin: float = 0.15
 
-    # energy (Adam) — oracle-only backend
-    energy_steps: int = 800
-    energy_lr: float = 3e-3
-    energy_w_sep: float = 80.0
-    energy_w_len: float = 8.0
-    energy_w_bend: float = 1.0
-    energy_w_anchor: float = 0.01
-    # tp_sobolev — oracle-only backend (standalone + finisher share tp_alpha/tp_beta)
-    tp_iters: int = 100
-    tp_tau: float = 0.7
-    tp_alpha: float = 2.0
-    tp_beta: float = 4.5
-    # optional tangent-point/Sobolev smoothing finisher — oracle-only
-    smooth_finish: bool = False
-    smooth_finish_iters: int = 8
-    smooth_finish_tau: float = 0.2
 
     # --- Output params ---
     num_points: int = 256  # N: intermediate dense->resample resolution before constant-spacing
-    output_mode: str = "constant_spacing"  # the only supported mode (see __post_init__)
     spacing: float | None = None
     N_max: int = 384
 
     # --- Robustness params ---
-    max_regen_iters: int = 10
     turning_tol: float = 0.1
     w_floor: float = 1e-3
     validity_border_check: bool = False
@@ -807,7 +626,16 @@ class TrackGenConfig:
     # --- Per-generator parameters (None | Params instance | mapping of its fields) ---
     generator_params: Any = None
 
+    on_invalid: str = "poison"
+
+    @property
+    def resolved_spacing(self) -> float:
+        """The explicit spacing, or ``0.6 * half_width`` when automatic (``None``)."""
+        # Preserve multiplication order for NumPy scalar widths as well as Python floats.
+        return float(0.6 * self.half_width) if self.spacing is None else float(self.spacing)
+
     def __post_init__(self):
+        _validate_invalid_policy(self)
         if int(self.num_envs) < 1:
             raise ValueError(f"num_envs must be >= 1, got {self.num_envs!r}")
         if float(self.half_width) <= 0.0:
@@ -855,15 +683,8 @@ class TrackGenConfig:
         # Only constant_spacing is supported: a constant link SIZE (~0.6*half_width) relaxes
         # to smoother, higher-yield tracks than a constant point COUNT, which over-resolves
         # the centerline (jagged XPBD -> folded roads).
-        if self.output_mode != "constant_spacing":
-            raise ValueError(
-                f"output_mode must be 'constant_spacing' (the only supported mode), "
-                f"got {self.output_mode!r}")
-        # Auto-couple spacing to half_width (~0.6*half_width relaxes to smoother tracks);
-        # a fixed spacing default would be wrong as half_width varies (too coarse -> degenerate).
-        if self.spacing is None:
-            self.spacing = 0.6 * self.half_width
-        if float(self.spacing) <= 0.0:
+        # Keep None as automatic intent so replacing half_width derives a new step.
+        if self.spacing is not None and float(self.spacing) <= 0.0:
             raise ValueError(f"spacing must be > 0, got {self.spacing!r}")
 
         if not isinstance(self.z_profile, str) or not self.z_profile:
@@ -874,20 +695,13 @@ class TrackGenConfig:
             raise ValueError(
                 "z_control_points must be >= 3, got "
                 f"{self.z_control_points!r}")
-        _warn_dead_fields(self)
 
 
-@dataclass
+@dataclass(frozen=True)
 class GateGenConfig:
     """Configuration for fixed-batch native gate sequence generation.
 
-    Used by ``GateGenerator`` to produce batched ``GateSequence`` results.  The
-    gate path only samples corner anchors and emits them directly as gates; it never
-    runs Bezier or hull curve assembly.  As a result, ``num_points_per_segment``,
-    ``rad``, ``edgy``, ``handle_clamp_frac``, and ``hull_displacement`` are **inert
-    for gate output** (kept for config parity with ``TrackGenConfig``).  The
-    effective knobs for anchor placement are ``min_num_points``,
-    ``max_num_points``, ``min_point_distance``, and ``scale``.
+    Gate generators sample anchors directly.
 
     Attributes
     ----------
@@ -923,45 +737,28 @@ class GateGenConfig:
         Gate output ordering: any registered ``order`` stage the generator supports
         (``track_gen.plugin.registry.available("order")``; checked at
         ``GateGenerator`` construction).  Built-ins: ``"ccw"`` (an angle sort around
-        the env's anchor centroid, clockwise in a y-up frame; the name is historical),
+        the env's anchor centroid, clockwise in a y-up frame),
         ``"raw"`` (the generator's own order) and ``"random_pairs"`` (random gate pairs
         for training objectives).  ``None`` (default): the generator's default order,
         resolved at ``GateGenerator`` (hence ``Course``) construction by
-        ``legacy.to_gate_pipeline_spec`` with the rule of ``presets.gates(order=None)``
+        ``bind_generator`` before the run config is built, with the rule of ``presets.gates(order=None)``
         and the conformance kit: its ``preferred["order"]`` when it accepts it, else
         ``"ccw"`` when it accepts it, else the first order it accepts.  That is
         ``"ccw"`` for the five built-ins, and ``"raw"`` for a generator that provides
-        per-anchor attributes.  The generator's run config (what a legacy
-        ``GateGeneratorSpec`` receives) holds the resolved name, never ``None``.
+        per-anchor attributes. The resolved run config holds the order name, never
+        ``None``; the pipeline selects that ordering Stage before building downstream stages.
 
     min_num_points : int
         Minimum corner-anchor count per env for the bezier/hull point sampler.
         Must be >= 2.  Affects the number of sampled anchor positions.
     max_num_points : int
         Maximum corner-anchor count per env.  Must be >= ``min_num_points``.
-    num_points_per_segment : int
-        *Inert for gate output.*  Dense samples per segment for Bezier/hull curve
-        assembly; the gate path does not assemble curves.  Kept for config parity
-        with ``TrackGenConfig``.
     min_point_distance : float
         Minimum grid-cell spacing for anchor-position sampling.  Must be > 0.
         Governs the cell grid as ``num_cells = int(1 / (min_point_distance * 2))``.
-    rad : float
-        *Inert for gate output.*  Bezier handle-length fraction.  Kept for config
-        parity with ``TrackGenConfig``.
-    edgy : float
-        *Inert for gate output.*  Corner-tangent blend weight.  Kept for config
-        parity with ``TrackGenConfig``.
     scale : float
         Isotropic scale multiplier for anchor positions.  Does affect the sampled
         anchor coordinates and hence gate positions.
-    handle_clamp_frac : float
-        *Inert for gate output.*  Bezier handle clamp.  Kept for config parity with
-        ``TrackGenConfig``.
-    hull_displacement : float
-        *Inert for gate output.*  Hull midpoint displacement fraction.  Kept for
-        config parity with ``TrackGenConfig``.
-
     polar_num_knots : int
         *Polar generator only.*  Number of periodic cubic-spline control knots.
         Default 12.
@@ -1056,15 +853,13 @@ class GateGenConfig:
         normalization target).  It scales the gate layout's plan view only:
         ``gate_radius``, ``gate_width`` and the ``z_*`` fields stay absolute.  Not the
         batch size (``num_envs``).  In ``[0.1, 10]``, default 1.0; a pipeline with no
-        stage declaring ``size`` (a legacy gate generator) refuses a value other
+        stage declaring ``size`` refuses a value other
         than 1.
 
     generator_params : Params, Mapping or None
         The selected gate generator's parameters, as
         ``TrackGenConfig.generator_params`` (``None``: the flat fields above).  The
-        inert fields (``num_points_per_segment``, ``rad``, ``edgy``,
-        ``handle_clamp_frac``, ``hull_displacement``) belong to no gate generator.
-        The generator-specific rules (point family, ``voronoi_*``, ``checkpoint_*``)
+        generator-specific rules (point family, ``voronoi_*``, ``checkpoint_*``)
         are checked at ``GateGenerator`` construction, for the selected generator
         only; ``max_gates`` sees the resolved values.
     """
@@ -1080,21 +875,11 @@ class GateGenConfig:
     gate_width: float = 0.0
     gate_ordering: "str | None" = None
 
-    # Point-family (bezier/hull) sampler inputs. The gate path only samples corner
-    # anchors and emits them as gates; it never runs the Bezier/hull curve assembly,
-    # so num_points_per_segment, rad, edgy, handle_clamp_frac, and hull_displacement
-    # are inert for gate output (they remain for parity with TrackGenConfig and are
-    # hidden in the explorer UI). min_num_points, max_num_points, min_point_distance,
-    # and scale do affect the sampled anchors.
+    # Point-family (bezier/hull) anchor sampler inputs.
     min_num_points: int = 9
     max_num_points: int = 13
-    num_points_per_segment: int = 30
     min_point_distance: float = 0.05
-    rad: float = 0.4
-    edgy: float = 0.0
     scale: float = 1.0
-    handle_clamp_frac: float = 0.4
-    hull_displacement: float = 0.15
 
     polar_num_knots: int = 12
     polar_radial_jitter: float = 0.60
@@ -1126,7 +911,10 @@ class GateGenConfig:
     # --- Per-generator parameters (None | Params instance | mapping of its fields) ---
     generator_params: Any = None
 
+    on_invalid: str = "poison"
+
     def __post_init__(self):
+        _validate_invalid_policy(self)
         if int(self.num_envs) < 1:
             raise ValueError(f"num_envs must be >= 1, got {self.num_envs!r}")
         if int(self.min_gates) < 2:
@@ -1255,7 +1043,6 @@ _TRACK_SCHEMA = (
     ("truncated", "env", wp.int32), ("generation", "env", wp.int32),
     ("fail_mask", "env", wp.int32), ("half_width", "point", wp.float32),
 )
-_TRACK_OPTIONAL = frozenset({"truncated", "generation", "fail_mask", "half_width"})
 _GATE_SCHEMA = (
     ("position", "point", wp.vec3f), ("tangent", "point", wp.vec3f),
     ("forward", "point", wp.vec3f), ("orientation", "point", wp.quatf),
@@ -1264,7 +1051,6 @@ _GATE_SCHEMA = (
     ("count", "env", wp.int32), ("generation", "env", wp.int32),
     ("fail_mask", "env", wp.int32),
 )
-_GATE_OPTIONAL = frozenset({"generation", "fail_mask"})
 _CENTERLINE_SCHEMA = (
     ("center", "point", wp.vec3f), ("tangent", "point", wp.vec3f),
     ("arclen", "point", wp.float32), ("length", "env", wp.float32),
@@ -1397,30 +1183,40 @@ def _stored_layout(obj, owner: str) -> "Layout | None":
     return lay
 
 
+def _require_result_storage(self, owner=None) -> None:
+    """Reject missing concrete result storage without inspecting or touching arrays."""
+    owner = owner or type(self)._RESULT_NAME
+    for name in (*[n for n, _, _ in type(self)._SCHEMA], "layout"):
+        if getattr(self, name, None) is None:
+            raise ValueError(f"{owner}.{name} is None; required result storage")
+
+
 def _validate(self, need=()) -> Layout:
     """Check every field of this result against its layout; return the layout.
 
-    The layout is :attr:`layout` when set, else inferred (``num_envs`` from
-    ``count``, ``stride`` from the first per-point field, the device of ``count``,
-    ``closed=True``; nothing is mutated). Then every array field that is not ``None``
-    must be a contiguous 1-D array of its dtype, ``[E * stride]`` (per point) or
+    Track and GateSequence require every array field and a stored :attr:`layout`.
+    A Centerline without a layout infers one (``num_envs`` from ``count``, ``stride``
+    from the first per-point field, the device of ``count``, ``closed=True``;
+    nothing is mutated). Every array field present must be a contiguous 1-D array
+    of its dtype, ``[E * stride]`` (per point) or
     ``[E]`` (per env), on the layout's device (compared canonically: ``"cuda"`` ==
     ``"cuda:0"``), and every ``attributes`` entry a contiguous ``[E * stride]``
     float32 / int32 / vec2f / vec3f array on that device. Host only (a few
     microseconds): no device work, safe inside a capture.
 
     Args:
-        need: Field names that must not be ``None`` (an optional field a consumer
-            reads).
+        need: Field names that must not be ``None`` (for an optional Centerline
+            field a consumer reads). Track and GateSequence require all arrays.
 
     Returns:
-        The stored or inferred :class:`~track_gen.results.Layout`.
+        The stored :class:`~track_gen.results.Layout`, or an inferred Centerline layout.
 
     Raises:
         ValueError: the first field that does not match, naming it and the expected
             shape (e.g. ``Track.inner: expected a contiguous [3072] vec3f
             ([E*stride] = [8*384]) array on cpu, got shape (3064,) vec3f on cpu``); a
-            field of ``need`` that is ``None``; a ``count`` that is not an array.
+            required Track/GateSequence array or layout that is ``None``; a field
+            of ``need`` that is ``None``; a ``count`` that is not an array.
         TypeError: :attr:`layout` is neither a ``Layout`` nor ``None``.
     """
     return _validate_against(self, need, None, None)
@@ -1434,6 +1230,8 @@ def _validate_against(self, need, _owner: "str | None",
     a ``need`` field that is ``None``."""
     cls = type(self)
     owner = _owner or cls._RESULT_NAME
+    if getattr(cls, "_REQUIRED_STORAGE", False):
+        _require_result_storage(self, owner)
     if isinstance(need, str):
         need = (need,)
     stored = _stored_layout(self, owner)
@@ -1811,6 +1609,10 @@ class GateSequence:
     :meth:`clone` (an owned copy; allocates) and :meth:`alloc` (a fully allocated
     result).
 
+    Construction requires all concrete arrays and layout and rejects explicit None;
+    :meth:`validate` checks their shape, dtype and device. Metadata mappings can be
+    omitted and start empty.
+
     Attributes
     ----------
     position : wp.array
@@ -1828,7 +1630,8 @@ class GateSequence:
         NaN-padded past ``count[e]``.
     orientation : wp.array
         Flat ``[E * max_gates]`` ``quatf`` gate poses (``wp.quatf(x, y, z, w)``):
-        the roll-free frame with local x = gate forward, y = left, z = up.
+        local x = gate forward, y = left, z = up. Default frames are roll-free;
+        ``gate_frames.posed`` additionally applies the generator-provided roll.
         NaN-padded past ``count[e]``.
     half_size : wp.array
         Flat ``[E * max_gates]`` ``float32`` square-opening half-extents
@@ -1846,7 +1649,7 @@ class GateSequence:
     count : wp.array
         ``[E]`` ``int32`` real gate counts per env.  All other arrays are NaN-padded
         for slots ``i >= count[e]``.
-    generation : wp.array or None
+    generation : wp.array
         ``[E]`` ``int32``: the seed epoch (``GateGenerator.seeds.epoch``) each
         env's current gates were built at.  ``0`` until the first advance.  It is
         the epoch, not a change counter: a reseed at the same epoch
@@ -1856,16 +1659,13 @@ class GateSequence:
         change exactly when an env gets a NEW sequence
         (``generate(advance=True, ...)`` / ``Course.regenerate(advance=True,
         ...)``), so that comparing it on device to a stored copy detects every
-        regeneration.  ``GateGenerator`` always allocates it; ``None`` on a
-        ``GateSequence`` built elsewhere.
-    fail_mask : wp.array or None
+        regeneration. Required also on a GateSequence built by hand.
+    fail_mask : wp.array
         ``[E]`` ``int32`` per-env fail bitmask: bit ``i`` set means check ``i``
         failed (``fail_bits`` names the bits: ``validity.gate_default``'s 0-5 are
         ``count``, ``finite``, ``tangent``, ``spacing``, ``crossing``, ``grade``;
-        plugin checks own 16-30).  When it is not ``None``,
-        ``valid[e] == (fail_mask[e] == 0)``.  ``GateGenerator`` and
-        ``warp_gate.alloc_gate_sequence`` always allocate it (``finalize_gate_sequence``
-        writes it); ``None`` on a ``GateSequence`` built by hand.
+        plugin checks own 16-30). ``valid[e] == (fail_mask[e] == 0)``.
+        Required also on a GateSequence built by hand.
     fail_bits : Mapping[str, int]
         ``name -> bit index`` of every bit of ``fail_mask`` the pipeline assigns
         (``GateGenerator.program.fail_bits``); the crossing / grade bits are named
@@ -1880,11 +1680,10 @@ class GateSequence:
         on the centerline, e.g. an elevation with ``elevation_on="centerline"``) is
         left out (``GateGenerator.program.attributes`` lists what is there).  Empty
         unless a stage exports one.
-    layout : Layout or None
-        The batch's :class:`~track_gen.results.Layout` (``stride`` = ``max_gates``),
-        set on every ``GateSequence`` TrackGen makes (a generator's result, a
-        :meth:`view`, :meth:`clone`, :meth:`alloc`); ``None`` on one built by hand
-        (:meth:`validate` infers it).
+    layout : Layout
+        The required batch :class:`~track_gen.results.Layout` (``stride`` =
+        ``max_gates``), including on a GateSequence built by hand. Use :meth:`alloc`
+        to allocate every concrete array for a layout.
     """
 
     position: wp.array
@@ -1896,16 +1695,17 @@ class GateSequence:
     right: wp.array
     valid: wp.array
     count: wp.array
-    generation: "wp.array | None" = None
-    fail_mask: "wp.array | None" = None
+    generation: wp.array
+    fail_mask: wp.array
+    layout: Layout
     fail_bits: Mapping[str, int] = field(default_factory=dict)
     attributes: Mapping[str, wp.array] = field(default_factory=dict)
 
-    layout: "Layout | None" = None
-
     _RESULT_NAME = "GateSequence"
     _SCHEMA = _GATE_SCHEMA
-    _OPTIONAL = _GATE_OPTIONAL
+    _OPTIONAL = frozenset()
+    _REQUIRED_STORAGE = True
+    __post_init__ = _require_result_storage
     _ANCHOR = "position"
     validate = _validate
     view = _view
@@ -1936,6 +1736,10 @@ class Track:
     mixed batch), :meth:`copy_from` (stream-ordered copies, no allocation: the hot-path
     snapshot), :meth:`clone` (an owned copy; allocates) and :meth:`alloc` (a fully
     allocated result).
+
+    Construction requires all concrete arrays and layout and rejects explicit None;
+    :meth:`validate` checks their shape, dtype and device. Metadata mappings can be
+    omitted and start empty.
 
     Attributes
     ----------
@@ -2011,15 +1815,14 @@ class Track:
         and hull wind clockwise; polar, voronoi and checkpoint wind counter-clockwise),
         so this field lets a consumer orient itself: for a CCW loop ``outer`` lies to
         the right of increasing arc length, for a CW loop to the left.
-    truncated : wp.array or None
+    truncated : wp.array
         ``[E]`` ``int32`` N_max truncation flags (0 or 1), written on device by the
         constant-spacing resample.  ``1`` means the loop needed more than ``N_max``
         points (``floor(perimeter / spacing) + 1 > N_max``), so ``count[e]`` was
         clamped to ``N_max`` and the tail of the loop was dropped; such envs always
         have ``valid == 0``.  Increase ``N_max`` (or ``spacing``) if any are set.
-        ``TrackGenerator`` always allocates it; ``None`` on a ``Track`` built
-        elsewhere (e.g. the standalone ``inflate_warp`` path).
-    generation : wp.array or None
+        Required also on a Track built by hand.
+    generation : wp.array
         ``[E]`` ``int32``: the seed epoch (``TrackGenerator.seeds.epoch``) each
         env's current track was built at.  ``0`` until the first advance.  It is
         the epoch, not a change counter: a reseed at the same epoch
@@ -2029,28 +1832,25 @@ class Track:
         change exactly when an env gets a NEW track
         (``generate(advance=True, ...)`` / ``Course.regenerate(advance=True,
         ...)``), so that comparing it on device to a stored copy detects every
-        regeneration.  ``TrackGenerator`` always allocates it; ``None`` on a
-        ``Track`` built elsewhere.
-    fail_mask : wp.array or None
+        regeneration. Required also on a Track built by hand.
+    fail_mask : wp.array
         ``[E]`` ``int32`` per-env fail bitmask: bit ``i`` set means check ``i``
         failed (``fail_bits`` names the bits: the built-in checks' 0-7 are
         ``generator``, ``turning``, ``finite``, ``thickness``, ``w_floor``,
-        ``border``, ``grade``, ``truncation``; plugin checks own 16-30).  When it
-        is not ``None``, ``valid[e] == (fail_mask[e] == 0)``.  ``TrackGenerator``
-        always allocates it; ``None`` on a ``Track`` built elsewhere (e.g. the
-        standalone ``inflate_warp`` path).
+        ``border``, ``grade``, ``truncation``; plugin checks own 16-30).
+        ``valid[e] == (fail_mask[e] == 0)``. Required also on a Track built by hand.
     fail_bits : Mapping[str, int]
         ``name -> bit index`` of every bit of ``fail_mask`` the pipeline assigns
         (``TrackGenerator.program.fail_bits``); the border / grade bits are named
         even when their check is off (then never set).  Empty on a ``Track`` built
         elsewhere.
-    half_width : wp.array or None
+    half_width : wp.array
         Flat ``[E * N_max]`` ``float32`` half-width of the band at each centerline
         point (the offset's: ``‖outer[i] - center[i]‖`` in plan view), NaN past
         ``count[e]``.  The constant ``half_width`` of the config on every real point
         at constant width (``width.constant``); the per-point width of a width stage
-        or a generator that provides one otherwise.  ``TrackGenerator`` always
-        allocates it; ``None`` on a ``Track`` built elsewhere.
+        or a generator that provides one otherwise. Required on every Track;
+        a pipeline without an offset stage retains an all-NaN array.
     attributes : Mapping[str, wp.array]
         The per-point attributes the pipeline exports (``StageBuilder.write(...,
         export=True)``), keyed by the channel name without its domain prefix
@@ -2059,11 +1859,10 @@ class Track:
         ``interp`` policy, NaN (floats) / ``-1`` (int32) past ``count[e]``.  Stable
         pointers for the generator's lifetime.  Empty unless a stage exports one
         (``TrackGenerator.program.attributes`` describes them).
-    layout : Layout or None
-        The batch's :class:`~track_gen.results.Layout` (``num_envs``, ``stride`` =
-        ``N_max``, ``device``, ``closed``), set on every ``Track`` TrackGen makes (a
-        generator's result, a :meth:`view`, :meth:`clone`, :meth:`alloc`); ``None`` on
-        one built by hand (:meth:`validate` infers it).
+    layout : Layout
+        The required batch :class:`~track_gen.results.Layout` (``num_envs``,
+        ``stride`` = ``N_max``, ``device``, ``closed``), including on a Track built
+        by hand. Use :meth:`alloc` to allocate every concrete array for a layout.
     """
 
     outer: wp.array
@@ -2076,17 +1875,19 @@ class Track:
     valid: wp.array
     count: wp.array
     winding: wp.array
-    truncated: "wp.array | None" = None
-    generation: "wp.array | None" = None
-    fail_mask: "wp.array | None" = None
+    truncated: wp.array
+    generation: wp.array
+    fail_mask: wp.array
+    half_width: wp.array
+    layout: Layout
     fail_bits: Mapping[str, int] = field(default_factory=dict)
-    half_width: "wp.array | None" = None
     attributes: Mapping[str, wp.array] = field(default_factory=dict)
-    layout: "Layout | None" = None
 
     _RESULT_NAME = "Track"
     _SCHEMA = _TRACK_SCHEMA
-    _OPTIONAL = _TRACK_OPTIONAL
+    _OPTIONAL = frozenset()
+    _REQUIRED_STORAGE = True
+    __post_init__ = _require_result_storage
     _ANCHOR = "center"
     validate = _validate
     view = _view

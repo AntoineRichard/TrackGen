@@ -105,12 +105,11 @@ def test_every_library_result_carries_its_programs_layout():
     assert p.result.layout == p.layout == Layout(2, S, "cpu", True)
 
 
-def test_a_hand_built_track_infers_its_layout(track):
-    hand = Track(*(getattr(track, f.name) for f in dataclasses.fields(Track)
-                   if f.name not in ("fail_bits", "attributes", "layout")))
-    assert hand.layout is None
-    assert hand.validate() == Layout(E, S, "cpu", True)
-    assert hand.layout is None                               # validate never mutates
+def test_a_hand_built_track_requires_and_keeps_its_layout(track):
+    hand = Track(**{f.name: getattr(track, f.name) for f in dataclasses.fields(Track)
+                    if f.name not in ("fail_bits", "attributes")})
+    assert hand.layout == Layout(E, S, "cpu", True)
+    assert hand.validate() == hand.layout
 
 
 # ---------------------------------------------------------------------------------------
@@ -154,17 +153,11 @@ GATE_FIELDS = [n for n, _, _ in GateSequence._SCHEMA]
 def test_validate_rejects_every_mismatched_track_field(track, field, how):
     arr = getattr(track, field)
     bad = {"dtype": _bad_dtype, "short": _short, "strided": _strided}[how](arr)
-    obj = _replace(track, layout=None, **{field: bad})
-    if how == "short" and field in ("center", "count"):
-        # the inference anchors: count gives E, center the stride
-        with pytest.raises(ValueError, match=r"^Track\.(center|outer|length)"):
-            obj.validate()
-        return
+    obj = _replace(track, **{field: bad})
     n = arr.shape[0]
     with pytest.raises(ValueError, match=rf"^Track\.{field}: expected a contiguous \[{n}\] "):
         obj.validate()
-    with pytest.raises(ValueError, match=rf"^Track\.{field}: expected a contiguous"):
-        _replace(track, **{field: bad}).validate()           # against the stored layout
+
 
 
 @pytest.mark.parametrize("field", GATE_FIELDS)
@@ -194,24 +187,21 @@ def test_validate_messages_attributes_need_and_stored_layout(track):
     bad = _replace(track, attributes={"acme.k": wp.zeros(1536, dtype=wp.quatf, device=DEV)})
     with pytest.raises(ValueError, match=r"attributes\['acme\.k'\]"):
         bad.validate()
-    no_hw = _replace(track, half_width=None)
-    assert no_hw.validate() == track.layout                  # optional: None passes
-    with pytest.raises(ValueError, match=r"Track\.half_width is None; this consumer "
-                                         r"needs it"):
-        no_hw.validate(need=("half_width",))
+    no_hw = _replace(track)
+    no_hw.half_width = None
+    with pytest.raises(ValueError, match=r"Track\.half_width is None"):
+        no_hw.validate()
     with pytest.raises(ValueError, match=r"unknown fields \['nope'\]"):
         track.validate(need=("nope",))
-    with pytest.raises(ValueError, match=r"^Track\.half_width is None; this consumer "
-                                         r"needs it$"):
-        no_hw.validate(need="half_width")                     # a str is one field
+    assert track.validate(need="half_width") == track.layout
     # a stored layout contradicting count
     with pytest.raises(ValueError, match=r"^Track\.outer: expected a contiguous \[3072\]"):
         _replace(track, layout=Layout(8, S, "cpu")).validate()
     with pytest.raises(TypeError, match=r"Track\.layout must be a track_gen\.Layout"):
         _replace(track, layout=(4, 384)).validate()
-    with pytest.raises(ValueError, match=r"Track\.count: expected an \[E\] int32 "
-                                         r"wp\.array, got NoneType"):
-        _replace(track, count=None, layout=None).validate()
+    with pytest.raises(ValueError, match=r"Track\.count is None"):
+        _replace(track, count=None)
+
 
 
 # ---------------------------------------------------------------------------------------
@@ -219,8 +209,8 @@ def test_validate_messages_attributes_need_and_stored_layout(track):
 # ---------------------------------------------------------------------------------------
 
 def _hand(track, **kw):
-    """A hand-built Track (no layout) with ``kw`` replaced."""
-    return _replace(track, layout=None, **kw)
+    """A hand-built Track with its explicit layout and ``kw`` replaced."""
+    return _replace(track, **kw)
 
 
 # Roadmap PR14: the optional members a utility reads when present (``valid``: the
@@ -273,7 +263,7 @@ def test_every_utility_rejects_a_mismatched_field_it_reads(track, consumer, fiel
 @pytest.mark.parametrize("consumer,field", _GATE_CASES)
 def test_every_gate_utility_rejects_a_mismatched_field_it_reads(gates, consumer, field):
     make, _ = _GATE_CONSUMERS[consumer]
-    bad = _replace(gates, layout=None, **{field: _bad_dtype(getattr(gates, field))})
+    bad = _replace(gates, **{field: _bad_dtype(getattr(gates, field))})
     with pytest.raises(ValueError, match=rf"^{consumer}: GateSequence\.{field}: "
                                          rf"expected a contiguous"):
         make(bad)
@@ -424,9 +414,6 @@ def test_a_two_dimensional_member_is_named_as_such(track):
     with pytest.raises(ValueError, match=r"^x: " + msg):
         check_source(two_d, HasCenterline, consumer="x")
     with pytest.raises(ValueError, match=r"^Track\.center: expected a flat 1-D"):
-        dataclasses.replace(track, layout=None,
-                            center=track.center.reshape((E, S))).validate()
-    with pytest.raises(ValueError, match=r"^Track\.center: expected a flat 1-D"):
         dataclasses.replace(track, center=track.center.reshape((E, S))).validate()
 
 
@@ -451,11 +438,8 @@ def test_course_line_produces_a_centerline(gates):
     assert type(c) is Centerline and c.layout == Layout(E, 8 * 32, "cpu", True)
     line.refresh()
     assert c.validate() == c.layout
-    with pytest.warns(DeprecationWarning, match=r"CourseLine\.track is a Centerline since "
-                                                r"0\.2\.0\.dev5 and is deprecated; use "
-                                                r"CourseLine\.centerline"):
-        alias = line.track
-    assert alias is c and not isinstance(alias, Track)
+    assert not hasattr(line, "track")
+    assert not isinstance(c, Track)
     assert not hasattr(c, "outer")
 
 
@@ -464,14 +448,14 @@ def test_course_line_produces_a_centerline(gates):
 # ---------------------------------------------------------------------------------------
 
 def test_view_is_a_zero_copy_env_slice(track):
-    t = _replace(track, attributes={"acme.k": wp.zeros(E * S, dtype=wp.vec2f, device=DEV)},
-                 half_width=None)
+    t = _replace(track, attributes={"acme.k": wp.zeros(E * S, dtype=wp.vec2f, device=DEV)})
     v = t.view(1, 3)
     assert v.layout == Layout(2, S, "cpu", True) and v._env_offset == 1
     item = 12
     assert v.center.ptr - t.center.ptr == 1 * S * item
     assert v.count.ptr - t.count.ptr == 4 and v.count.shape == (2,)
-    assert v.half_width is None and v.fail_bits is t.fail_bits
+    assert v.half_width.ptr == t.half_width.ptr + S * 4
+    assert v.fail_bits is t.fail_bits
     assert v.attributes["acme.k"].ptr - t.attributes["acme.k"].ptr == S * 8
     assert v.center._ref is t.center
     vv = v.view(1, 2)
@@ -532,9 +516,10 @@ def test_copy_from_errors(track, gates):
                                          r"Layout\(4, 384, 'cpu', True\), src is "
                                          r"Layout\(2, 384, 'cpu', True\)"):
         snap.copy_from(track.view(0, 2))
-    with pytest.raises(ValueError, match=r"src\.half_width is None, but this Track holds "
-                                         r"half_width"):
-        snap.copy_from(_replace(track, half_width=None))
+    corrupted = _replace(track)
+    corrupted.half_width = None
+    with pytest.raises(ValueError, match=r"Track\.half_width is None"):
+        snap.copy_from(corrupted)
     mine = _replace(snap, attributes={"acme.k": wp.zeros(E * S, dtype=wp.float32, device=DEV)})
     with pytest.raises(ValueError, match=r"src has no attribute 'acme\.k'"):
         mine.copy_from(track)
@@ -564,8 +549,6 @@ def test_clone_owns_its_memory_and_shares_fail_bits(track):
     assert c.fail_bits is res.fail_bits
     gen.generate(advance=True)
     assert c.center.numpy().tobytes() != res.center.numpy().tobytes()
-    no_hw = _replace(track, half_width=None).clone()
-    assert no_hw.half_width is None
     with pytest.raises(ValueError, match=r"^Track\.inner"):
         _replace(track, inner=_short(track.inner)).clone()
 
@@ -753,16 +736,17 @@ def test_out_errors_layout_and_type():
                                          r"this pipeline writes Layout\(4, 384, 'cpu', "
                                          r"True\)$"):
         build(spec, out=Track.alloc(Layout(2, S, DEV)))
-    hand = _replace(Track.alloc(Layout(E, S, DEV)), layout=None)
+    hand = Track.alloc(Layout(E, S, DEV))
     p = build(spec, out=hand, seeds=1)
-    assert hand.layout == p.layout                           # set when it was None
+    assert hand.layout == p.layout
     assert p.result is hand
     with pytest.raises(ValueError, match=r"^out\.outer: expected a contiguous \[1536\]"):
-        build(spec, out=_replace(Track.alloc(Layout(E, S, DEV)), layout=None,
+        build(spec, out=_replace(Track.alloc(Layout(E, S, DEV)),
                                  outer=wp.zeros(5, dtype=wp.vec3f, device=DEV)))
-    with pytest.raises(ValueError, match=r"^out\.truncated is None; this pipeline needs "
-                                         r"it$"):
-        build(spec, out=_replace(Track.alloc(Layout(E, S, DEV)), truncated=None))
+    corrupted = Track.alloc(Layout(E, S, DEV))
+    corrupted.truncated = None
+    with pytest.raises(ValueError, match=r"^out\.truncated is None"):
+        build(spec, out=corrupted)
 
 
 def test_a_failed_build_leaves_no_overlap_entry(monkeypatch):

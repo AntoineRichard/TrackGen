@@ -13,10 +13,14 @@ Deterministic like ``viz.render_readme_assets``: fixed seeds, cpu device.
 from __future__ import annotations
 
 from pathlib import Path
+import argparse
+import json
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from viz.racing_theme import (save_figure, get_palette,
+                              rendered_geometry, render_variants)
 import numpy as np
 from matplotlib.patches import Polygon as MplPolygon
 
@@ -196,7 +200,7 @@ def render_utilities_overview(output_dir: Path = Path("docs/assets")) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     out = output_dir / "utilities-overview.png"
-    fig.savefig(out, dpi=150)
+    save_figure(fig, out, dpi=150)
     plt.close(fig)
     return out
 
@@ -257,7 +261,7 @@ def render_boundary_props(output_dir: Path = Path("docs/assets")) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     out = output_dir / "boundary-props.png"
-    fig.savefig(out, dpi=150)
+    save_figure(fig, out, dpi=150)
     plt.close(fig)
     return out
 
@@ -331,7 +335,7 @@ def render_oob_collision(output_dir: Path = Path("docs/assets")) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     out = output_dir / "oob-collision.png"
-    fig.savefig(out, dpi=150)
+    save_figure(fig, out, dpi=150)
     plt.close(fig)
     return out
 
@@ -406,7 +410,7 @@ def render_checkpoints_overview(output_dir: Path = Path("docs/assets")) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     out = output_dir / "checkpoints-overview.png"
-    fig.savefig(out, dpi=150)
+    save_figure(fig, out, dpi=150)
     plt.close(fig)
     return out
 
@@ -476,7 +480,7 @@ def render_progress_tracking(output_dir: Path = Path("docs/assets")) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     out = output_dir / "progress-tracking.png"
-    fig.savefig(out, dpi=150)
+    save_figure(fig, out, dpi=150)
     plt.close(fig)
     return out
 
@@ -549,18 +553,29 @@ def render_disc_collision(output_dir: Path = Path("docs/assets")) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     out = output_dir / "disc-collision.png"
-    fig.savefig(out, dpi=150)
+    save_figure(fig, out, dpi=150)
     plt.close(fig)
     return out
 
 
-def main() -> None:
-    print(render_utilities_overview().resolve())
-    print(render_boundary_props().resolve())
-    print(render_oob_collision().resolve())
-    print(render_checkpoints_overview().resolve())
-    print(render_progress_tracking().resolve())
-    print(render_disc_collision().resolve())
+def main(argv=None) -> None:
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out-dir",type=Path,default=Path("docs/assets"))
+    parser.add_argument("--theme",choices=("light","dark","both"),default="light")
+    parser.add_argument("--published-only",action="store_true")
+    args=parser.parse_args(argv)
+    def render(out):
+        producers=[render_utilities_overview,render_boundary_props,
+                   render_checkpoints_overview,render_progress_tracking]
+        if not args.published_only:
+            producers.extend((render_oob_collision,render_disc_collision))
+        paths=[producer(output_dir=out) for producer in producers]
+        manifest=dict(theme=get_palette().name,render_geometry=rendered_geometry(),
+                      assets=[p.name for p in paths],published_only=args.published_only)
+        (out/"utility-media-manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
+        return manifest
+    render_variants(args.out_dir,args.theme,render)
+    print(args.out_dir)
 
 
 if __name__ == "__main__":

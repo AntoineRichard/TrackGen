@@ -6,7 +6,6 @@ physically-anchored 1 m-track / ~20 m-box regime (half_width=0.5, scale=10 -> th
 
   * chain links   (num_points)          -- relax/validation resolution
   * relax iters   (relax_iters)          -- convergence budget
-  * regen attempts(max_regen_iters)      -- generation re-draw budget
   * XPBD step size (relax_sep_relax / relax_spc_relax, relax_margin) -- over-relaxation
 
 Reports per config: relaxed-valid yield (at the working resolution), end-to-end
@@ -39,12 +38,11 @@ REPS = 2              # E=8192 timing is low-variance
 
 
 def bench(links=256, iters=150, regen=10, sr=1.0, pr=1.0, br=1.5, margin=0.15, seed=0,
-          output_mode="constant_spacing", spacing=0.10, n_max=256):
+          spacing=0.10, n_max=256):
     cfg = TrackGenConfig(
         num_envs=E, num_points=links, half_width=HALF_WIDTH, scale=SCALE,
-        relax_iters=iters, max_regen_iters=regen,
-        relax_sep_relax=sr, relax_spc_relax=pr, relax_bend_relax=br, relax_margin=margin,
-        output_mode=output_mode, spacing=spacing, N_max=n_max,
+        relax_iters=iters, relax_sep_relax=sr, relax_spc_relax=pr, relax_bend_relax=br, relax_margin=margin,
+        spacing=spacing, N_max=n_max,
         device=DEVICE,
     )
     rng = PerEnvSeededRNG(seeds=seed, num_envs=E, device=DEVICE)
@@ -66,7 +64,7 @@ def bench(links=256, iters=150, regen=10, sr=1.0, pr=1.0, br=1.5, margin=0.15, s
     sec = (time.time() - t0) / REPS
     peak = (torch.cuda.max_memory_allocated() / 1e6) if DEVICE == "cuda" else float("nan")
     return {"links": links, "iters": iters, "regen": regen, "sr": sr, "pr": pr,
-            "margin": margin, "output_mode": output_mode, "spacing": spacing, "n_max": n_max,
+            "margin": margin, "output_mode": "constant_spacing", "spacing": spacing, "n_max": n_max,
             "yield": wp.to_torch(track.valid).float().mean().item(),
             "sec": sec, "peak_mb": peak}
 
@@ -78,16 +76,14 @@ CONFIGS = [
     {"links": 128}, {"links": 384}, {"links": 512},
     # relax-iters (links=256)
     {"iters": 50}, {"iters": 300}, {"iters": 600},
-    # regen attempts (links=256)
-    {"regen": 20}, {"regen": 40},
     # XPBD step size (over-relaxation), links=256, iters=150
     {"sr": 1.5, "pr": 1.5}, {"sr": 2.0, "pr": 2.0}, {"sr": 2.5, "pr": 2.5},
     {"margin": 0.30}, {"sr": 2.0, "pr": 2.0, "margin": 0.30},
     {"sr": 2.0, "pr": 2.0, "iters": 50},             # big steps + few iters (speed/yield)
     # combined high-link probe
-    {"links": 512, "iters": 300, "regen": 20},
+    {"links": 512, "iters": 300},
     # constant-spacing baseline: ~0.30 m ≈ 0.6×half_width, N_max=384
-    {"output_mode": "constant_spacing", "spacing": 0.30, "n_max": 384},
+    {"spacing": 0.30, "n_max": 384},
 ]
 
 

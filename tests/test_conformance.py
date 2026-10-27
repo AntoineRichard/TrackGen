@@ -65,13 +65,16 @@ pytest_plugins = ["track_gen.testing.pytest_plugin"]
 CPU = ["cpu"]
 CUDA = ["cuda:0"]
 
-# The repulsive generator's host-scheduled growth loop is O(N^2) per step: run the kit on
-# the small config tests/test_generate_repulsive.py uses (the default config is covered
-# by its CUDA yield test), on 8 envs.
-# repulsive: a small config with a loose stall tolerance, so the kit's batches freeze and
-# its loop stops early (the bounded.absorbing probe is exercised) on every platform.
+# Repulsive's O(N^2) solver runs the kit on 8 envs at three small resolutions;
+# its default workload has separate yield/clearance coverage. A near-circle target
+# and one sampled disc make genuine early convergence attainable for both fixed kit
+# batches. The loose tolerance covers the absorbing loop without requiring the
+# default obstacle problem to converge before its budget (validity does not require it).
 _CONFIG = {"repulsive": dict(num_points=64, repulsive_stages=(16, 32, 64), N_max=384,
-                             half_width=0.1, repulsive_stall_area_tol=0.5)}
+                             half_width=0.1, repulsive_stall_area_tol=0.5,
+                             repulsive_grow_mult_min=1.1, repulsive_grow_mult_max=1.1,
+                             repulsive_obstacle_count_min=1,
+                             repulsive_obstacle_count_max=1)}
 # The batch the per-generator contract tests used to check (count range, finite prefix,
 # NaN padding on 64 envs); repulsive keeps the kit's default of 8.
 _NUM_ENVS = 64
@@ -106,8 +109,8 @@ _DEFECT = {
                        r"\(\d+,\)",
     "broken.batch": r"env 0 \(seed 11\) changes when the other envs' seeds are permuted "
                     r"\(raw\.centerline",
-    "broken.legacy_stream": r"wp\.launch without stream= from "
-                            r"tests\._broken_toys\.legacy_stream_generate:.*accepts_ctx=False",
+    "broken.implicit_stream": r"wp\.launch without stream= from "
+                            r"tests\._broken_toys\.implicit_stream_generate:",
     "broken.stateful": r"generate\(\) #1 with unchanged seeds differs from the first batch",
     "broken.constant": r"env 0 is identical for seeds 11 and 1009",
     "broken.open": r"exceeds 3x the median step and 1\.5x the longest step: env 0: "
@@ -204,7 +207,7 @@ def test_the_builtins_are_all_checked():
 def test_builtins_are_capturable_and_stream_explicit(kind, names):
     for name in names:
         info = registry.describe(kind, name)
-        assert info.builtin and info.capturable and info.accepts_ctx, info
+        assert info.builtin and info.capturable, info
 
 
 def _case_id(name, config):
@@ -226,9 +229,9 @@ def test_builtin_generator_conforms_cpu(name, config):
     assert not _skipped_besides_tiers(report)
     per_env = report.result(_PER_ENV)
     assert per_env.skipped == (name not in _DYNAMIC_TRACK), per_env
-    # No built-in has a HOST stage; repulsive is the BOUNDED one (its loop stops early for
-    # at least one of the kit's batches, so the absorbing probe is exercised; which one is
-    # platform-dependent).
+    # No built-in has a HOST stage; Repulsive is the BOUNDED one. Its deliberately
+    # simple conformance config must actually skip windows, so this check compares
+    # a stopped loop against the unrolled remainder instead of passing vacuously.
     assert report.result("host.require_caller_capturable").skipped
     absorbing = report.result("bounded.absorbing")
     assert absorbing.skipped == (name != "repulsive"), absorbing
@@ -379,7 +382,7 @@ def test_construct_failure_is_one_failed_check(plugin_registry):
         raise RuntimeError("no scratch for you")
 
     plugin_registry.add(GeneratorSpec(name="broken.alloc_scratch", alloc_scratch=alloc,
-                                      generate=lambda *a, **k: None, accepts_ctx=True))
+                                      generate=lambda *a, **k: None))
     report = check_generator("broken.alloc_scratch", devices=CPU)
     assert report.failed_names == ["construct"]
     assert "RuntimeError: no scratch for you" in report.result("construct").message
@@ -407,10 +410,10 @@ def test_bad_arguments_raise(toys, kwargs, match):
 def test_the_origin_of_a_wrapped_generate_is_its_function(plugin_registry):
     """A functools.partial generate counts as the function it wraps: its package is
     probed for hot_path.stream (here: this test module, through the partial)."""
-    from tests._broken_toys import legacy_stream_generate
+    from tests._broken_toys import implicit_stream_generate
 
     spec = GeneratorSpec(name="broken.partial", alloc_scratch=lambda config: None,
-                         generate=functools.partial(legacy_stream_generate))
+                         generate=functools.partial(implicit_stream_generate))
     plugin_registry.add(spec)
     assert registry.describe("generator", "broken.partial").origin == "tests._broken_toys"
     report = check_generator("broken.partial", devices=CPU, skip=("diversity",))
@@ -950,7 +953,7 @@ def test_buffers_of_does_not_enter_a_registry_spec(plugin_registry):
         return shared
 
     spec = GeneratorSpec(name="toy.spec_closure", alloc_scratch=alloc, generate=generate,
-                         accepts_ctx=True)
+                         )
     assert len(buffers_of(generate)) == 1
     assert len(buffers_of({"spec": spec})) == 0
 

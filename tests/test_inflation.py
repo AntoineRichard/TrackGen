@@ -4,7 +4,8 @@ import pytest
 import torch
 
 from tests._oracle.generators import Centerline
-from track_gen._src.types import Track, TrackGenConfig
+from track_gen._src.types import Track
+from tests._oracle.config import OracleConfig as TrackGenConfig
 from tests._oracle import inflation
 from tests._oracle import geometry
 
@@ -37,7 +38,6 @@ def circle_cs_config(radius, n_max=128, device="cpu", **overrides):
     kwargs = dict(
         device=device,
         num_envs=1,
-        output_mode="constant_spacing",
         spacing=circumference / n_max,
         N_max=n_max,
     )
@@ -138,7 +138,6 @@ def figure_eight_cs_config(cl, n_max=256, device="cpu", **overrides):
     kwargs = dict(
         device=device,
         num_envs=int(cl.points.shape[0]),
-        output_mode="constant_spacing",
         spacing=total / n_max,
         N_max=n_max,
     )
@@ -229,7 +228,7 @@ def test_inflate_constant_spacing_mode_padding_and_wrap_length():
     # Circumference ~ 18.85; spacing 0.5 -> ~38 real points, padded to N_max=128.
     cfg = TrackGenConfig(
         device="cpu", num_envs=1,
-        output_mode="constant_spacing", spacing=0.5, N_max=128,
+        spacing=0.5, N_max=128,
         half_width=0.3,
         turning_tol=0.2, w_floor=1e-3,
     )

@@ -92,6 +92,29 @@ differences between two ``x86_64`` hosts. ``TRACKGEN_SKIP_HOST_SENSITIVE_GOLDENS
 leaves those fields out and compares every other one; CI sets it, because its runners are
 not the capture machines. Leave it unset on the machine a golden was captured on.
 
+Capturing a new byte baseline
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+After an intentional geometry change, capture one fragment per platform against
+identical source, then merge every fragment together:
+
+.. code-block:: bash
+
+   python -m tests.tools.capture_03_goldens capture golden-fragment.json
+   python -m tests.tools.capture_03_goldens merge darwin-fragment.json linux-fragment.json cuda-fragment.json
+
+Capture runs all five geometry and utility reference families. Merge checks source
+hashes and complete family coverage before writing any golden; it replaces the stored
+platform set with the supplied fragments. The manual test workflow's
+``capture_goldens`` input captures the Linux runner fragment as an artifact. The
+reference captures explicitly use ``on_invalid="keep"`` so the poison default
+does not replace failed geometry in the byte baseline. Public-default poison behavior
+has separate contract tests.
+
+A changed seed mapping also needs empirical distribution checks: compare validity,
+compactness, curvature and length over many independent seeds. Replacing byte hashes
+alone does not establish that output distributions stayed close.
+
 Pytest markers
 --------------
 
@@ -117,8 +140,8 @@ Building and checking the docs
 The docs are a Sphinx project under ``docs/`` (``docs/conf.py``), built with warnings as
 errors. Nitpicky mode is on: every cross-reference (``:ref:``, ``:doc:``, ``:term:``,
 ``:class:``, ...) must resolve. A local extension, ``docs/_ext/trackgen_docscheck.py``,
-also checks that every public name is documented, that no page outside
-``docs/upgrading/`` carries release or planning jargon, that every data file a page
+also checks that every public name is documented, that no published page carries
+release or planning jargon, that every data file a page
 includes exists, and that every entry of ``docs/_tools/nitpick_allowlist.txt`` still
 silences an unresolved reference (remove the entries it reports as stale).
 

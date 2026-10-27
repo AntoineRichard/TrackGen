@@ -248,7 +248,7 @@ def test_max_curvature_sets_its_bit_exactly_where_kappa_exceeds_the_threshold():
 
 
 def test_max_curvature_dynamic_threshold_moves_the_bit():
-    g = _gen(_spec(checks=("default", KMAX)))
+    g = _gen(_spec(checks=("default", KMAX), on_invalid="keep"))
     assert list(g.params) == ["generator", KMAX]
     assert not ((g._track.fail_mask.numpy() >> 16) & 1).any()      # default 50: none
     g.params[KMAX].set("kappa_max", 0.0)
@@ -331,7 +331,8 @@ def test_check_stage_takes_params_and_upstream():
 ])
 def test_a_broken_stage_fails_the_named_check(key, kind, failing):
     register_broken_stages(registry)
-    report = check_stage(kind, BROKEN[key], devices=DEV, num_envs=4)
+    report = check_stage(kind, BROKEN[key], devices=DEV,
+                         num_envs=8 if key == "failures_only" else 4)
     assert set(report.failed_names) == failing, str(report)
     if key == "relax":
         assert "wrote its read port 'xy'" in report.result("stage.isolation").message

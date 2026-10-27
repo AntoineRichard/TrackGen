@@ -80,7 +80,7 @@ def test_standalone_inflate_rejects_nonflat_without_seeds():
                          z_min=0.5, z_max=1.0)
     center = wp.zeros(cfg.num_points, dtype=wp.vec2f, device="cpu")
     with pytest.raises(ValueError, match="seeds"):
-        warp_pipeline.inflate_warp(center, cfg)
+        warp_pipeline._inflate_warp(center, cfg)
 
 
 def test_track_frames3_padding_is_nan_and_degenerate_row_zeroed():
@@ -130,7 +130,7 @@ def test_track_frames3_padding_is_nan_and_degenerate_row_zeroed():
     count_wp = wp.array([N, 2, N], dtype=wp.int32, device="cpu")
     seeds_wp = wp.array([1, 2, 3], dtype=wp.int32, device="cpu")
 
-    out = warp_pipeline.inflate_warp(center, cfg2, count=count_wp, seeds=seeds_wp)
+    out = warp_pipeline._inflate_warp(center, cfg2, count=count_wp, seeds=seeds_wp)
     assert int(out.count.numpy()[1]) == 2
     assert float(out.length.numpy()[1]) == 0.0
     tan1 = out.tangent.numpy().reshape(E2, N, 3)[1]
@@ -149,19 +149,20 @@ def test_smoothness_is_independent_of_resample_density():
     z_control_points, not the resampled point count: doubling the density
     must not roughly double the bumps (which is what per-point profiling did).
     """
-    counts, turns = [], []
-    # 0.035 is about the finest feasible spacing at the default half_width=0.1:
-    # below it the thickness gate rejects every track (flat profile included, so
-    # this is a plan-view constraint, nothing to do with elevation). It still
-    # gives ~1.7x the point count of 0.06, which is the density contrast the
-    # assertions below need.
+    counts, turns, tracks = [], [], []
+    # Disable geometry relaxation and use a thin track so that both densities
+    # sample the same seed's curve, independently of validity/XPBD differences.
     for spacing in (0.06, 0.035):
         cfg = TrackGenConfig(device="cpu", num_envs=E, spacing=spacing,
+                             relax_enable=False, half_width=0.01,
                              z_profile="random_walk", z_base=1.0, z_min=0.2,
                              z_max=2.0, z_max_step=0.3, z_control_points=8)
         rng = PerEnvSeededRNG(seeds=1234, num_envs=E, device="cpu")
-        track = TrackGenerator(cfg, rng).generate()
-        e = int(np.flatnonzero(track.valid.numpy())[0])
+        tracks.append(TrackGenerator(cfg, rng).generate())
+    common = tracks[0].valid.numpy() & tracks[1].valid.numpy()
+    assert common.any(), "need a common valid seed at both densities"
+    e = int(np.flatnonzero(common)[0])
+    for track in tracks:
         n_max = track.center.shape[0] // E
         m = int(track.count.numpy()[e])
         z = track.center.numpy().reshape(E, n_max, 3)[e, :m, 2]

@@ -36,9 +36,7 @@ selected generator. ``lo``/``hi`` are set only where a legacy rule rejects the s
 inclusive bound, so the generic bound check never fires before a legacy message.
 
 Not part of the public API: reach a class through ``registry.get(kind, name).Params``
-(the built-in track generators are ``generator`` Stages since roadmap PR13c, the gate
-generators ``gate_generator`` Stages since PR11; the track generators' deprecated
-``.params`` alias warns) or ``registry.describe(kind, name).params_schema``, or pass a
+(built-in track and gate generators are Stages) or ``registry.describe(kind, name).params_schema``, or pass a
 dict.
 """
 from __future__ import annotations
@@ -140,7 +138,7 @@ def _shape_at_default(p, names, drawn) -> bool:
 
 
 def _size_field():
-    """The per-env ``size`` multiplier (roadmap PR13d): dynamic float32 in
+    """The per-env ``size`` multiplier: dynamic float32 in
     :data:`~track_gen.ops.constants.SIZE_BOUNDS`, default 1.0, declared LAST."""
     return dynamic(1.0, lo=SIZE_BOUNDS[0], hi=SIZE_BOUNDS[1],
                    doc="Per-env size multiplier of the plan view, applied after scale "
@@ -227,7 +225,7 @@ class _FlatParams(Params):
     def _apply_legacy(self, cfg) -> None:
         """Write every field onto ``cfg`` (the orchestrator's private run snapshot)."""
         for name in self._names():
-            setattr(cfg, name, getattr(self, name))
+            object.__setattr__(cfg, name, getattr(self, name))
 
     def _check_no_flat_conflict(self, cfg) -> None:
         """With ``generator_params`` given, a flat field this class owns must stay at
@@ -269,13 +267,13 @@ class _FlatParams(Params):
     def _instance_bounds(self) -> dict:
         """``field -> (lo, hi, reason)``: per-instance bounds narrower than a dynamic
         field's declared ones, checked by ``StageParams.set`` on a scalar and reported by
-        ``StageParams.bounds`` (roadmap PR13d); none by default."""
+        ``StageParams.bounds``; none by default."""
         return {}
 
     def _nominal_perimeter(self, scale: float, drawn: "Mapping[str, float]") -> \
             "float | None":
         """A nominal maximum raw-loop perimeter at ``size == 1`` for the planner's
-        truncation warning (roadmap PR13d), or ``None`` (not checked). ``drawn``: the
+        truncation warning, or ``None`` (not checked). ``drawn``: the
         largest initial value (a randomizer's ``hi``) of each field drawn per env."""
         return None
 
@@ -340,41 +338,10 @@ class BezierParams(_PointFamilyParams):
                                        doc="Adaptive Bezier-handle clamp (fraction of the "
                                            "shorter incident edge; per env; very large "
                                            "disables it).")
-    style_sampling: bool = static(False, doc="Per-env style randomisation from the "
-                                             "*_range fields.")
-    rad_range: "tuple[float, float] | None" = static(
-        None, doc="(lo, hi) per-env rad range when style_sampling.")
-    scale_range: "tuple[float, float] | None" = static(
-        None, doc="(lo, hi) per-env scale range when style_sampling.")
-    handle_clamp_frac_range: "tuple[float, float] | None" = static(
-        None, doc="(lo, hi) per-env handle_clamp_frac range when style_sampling.")
     size: float = _size_field()
 
-    #: The switch named in the messages about a knob the stage draws itself.
-    _self_draw_switch = "style_sampling"
-
     def _nominal_perimeter(self, scale: float, drawn: "Mapping[str, float]") -> float:
-        # The measured longest raw loop at the defaults (_LONGEST_LOOP), times the
-        # largest per-env scale (style_sampling's scale_range replaces scale) and the
-        # corner-capacity factor. rad / handle_clamp_frac move it by at most ~3%.
-        if bool(self.style_sampling) and self.scale_range is not None:
-            scale = float(self.scale_range[1])
         return _LONGEST_LOOP["bezier"] * float(scale) * _corner_factor(self)
-
-    def _self_drawn(self) -> "dict[str, str]":
-        """``field -> range field`` of the dynamic knobs ``style_sampling`` draws itself
-        every generation (those whose ``*_range`` is given, e.g. ``{"rad":
-        "rad_range"}``): the planner makes each a single unlatched array the style
-        kernel writes, reported in ``StageParams.drawn`` as drawn by the stage itself
-        (roadmap PR13c)."""
-        if not bool(self.style_sampling):
-            return {}
-        out = {}
-        if self.rad_range is not None:
-            out["rad"] = "rad_range"
-        if self.handle_clamp_frac_range is not None:
-            out["handle_clamp_frac"] = "handle_clamp_frac_range"
-        return out
 
     @classmethod
     def _check_draws(cls, params, ranges, randomized) -> None:
@@ -384,17 +351,7 @@ class BezierParams(_PointFamilyParams):
         ``handle_clamp_frac`` can take (its drawn ``hi``, or its value when not drawn)
         warns, since ``rad`` has no effect there (the handle is ``min(rad * chord,
         clamp * shorter edge)`` and the shorter edge is at most the chord). Roadmap
-        PR13d: a ``size`` randomizer next to ``style_sampling``'s ``scale_range`` warns
-        (two per-env size draws compose)."""
-        if "size" in randomized and bool(params.style_sampling) and \
-                params.scale_range is not None:
-            from .generator_binding import _outside_track_gen_stacklevel  # noqa: PLC0415
-
-            warnings.warn(
-                "two per-env size draws compose multiplicatively: style_sampling's "
-                "scale_range x generator.size; set style_sampling=False (scale_range=(a, "
-                "b) -> {'generator.size': (a / scale, b / scale)})", UserWarning,
-                stacklevel=_outside_track_gen_stacklevel())
+"""
         rad = ranges.get("rad")
         if rad is None or "rad" not in randomized:
             return
@@ -467,7 +424,7 @@ class PolarParams(_FlatParams):
 
 def _check_polar_jitters(p) -> None:
     """The polar jitters' bounds, with the 0.2.0.dev4 migration in the message (it
-    clamped a value outside to the bound; roadmap PR13c rejects it). Compared in
+    clamped a value outside to the bound rejects it). Compared in
     float32, like the generic bound check that follows; a bool or a non-number is left
     to it."""
     for name, hi in (("polar_radial_jitter", 0.85), ("polar_angular_jitter", 0.45)):
@@ -605,9 +562,9 @@ class CheckpointParams(_FlatParams):
 class RepulsiveParams(_FlatParams):
     """Parameters of the ``"repulsive"`` track generator."""
 
-    repulsive_grow_mult_min: float = static(4.5, lo=1.0, doc="Lower bound of the per-env "
+    repulsive_grow_mult_min: float = static(2.0, lo=1.0, doc="Lower bound of the per-env "
                                                              "target-perimeter multiplier.")
-    repulsive_grow_mult_max: float = static(5.5, doc="Upper bound of the target-perimeter "
+    repulsive_grow_mult_max: float = static(3.0, doc="Upper bound of the target-perimeter "
                                                      "multiplier (> 1, >= min).")
     repulsive_domain_frac: float = static(0.35, doc="Confinement-disc radius fraction "
                                                     "(> 0).")
@@ -625,10 +582,9 @@ class RepulsiveParams(_FlatParams):
                                                                   "fraction (>= min).")
     repulsive_ratchet_rate: float = static(0.012, doc="Per-iteration length-growth factor "
                                                       "(> 0).")
-    repulsive_alpha: float = static(3.0, doc="Tangent-point energy exponent alpha (> 0).")
-    repulsive_beta: float = static(6.0, doc="Tangent-point energy exponent beta (> 0).")
-    repulsive_tau: float = static(0.4, doc="Normalized flow step size.")
-    repulsive_w_len: float = static(30.0, doc="Weight of the inert length regularizer.")
+    repulsive_alpha: float = static(3.0, doc="Tangent-point exponent alpha (> 1).")
+    repulsive_beta: float = static(6.0, doc="Tangent-point exponent: alpha+2 <= beta < 2*alpha+1.")
+    repulsive_tau: float = static(0.4, doc="Energy-scaled gradient step with bounded backtracking.")
     repulsive_stages: "tuple[int, ...]" = static(
         (64, 128, 256), doc="Coarse-to-fine resolution schedule: strictly increasing "
                             "positive multiples of 4, the last equal to num_points.")
@@ -637,11 +593,8 @@ class RepulsiveParams(_FlatParams):
                                                          "interval.")
     repulsive_stall_window: int = static(16, lo=1, doc="Iterations between per-env stall "
                                                        "checks.")
-    repulsive_stall_area_tol: float = static(0.05, doc="Relative area-change tolerance of "
-                                                       "the stall check.")
-    repulsive_deactivate_obstacles: bool = static(True, doc="Zero the obstacle weights "
-                                                            "once an env reaches its "
-                                                            "target length.")
+    repulsive_stall_area_tol: float = static(0.05, doc="Optional early-stop tolerance for area, "
+                                                       "motion and projected stationarity.")
     size: float = _size_field()
 
     _field_hints = {"scale": _SCALE_HINT}
@@ -701,6 +654,16 @@ class RepulsiveParams(_FlatParams):
             raise ValueError(f"repulsive_alpha must be > 0, got {self.repulsive_alpha!r}")
         if float(self.repulsive_beta) <= 0.0:
             raise ValueError(f"repulsive_beta must be > 0, got {self.repulsive_beta!r}")
+        if float(self.repulsive_beta) <= float(self.repulsive_alpha):
+            raise ValueError("repulsive_beta must be > repulsive_alpha for repulsive obstacle forces")
+        if float(self.repulsive_alpha) <= 1.0:
+            raise ValueError("repulsive_alpha must be > 1 for the supported Sobolev order")
+        if float(self.repulsive_beta) < float(self.repulsive_alpha) + 2.0:
+            raise ValueError("repulsive_beta must be >= repulsive_alpha + 2")
+        if float(self.repulsive_beta) >= 2.0 * float(self.repulsive_alpha) + 1.0:
+            raise ValueError("repulsive_beta must be < 2 * repulsive_alpha + 1")
+        if float(self.repulsive_tau) <= 0.0:
+            raise ValueError("repulsive_tau must be > 0")
         stages = tuple(self.repulsive_stages)
         if len(stages) == 0:
             raise ValueError("repulsive_stages must be non-empty")

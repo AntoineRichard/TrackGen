@@ -35,9 +35,8 @@ centerlines through ``Program.inputs`` (:class:`InputInfo`), loaded with
 ``Program`` implements it, and so can a third-party producer (e.g. a mixed batch of
 generators writing views of one result; ``MixedBatch`` itself is not shipped).
 
-This package is public API under the package's deprecation policy (a deprecated name
-warns and keeps working through 0.x; see :ref:`api-reference`). ``import track_gen``
-does not import it.
+This package is public API; :ref:`api-reference` lists the supported modules and
+contracts. ``import track_gen`` does not import this pipeline package.
 """
 from __future__ import annotations
 

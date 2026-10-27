@@ -6,8 +6,7 @@ pipeline wrappers, every registered generator's ``_run``, the facades'
 ``generate()``/``enqueue()`` (plain and ``advance=True, mask=...``), every utility's
 query/update/reset/sample/bake/refresh, ``Course.step``/``reset``/``regenerate`` (plain,
 ``advance``, masked)/``generate``/``enqueue_generate``, ``SeedState``'s device ops and the
-rng's ``set_seeds_warp`` and ``sample_*_warp(out=...)``. CPU cannot
-capture, so :func:`_probe` (the library guard
+rng's ``set_seeds_warp`` and ``sample_*_warp(out=...)``. The CPU probe uses :func:`_probe` (the library guard
 :func:`track_gen.testing.contract.no_host_sync`) replaces ``wp.synchronize*`` and
 ``wp.array.numpy`` / ``list`` with tripwires that record the call and raise. Each driver
 then runs its entry point under the probe, and the test asserts zero calls. Construction
@@ -75,11 +74,6 @@ from track_gen.ops import reduce as reduce_mod
 from track_gen.plugin import registry
 from track_gen.seeds import SeedState
 from track_gen.testing.contract import HotPathGuard, no_host_sync
-
-# Roadmap PR13d: bezier's style_sampling is deprecated (one DeprecationWarning per built
-# generator); this module still exercises it.
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
 
 DEV = "cpu"
 E = 2
@@ -156,7 +150,7 @@ def _run_gates(generator, **kw):
 
 
 def _run_toy_plugin(kind):
-    """An out-of-tree plugin (tests._plugin_toys, ``accepts_ctx=True``) registered
+    """An out-of-tree plugin (tests._plugin_toys, with explicit ``ctx``) registered
     through the public registry: its hot path is held to the same rules. The registry is
     restored once the generator has resolved its spec."""
     def setup():
@@ -495,27 +489,6 @@ def _wrapper_inputs():
     return gen, track, s, n_max
 
 
-def _resample_wrappers():
-    gen, track, s, n_max = _wrapper_inputs()
-    N = int(gen._config.num_points)
-    sel = wp.full(E, 1, dtype=wp.int32, device=DEV)
-    real = wp.empty(E * N, dtype=wp.vec2f, device=DEV)
-    seg = wp.empty(E * N, dtype=wp.float32, device=DEV)
-    s_cum = wp.empty(E * (N + 1), dtype=wp.float32, device=DEV)
-    cr = wp.empty(E, dtype=wp.int32, device=DEV)
-    co = wp.empty(E, dtype=wp.int32, device=DEV)
-    out = wp.empty(E * N, dtype=wp.vec2f, device=DEV)
-
-    def hot():
-        warp_pipeline.arc_length_resample_inplace(
-            s.gen_centerline, N, N, real, seg, s_cum, cr, co, out, DEV)
-        warp_pipeline.arc_length_resample_selected_inplace(
-            s.gen_centerline, sel, N, N, real, seg, s_cum, cr, co, out, DEV)
-        # In-place mode: never reads count back, even when a track truncates.
-        warp_pipeline.resample_constant_spacing(
-            s.gen_centerline, float(gen._config.spacing), n_max,
-            out_wp=s.cs_center, count_wp=s.count, seg_wp=s.cs_seg, s_wp=s.cs_s)
-    return hot
 
 
 def _geometry_wrappers():
@@ -529,14 +502,11 @@ def _geometry_wrappers():
     inner = wp.empty(flat, dtype=wp.vec2f, device=DEV)
     area_a = wp.empty(E, dtype=wp.float32, device=DEV)
     area_b = wp.empty(E, dtype=wp.float32, device=DEV)
-    crossings = wp.empty(E, dtype=wp.int32, device=DEV)
-    turning = wp.empty(E, dtype=wp.float32, device=DEV)
+    ctx = LaunchContext.for_call(DEV)
 
     def hot():
-        warp_pipeline.frame_curvature(center2, T, Nrm, kappa, s.count)
-        warp_pipeline.offset(center2, Nrm, 0.03, outer, inner, area_a, area_b, s.count)
-        warp_pipeline.self_intersections_inplace(center2, s.count, crossings, n_max)
-        warp_pipeline.turning_number_inplace(center2, n_max, s.count, turning)
+        warp_pipeline.frame_curvature(center2, T, Nrm, kappa, s.count, ctx=ctx)
+        warp_pipeline.offset(center2, Nrm, 0.03, outer, inner, area_a, area_b, s.count, ctx=ctx)
     return hot
 
 
@@ -617,73 +587,10 @@ def _ops_all():
 
 
 
-def _legacy_generator_wrappers():
-    # The legacy (pre-ops) generator helpers kept for out-of-tree plugins: driven directly
-    # because the built-in generators stop calling them once they use track_gen.ops.
-    cfg = TrackGenConfig(device=DEV, num_envs=E, min_num_points=3, max_num_points=6)
-    P = int(cfg.max_num_points)
-    seeds = _i32([3, 4])
-    count = wp.empty(E, dtype=wp.int32, device=DEV)
-    pts = wp.empty(E * P, dtype=wp.vec2f, device=DEV)
-    srt = wp.empty(E * P, dtype=wp.vec2f, device=DEV)
-    used = wp.empty(E * P, dtype=wp.int32, device=DEV)
-    keys = wp.empty(E * P, dtype=wp.float32, device=DEV)
-    scale = wp.full(E, 1.0, dtype=wp.float32, device=DEV)
-
-    def hot():
-        warp_generate.corner_count_sample_inplace(seeds, 0, cfg, count)
-        warp_generate.corner_sample_inplace(seeds, 0, cfg, pts, used)
-        warp_generate.corner_sample_inplace(seeds, 0, cfg, pts, used, scale_per_env=scale)
-        warp_generate.ccw_sort_inplace(pts, count, keys, srt, P)
-        warp_generate_hull.point_count_sample_inplace(seeds, cfg, count)
-        warp_generate_hull.point_sample_inplace(seeds, cfg, pts, used)
-    return hot
 
 
-def _legacy_repulsive():
-    # Roadmap PR13d: the Repulsive Stage runs the private core (track_run[repulsive]);
-    # the frozen generate_repulsive_warp is driven directly (its bounded loop's CPU host
-    # poll is sanctioned).
-    from track_gen._src import warp_generate_repulsive as rep  # noqa: PLC0415
-
-    cfg = TrackGenConfig(generator="repulsive", device=DEV, num_envs=E, num_points=64,
-                         repulsive_stages=(16, 32, 64))
-    scratch = rep.repulsive_alloc_scratch(cfg)
-    out = wp.empty(E * 64, dtype=wp.vec2f, device=DEV)
-    valid = wp.empty(E, dtype=wp.int32, device=DEV)
-    seeds = _i32([3, 4])
-    ctx = LaunchContext.for_call(DEV)
-
-    def hot():
-        rep.generate_repulsive_warp(seeds, cfg, out, valid, scratch, ctx=ctx)
-    return hot
 
 
-def _legacy_generator_specs():
-    # Roadmap PR13c: the built-in track generators are Stages (their private cores are
-    # driven by track_run[<gen>]); their frozen legacy entry points (generate_*_warp over
-    # *_alloc_scratch, the scalar kernels and sampling helpers, bezier's style draw) and
-    # the scalar knot z-profile path run through the PR9 composition with the private
-    # legacy specs (warp_pipeline._legacy_generator_spec).
-    configs = [TrackGenConfig(generator=g, device=DEV, num_envs=E)
-               for g in ("bezier", "hull", "polar", "voronoi", "checkpoint")]
-    configs += [
-        TrackGenConfig(generator="bezier", device=DEV, num_envs=E, style_sampling=True,
-                       rad_range=(0.1, 0.3), scale_range=(0.9, 1.1)),
-        TrackGenConfig(generator="checkpoint", device=DEV, num_envs=E,
-                       checkpoint_clip_fallback=True, checkpoint_best_of_k=1),
-        TrackGenConfig(device=DEV, num_envs=E, z_profile="uniform", z_max=0.2),
-        TrackGenConfig(device=DEV, num_envs=E, z_profile="random_walk", z_min=-0.2,
-                       z_max=0.2, z_max_step=0.3),
-    ]
-    seeds = _i32([3, 4])
-    runs = [(cfg, *warp_pipeline._inflate_warp_alloc(cfg)) for cfg in configs]
-    ctx = LaunchContext.for_call(DEV)
-
-    def hot():
-        for cfg, track, scratch in runs:
-            warp_pipeline._run_pipeline(cfg, seeds, out=track, scratch=scratch, ctx=ctx)
-    return hot
 
 
 def _program_standalone():
@@ -816,7 +723,7 @@ def _gate_program_channels():
 
 
 def _legacy_offset_without_hw_out():
-    # The legacy offset / inflate_warp call forms of 0.2.0.dev3 (no hw_out: a null array
+    # The legacy offset / _inflate_warp call forms of 0.2.0.dev3 (no hw_out: a null array
     # is passed, nothing stored, nothing allocated), on buffers allocated at setup.
     gen = _track_gen()
     s = gen._scratch
@@ -834,7 +741,7 @@ def _legacy_offset_without_hw_out():
     def hot():
         warp_pipeline.offset(stag.ctr2, stag.nrm2, 0.1, stag.out2, stag.inn2,
                              stag.area_a, stag.area_b, count, ctx=ctx)
-        warp_pipeline.inflate_warp(center, gen._config, out=out, valid=valid,
+        warp_pipeline._inflate_warp(center, gen._config, out=out, valid=valid,
                                    count=count, scratch=scratch, seeds=gen._seed_buf,
                                    truncated=out.truncated, ctx=ctx)
     return hot
@@ -884,33 +791,6 @@ def _gate_wrappers():
     return hot
 
 
-def _legacy_gate_wrappers():
-    # The deprecated warp_gate helpers a 0.1 gate plugin calls from generate() (PR11
-    # shims), every ordering, on buffers allocated at setup.
-    import types
-
-    G, A = 8, 6
-    cfg = types.SimpleNamespace(num_envs=E, max_gates=G, device=DEV)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        _, keys = warp_gate.alloc_order_scratch(cfg)
-    src = wp.array(np.random.default_rng(1).random((E * A, 2)).astype(np.float32),
-                   dtype=wp.vec2f, device=DEV)
-    count = wp.full(E, A, dtype=wp.int32, device=DEV)
-    seeds = _i32([3, 4])
-    staging = types.SimpleNamespace(position=wp.zeros(E * G, dtype=wp.vec2f, device=DEV),
-                                    count=wp.zeros(E, dtype=wp.int32, device=DEV))
-    ctx = LaunchContext.for_call(DEV)
-
-    def hot():
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            for ordering in ("raw", "ccw", "random_pairs"):
-                warp_gate.order_points(seeds, src, A, count, G, ordering, keys,
-                                       staging.position, ctx=ctx)
-                warp_gate.finish_ordered_gates(seeds, src, A, count, G, ordering, keys,
-                                               staging, normalize_extent=1.5, ctx=ctx)
-    return hot
 
 
 def _run_track_plugin_profile():
@@ -923,13 +803,15 @@ def _run_track_plugin_profile():
 
 
 def _legacy_pipeline_wrappers():
-    # The PR9 composition (warp_pipeline._run_pipeline -> inflate_warp), kept as the
+    # The PR9 composition (warp_pipeline._run_pipeline -> _inflate_warp), kept as the
     # byte-identity reference, run on a TrackGenerator's _scratch view (relax on).
     gen = _track_gen()
     ctx = LaunchContext.for_call(DEV)
 
+    from tests._reference_generators.warp_pipeline import _run_pipeline
+
     def hot():
-        warp_pipeline._run_pipeline(gen._config, gen._seed_buf, out=gen._track,
+        _run_pipeline(gen._config, gen._seed_buf, out=gen._track,
                                     scratch=gen._scratch,
                                     generator_spec=gen._generator_spec, ctx=ctx)
     return hot
@@ -972,7 +854,7 @@ def _result_copy(kind):
 
 
 def _inflate_fixed_n():
-    # inflate_warp's count=None convenience path (fixed N == num_points) on a scratch
+    # _inflate_warp's count=None convenience path (fixed N == num_points) on a scratch
     # allocated at construction.
     cfg = TrackGenConfig(device=DEV, num_envs=E)
     gen = TrackGenerator(cfg, _rng())
@@ -982,8 +864,10 @@ def _inflate_fixed_n():
         TrackGenConfig(device=DEV, num_envs=E, N_max=N))
     center = gen._scratch.gen_centerline
 
+    ctx = LaunchContext.for_call(DEV)
+
     def hot():
-        warp_pipeline.inflate_warp(center, cfg, out=out, scratch=scratch)
+        warp_pipeline._inflate_warp(center, cfg, out=out, scratch=scratch, ctx=ctx)
     return hot
 
 
@@ -997,9 +881,6 @@ DRIVERS = {
     "track_run[bezier,z=uniform]": _run_track("bezier", z_profile="uniform"),
     "track_run[bezier,z=noise]": _run_track("bezier", z_profile="noise"),
     "track_run[bezier,no-relax]": _run_track("bezier", relax_enable=False),
-    "track_run[bezier,style]": _run_track("bezier", style_sampling=True,
-                                          rad_range=(0.1, 0.3),
-                                          scale_range=(0.9, 1.1)),
     **{f"gate_run[{g}]": _run_gates(g) for g in registry.available("gate_generator")},
     "gate_run[toy.ring plugin]": _run_toy_plugin("gate"),
     "gate_run[bezier,z=uniform]": _run_gates("bezier", z_profile="uniform"),
@@ -1046,7 +927,6 @@ DRIVERS = {
                                                       frame_depth=0.02),
     "seed_state": _seed_state,
     "rng[sample_out]": _rng_sample_out,
-    "wrappers[resample]": _resample_wrappers,
     "wrappers[geometry]": _geometry_wrappers,
     "wrappers[inflate_fixed_n]": _inflate_fixed_n,
     "wrappers[legacy_pipeline]": _legacy_pipeline_wrappers,
@@ -1055,11 +935,7 @@ DRIVERS = {
     "gate_program[toys,poison]": _gate_program_toys_poison,
     "gate_run[stations superformula]": _gate_run_stations,
     "wrappers[gate]": _gate_wrappers,
-    "wrappers[legacy_gate]": _legacy_gate_wrappers,
     "track_run[z=acme.sinusoid_hills]": _run_track_plugin_profile,
-    "wrappers[legacy_generator]": _legacy_generator_wrappers,
-    "wrappers[legacy generator specs]": _legacy_generator_specs,
-    "wrappers[legacy repulsive]": _legacy_repulsive,
     "ops[all]": _ops_all,
     "program[attrs,from_channel,poison,masked]": _program_channels,
     "gate_program[stations xyz,attrs]": _gate_program_channels,
@@ -1077,8 +953,7 @@ def test_hot_path_has_no_host_sync_or_readback(name):
         f"known-readback allowlist out of date: {guard.allowed}"
     # The bounded loops' CPU host poll (repulsive, the bounded toy) is sanctioned, not
     # allowed: the guard lists it apart.
-    if name in ("track_run[repulsive]", "track_run[relax=toy.converging_smooth]",
-                "wrappers[legacy repulsive]"):
+    if name in ("track_run[repulsive]", "track_run[relax=toy.converging_smooth]"):
         assert set(guard.sanctioned) == {
             ("wp.array.numpy", "track_gen.exec.host", "_poll_i32")}, guard.sanctioned
 
@@ -1111,119 +986,228 @@ _PIPELINE_MODULES = (
 # Construction-time functions (allocation, registration, host precompute for sizing).
 # They run before any probe and are allowed to allocate or read back.
 _CONSTRUCTION_ONLY = {
-    "track_gen._src.warp_pipeline": {"_inflate_warp_alloc", "_fill_knot_scratch",
-                                     "__getattr__",
-                                     # PR13c: the private legacy-spec table (built-ins)
-                                     "_legacy_generator_spec",
-                                     "_registered_generator_spec"},
-    "track_gen._src.warp_gate": {"alloc_gate_sequence", "_gate_center_distance",
-                                 # PR11 deprecated shims: allocation, the old-name alias
-                                 "alloc_order_scratch", "__getattr__"},
-    "track_gen._src.warp_zprofile": {"alloc_z_scratch", "alloc_knot_scratch"},
-    # PR13c: the built-in Stages' private scratch allocators (_alloc_<gen>_scratch)
-    "track_gen._src.warp_generate": {"bezier_alloc_scratch", "_alloc_bezier_scratch",
-                                     "register"},
-    "track_gen._src.warp_generate_checkpoint": {"checkpoint_alloc_scratch",
-                                                "_alloc_checkpoint_scratch", "register"},
-    "track_gen._src.warp_generate_hull": {"hull_alloc_scratch", "_alloc_hull_scratch",
-                                          "register"},
-    "track_gen._src.warp_generate_polar": {"polar_alloc_scratch", "_alloc_polar_scratch",
-                                           "_polar_num_knots", "register"},
-    "track_gen._src.warp_generate_repulsive": {"repulsive_alloc_scratch",
-                                               "_sobolev_circulant_row",
-                                               "_stage_schedule", "register"},
-    "track_gen._src.warp_generate_voronoi": {"voronoi_alloc_scratch",
-                                             "_alloc_voronoi_scratch",
-                                             "_voronoi_layout_mode", "register"},
-    # PR11: the gate generators are Stages (their enqueues are closures)
-    "track_gen._src.warp_generate_gates": {"register"},
-    "track_gen._src.warp_generate_checkpoint_gates": {"register"},
-    "track_gen._src.warp_generate_polar_gates": {"register"},
-    "track_gen._src.warp_generate_voronoi_gates": {"register"},
-    # host-side reference/construction helpers (never on a hot path)
-    "track_gen.seeds": {"effective_seed", "_wrap_int32", "_is_rng"},
-    # the planner and the stage catalogue (PR10a): build-time only
-    "track_gen.pipeline.spec": {"_frozen_map", "_port_value", "_capacity_value",
-                                "_required", "_thaw",
-                                # PR13a: the track_gen.pipeline/1 migration
-                                "_migrate_v1",
-                                # PR13b: params lists canonicalised to tuples
-                                "_canonical_param",
-                                # PR13c: randomize= (PipelineSpec.with_randomize)
-                                "_randomizers", "_with_randomizers", "_draw_target",
-                                # PR13d: the normalize.size hint
-                                "_normalize_size_hint"},
-    # PR13a: the resample tables / carry kernel lookup are build-time
-    "track_gen.ops.resample": {"_carry_kernel", "_check_tables"},
-    "track_gen.pipeline.planner": {"build", "_build", "_is_int", "_check_spec_shape",
-                                   "_label", "_resolve", "_plan_channels", "_check_out",
-                                   "_seed_state", "_is_seed_form", "_check_seeds",
-                                   "_check_exports", "_check_flat_lift",
-                                   "_capture_classes", "_export_sources",
-                                   # PR12: capture classes, segments, slot contexts
-                                   "_host_label", "_check_caller_capturable",
-                                   "_segments", "_slot_info",
-                                   "_check_fail_start",
-                                   # PR11: the gate result kind and its rules
-                                   "_bind", "_effective_ports", "_domain_layout",
-                                   "_check_capacity", "_check_agreement",
-                                   "_check_gate_plan", "_check_provided",
-                                   "_check_gate_exports", "_check_gate_fail_start",
-                                   "_check_gate_out", "_result_kind",
-                                   "_missing_hint",
-                                   # PR13a: carried channels, attributes, width placement
-                                   "_decl", "_is_raw_family", "_carry_set",
-                                   "_check_width_placement", "_result_attributes",
-                                   # PR13b: out= / views / overlap registry, topology,
-                                   # param writers, the generator slot
-                                   "_check_result_out", "_offset_seeds", "_root_of",
-                                   "_env_span", "_live_overlaps", "_check_overlap",
-                                   "_register_result", "_check_topology", "_stage_class",
-                                   "_ref_param", "_check_param_writers", "_pad_value",
-                                   "_gen_slot", "_draw_bounds", "_is_partial",
-                                   "_plugin_params",
-                                   # PR13c: self-drawn fields, cross-field draw rules
-                                   "_self_drawn", "_check_draws",
-                                   # PR13d: instance bounds, field hints, truncation
-                                   "_stage_bounds", "_stage_hints",
-                                   "_check_size_truncation", "_check_renormalized_size"},
-    "track_gen.pipeline.legacy": {"to_pipeline_spec", "_to_pipeline_spec",
-                                  "generator_config", "_scratch_view", "_legacy_params",
-                                  "to_gate_pipeline_spec", "_to_gate_pipeline_spec",
-                                  "gate_generator_config", "_params_of",
-                                  "_legacy_ordering",
-                                  # PR13d: the flat size routes
-                                  "_check_flat_size"},
-    "track_gen.pipeline.presets": {"track", "_select", "_is_pair", "_with_half_width",
-                                   "_check_half_width", "gates", "_gate_stages",
-                                   "_relax_on", "_is_flat",
-                                   "_lookup", "_param", "_with_params",
-                                   "_with_gate_validity", "_check_centerline_args",
-                                   # PR13a: providers and the width selection
-                                   "_sel_name", "_provides", "_has_half_width_field",
-                                   # PR13b: declarations, relax="auto"
-                                   "_declared", "_preferred_relax",
-                                   # PR13d: presets(size=)
-                                   "_size_fields", "_with_size", "_is_one",
-                                   "_size_remedy"},
-    # PR13b: the host loader of the ingestion inputs (cold, blocking by contract)
-    "track_gen.pipeline.ingest": {"load_centerlines", "_program_of", "_envs", "_rows",
-                                  "_sizing", "_perimeter", "_check_values"},
-    "track_gen.stages.external": {"register"},
-    "track_gen.stages": {"_check_builtin_stage", "register", "register_builtins"},
-    "track_gen.stages.channels": {"_c", "is_plugin_channel", "is_gate_channel",
-                                  "channel_domain", "family_key",
-                                  "required_port_domain"},
-    "track_gen.stages.params": {"_check_half_width", "_check_z_range",
-                                "_check_control_points", "_f32_distance",
-                                # PR13c: plan-time draw rules, inert-window warnings
-                                "_check_z_draws", "_warn_inert"},
-    "track_gen.stages.track": {"_alloc_track", "_zcfg", "_zdyn",
-                               # PR13a: carriers and the constant-width config view
-                               "_with_half_width", "_tables", "_carry_ops",
-                               "raw_attributes"},
-    "track_gen.stages.gates": {"_alloc_gate_sequence", "_orderings_of",
-                               "_supported_orderings", "_preferred", "_default_order"},
+    'track_gen._src.warp_pipeline': {
+        '_fill_knot_scratch',
+        '_inflate_warp_alloc',
+        '_registered_generator_spec',
+    },
+    'track_gen._src.warp_gate': {
+        '_gate_center_distance',
+        'alloc_gate_sequence',
+    },
+    'track_gen._src.warp_zprofile': {
+        'alloc_knot_scratch',
+        'alloc_z_scratch',
+    },
+    'track_gen._src.warp_generate': {
+        '_alloc_bezier_scratch',
+        'register',
+    },
+    'track_gen._src.warp_generate_checkpoint': {
+        '_alloc_checkpoint_scratch',
+        'register',
+    },
+    'track_gen._src.warp_generate_hull': {
+        '_alloc_hull_scratch',
+        'register',
+    },
+    'track_gen._src.warp_generate_polar': {
+        '_alloc_polar_scratch',
+        'polar_num_knots',
+        'register',
+    },
+    'track_gen._src.warp_generate_repulsive': {
+        '_alloc_repulsive_scratch',
+        '_sobolev_circulant_row',
+        '_stage_schedule',
+        'register',
+    },
+    'track_gen._src.warp_generate_voronoi': {
+        '_alloc_voronoi_scratch',
+        'register',
+        'voronoi_layout_mode',
+    },
+    'track_gen._src.warp_generate_gates': {
+        'register',
+    },
+    'track_gen._src.warp_generate_checkpoint_gates': {
+        'register',
+    },
+    'track_gen._src.warp_generate_polar_gates': {
+        'register',
+    },
+    'track_gen._src.warp_generate_voronoi_gates': {
+        'register',
+    },
+    'track_gen.seeds': {
+        '_is_rng',
+        '_wrap_int32',
+        'effective_seed',
+    },
+    'track_gen.pipeline.spec': {
+        '_canonical_param',
+        '_capacity_value',
+        '_draw_target',
+        '_frozen_map',
+        '_normalize_size_hint',
+        '_port_value',
+        '_randomizers',
+        '_required',
+        '_thaw',
+        '_with_randomizers',
+    },
+    'track_gen.ops.resample': {
+        '_carry_kernel',
+        '_check_tables',
+    },
+    'track_gen.pipeline.planner': {
+        '_bind',
+        '_build',
+        '_capture_classes',
+        '_carry_set',
+        '_check_agreement',
+        '_check_caller_capturable',
+        '_check_capacity',
+        '_check_draws',
+        '_check_exports',
+        '_check_fail_start',
+        '_check_flat_lift',
+        '_check_gate_exports',
+        '_check_gate_fail_start',
+        '_check_gate_out',
+        '_check_gate_plan',
+        '_check_out',
+        '_check_overlap',
+        '_check_param_writers',
+        '_check_provided',
+        '_check_renormalized_size',
+        '_check_repulsive_clearance',  # planner port/ordering checks, before hot calls
+        '_check_result_out',
+        '_check_seeds',
+        '_check_size_truncation',
+        '_check_spec_shape',
+        '_check_topology',
+        '_check_width_placement',
+        '_decl',
+        '_domain_layout',
+        '_draw_bounds',
+        '_effective_ports',
+        '_env_span',
+        '_export_sources',
+        '_gen_slot',
+        '_host_label',
+        '_is_int',
+        '_is_partial',
+        '_is_raw_family',
+        '_is_seed_form',
+        '_label',
+        '_live_overlaps',
+        '_missing_hint',
+        '_offset_seeds',
+        '_pad_value',
+        '_plan_channels',
+        '_plugin_params',
+        '_ref_param',
+        '_register_result',
+        '_resolve',
+        '_result_attributes',
+        '_result_kind',
+        '_root_of',
+        '_seed_state',
+        '_segments',
+        '_slot_info',
+        '_stage_bounds',
+        '_stage_class',
+        '_stage_hints',
+        'build',
+    },
+    'track_gen.pipeline.legacy': {
+        '_check_flat_size',
+        '_legacy_ordering',
+        '_legacy_params',
+        '_params_of',
+        '_scratch_view',
+        '_to_gate_pipeline_spec',
+        '_to_pipeline_spec',
+        'gate_generator_config',
+        'generator_config',
+        'to_gate_pipeline_spec',
+        'to_pipeline_spec',
+    },
+    'track_gen.pipeline.presets': {
+        '_check_centerline_args',
+        '_check_half_width',
+        '_declared',
+        '_gate_stages',
+        '_has_half_width_field',
+        '_is_flat',
+        '_is_one',
+        '_is_pair',
+        '_lookup',
+        '_param',
+        '_preferred_relax',
+        '_provides',
+        '_relax_on',
+        '_sel_name',
+        '_select',
+        '_size_fields',
+        '_size_remedy',
+        '_with_gate_validity',
+        '_with_half_width',
+        '_with_params',
+        '_with_size',
+        'gates',
+        'track',
+    },
+    'track_gen.pipeline.ingest': {
+        '_check_values',
+        '_envs',
+        '_perimeter',
+        '_program_of',
+        '_rows',
+        '_sizing',
+        'load_centerlines',
+    },
+    'track_gen.stages.external': {
+        'register',
+    },
+    'track_gen.stages': {
+        '_check_builtin_stage',
+        'register',
+        'register_builtins',
+    },
+    'track_gen.stages.channels': {
+        '_c',
+        'channel_domain',
+        'family_key',
+        'is_gate_channel',
+        'is_plugin_channel',
+        'required_port_domain',
+    },
+    'track_gen.stages.params': {
+        '_check_control_points',
+        '_check_half_width',
+        '_check_z_draws',
+        '_check_z_range',
+        '_f32_distance',
+        '_warn_inert',
+    },
+    'track_gen.stages.track': {
+        '_alloc_track',
+        '_carry_ops',
+        '_tables',
+        '_with_half_width',
+        '_zcfg',
+        '_zdyn',
+        'raw_attributes',
+    },
+    'track_gen.stages.gates': {
+        '_alloc_gate_sequence',
+        '_default_order',
+        '_orderings_of',
+        '_preferred',
+        '_supported_orderings',
+    },
 }
 
 
@@ -1321,46 +1305,3 @@ def test_debug_sync_is_a_noop_on_cpu(monkeypatch):
     monkeypatch.setattr(runtime.wp, "synchronize_stream",
                         lambda s: pytest.fail("synced on cpu"))
     runtime._sync("cpu")
-
-
-def test_module_syncs_are_the_runtime_helper():
-    # Out-of-tree generator plugins call _pipe._sync / _pipe._init: the names stay.
-    for mod in (warp_pipeline, warp_gate):
-        assert mod._sync is runtime._sync
-        assert mod._init is runtime._init
-        assert mod._CAPTURING is False
-    assert warp_relax._init is runtime._init
-
-
-def test_relax_accepts_and_ignores_capturing():
-    gen = _track_gen()
-    s, relax, cfg = gen._scratch, gen._scratch.relax, gen._config
-    n_max = int(cfg.N_max)
-    with _probe():
-        for capturing in (False, True):
-            warp_relax.band_l0_inplace(s.cs_center, n_max, relax.band, relax.L0, s.count,
-                                       cfg, capturing=capturing)
-            warp_relax.xpbd_solve_inplace(
-                s.cs_center, relax.relaxed, relax.xpbd_db, relax.band, relax.L0,
-                s.count, n_max, cfg, capturing=capturing,
-                sep_cache_idx_wp=relax.sep_cache_idx,
-                sep_cache_count_wp=relax.sep_cache_count,
-                sep_cache_overflow_wp=relax.sep_cache_overflow,
-                cheb_prev_wp=relax.cheb_prev)
-
-
-def test_resample_constant_spacing_reads_back_only_when_allocating():
-    # N_max=64 at spacing 0.06 truncates every track.
-    gen = _track_gen(N_max=64, spacing=0.06)
-    s = gen._scratch
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        with _probe():
-            warp_pipeline.resample_constant_spacing(
-                s.gen_centerline, 0.06, 64, out_wp=s.cs_center, count_wp=s.count,
-                seg_wp=s.cs_seg, s_wp=s.cs_s)
-    with pytest.warns(RuntimeWarning, match="N_max=64"):
-        out, count = warp_pipeline.resample_constant_spacing(
-            s.gen_centerline, 0.06, 64, count_wp=None, out_wp=wp.empty(
-                E * 64, dtype=wp.vec2f, device=DEV))
-    assert int(count.numpy().max()) == 64

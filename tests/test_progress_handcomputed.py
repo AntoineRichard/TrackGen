@@ -14,7 +14,7 @@ import warp as wp
 
 from track_gen._src.checkpoints import CheckpointSet
 from track_gen._src.progress import ProgressTracker
-from track_gen._src.types import GateSequence
+from track_gen._src.types import GateSequence, Layout
 
 E = 1
 
@@ -33,6 +33,9 @@ def _planar_gate():
         right=wp.array(np.array([[0, -1, 0]], np.float32), dtype=wp.vec3f, device=dev),
         valid=wp.array(np.array([1], np.int32), device=dev),
         count=wp.array(np.array([1], np.int32), device=dev),
+        generation=wp.zeros(E, dtype=wp.int32, device=dev),
+        fail_mask=wp.zeros(E, dtype=wp.int32, device=dev),
+        layout=Layout(E, 1, dev),
     )
 
 

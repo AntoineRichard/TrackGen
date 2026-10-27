@@ -1,0 +1,2129 @@
+{
+  "seed_start": 0,
+  "batch": 24,
+  "on_invalid": "keep",
+  "device": "cpu",
+  "sweeps": 50,
+  "smooth_passes": 5,
+  "polish": 10,
+  "prefix_verified": true,
+  "config": {
+    "generator": "bezier",
+    "device": "cpu",
+    "num_envs": 24,
+    "min_num_points": 9,
+    "max_num_points": 13,
+    "num_points_per_segment": 30,
+    "min_point_distance": 0.05,
+    "rad": 0.4,
+    "edgy": 0.0,
+    "scale": 10.0,
+    "handle_clamp_frac": 0.4,
+    "hull_displacement": 0.15,
+    "checkpoint_count": 12,
+    "checkpoint_radius_min_frac": 0.33,
+    "checkpoint_angle_jitter": 0.55,
+    "checkpoint_turn_rate": 0.42,
+    "checkpoint_steer_gain": 0.65,
+    "checkpoint_lookahead_frac": 0.16,
+    "checkpoint_best_of_k": 4,
+    "checkpoint_clip_fallback": false,
+    "polar_num_knots": 12,
+    "polar_radial_jitter": 0.6,
+    "polar_angular_jitter": 0.3,
+    "voronoi_num_sites": 256,
+    "voronoi_site_layout": "void_ring",
+    "voronoi_control_points": 18,
+    "voronoi_radial_variation": 0.62,
+    "voronoi_angular_jitter": 0.08,
+    "repulsive_grow_mult_min": 2.0,
+    "repulsive_grow_mult_max": 3.0,
+    "repulsive_domain_frac": 0.35,
+    "repulsive_domain_init_ratio": 4.0,
+    "repulsive_obstacle_count_min": 8,
+    "repulsive_obstacle_count_max": 12,
+    "repulsive_obstacle_radius_min_frac": 0.02,
+    "repulsive_obstacle_radius_max_frac": 0.045,
+    "repulsive_ratchet_rate": 0.012,
+    "repulsive_alpha": 3.0,
+    "repulsive_beta": 6.0,
+    "repulsive_tau": 0.4,
+    "repulsive_stages": [
+      64,
+      128,
+      256
+    ],
+    "repulsive_settle_iters": 40,
+    "repulsive_resample_every": 25,
+    "repulsive_stall_window": 16,
+    "repulsive_stall_area_tol": 0.05,
+    "half_width": 0.5,
+    "relax_enable": true,
+    "relax_solver": "xpbd",
+    "relax_tol": 0.02,
+    "relax_band": null,
+    "relax_iters": 50,
+    "relax_accel": "chebyshev",
+    "relax_cheby_rho": 0.98,
+    "relax_cheby_gamma": 0.9,
+    "relax_cheby_start": 8,
+    "relax_smooth_passes": 5,
+    "relax_smooth_spacing_iters": 10,
+    "relax_sep_every": 20,
+    "relax_sep_cache_slots": 16,
+    "relax_sep_cache_skin": 0.5,
+    "relax_sep_relax": 1.0,
+    "relax_spc_relax": 1.0,
+    "relax_bend_relax": 1.5,
+    "relax_margin": 0.15,
+    "num_points": 256,
+    "spacing": 0.3,
+    "N_max": 384,
+    "turning_tol": 0.1,
+    "w_floor": 0.001,
+    "validity_border_check": false,
+    "z_profile": "flat",
+    "z_base": 0.0,
+    "z_min": 0.0,
+    "z_max": 0.0,
+    "z_max_step": 0.0,
+    "z_noise_amplitude": 0.0,
+    "z_noise_harmonics": 3,
+    "z_control_points": 10,
+    "z_valid_grade": 0.0,
+    "size": 1.0,
+    "generator_params": null,
+    "on_invalid": "keep"
+  },
+  "display": "re-uniformised and inflated view of each solver prefix",
+  "source_commit": "a25ef61c6a1d52ae4a87b42f970c326a0730bb8f",
+  "warp_version": "1.18.0",
+  "numpy_version": "2.5.4",
+  "command": "python -m viz.render_relaxation_video --device cpu --batch 24 --seed 0 --sweeps 50 --rounds 16 --smooth-passes 5 --polish 10 --out-dir DIR --theme both",
+  "selection": "smallest raw pair distances among final-valid examples, plus final-invalid example when available",
+  "selected_envs": [
+    14,
+    21,
+    2
+  ],
+  "fps": 8,
+  "selected_seeds": [
+    14,
+    21,
+    2
+  ],
+  "frames": [
+    {
+      "phase": "raw",
+      "iteration": 0,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.06321351230144501
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.14471423625946045
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.237671360373497
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 1,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.18335920572280884
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.29600638151168823
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.5568966865539551
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 2,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.4588991701602936
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.5275170803070068
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8397305011749268
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 3,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.6236738562583923
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.7084918022155762
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9783288836479187
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 4,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.6969214081764221
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8388969898223877
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.9967543482780457
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 5,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.731882631778717
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8964098691940308
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9887081980705261
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 6,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8194522261619568
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9402332305908203
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0087980031967163
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 7,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8435137867927551
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9537254571914673
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 1.00008225440979
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 8,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8554024696350098
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9648509621620178
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 1.0087782144546509
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 9,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8593675494194031
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.970978319644928
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 1.0092487335205078
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 10,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.87712562084198
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.9945491552352905
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 1.0156139135360718
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 11,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.8722485303878784
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 0.9958651065826416
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0243408679962158
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 12,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9064086079597473
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 1.0119932889938354
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.029910683631897
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 13,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.93817538022995
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.017664909362793
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.037015438079834
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 14,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9564040303230286
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0244314670562744
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0429372787475586
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 15,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9670982360839844
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.02727210521698
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0488553047180176
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 16,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9522160291671753
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0319573879241943
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0548150539398193
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 17,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 0.9742814302444458
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0342648029327393
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.058801531791687
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 18,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0025752782821655
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 1.0390840768814087
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0606979131698608
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 19,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 0,
+          "fail_mask": 8,
+          "min_distance": 1.0181516408920288
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0405683517456055
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0622756481170654
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 20,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.01910400390625
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.043585181236267
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0624141693115234
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 21,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0169358253479004
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0229343175888062
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.062372088432312
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 22,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0180820226669312
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0146338939666748
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0621452331542969
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 23,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0375691652297974
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.016755223274231
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.062469482421875
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 24,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0344630479812622
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0226057767868042
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0633177757263184
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 25,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.047013282775879
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0306274890899658
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0650653839111328
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 26,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0485421419143677
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0462749004364014
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0672065019607544
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 27,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0497456789016724
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0484424829483032
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0692355632781982
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 28,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0529195070266724
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0457357168197632
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0708876848220825
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 29,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.053695559501648
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0470733642578125
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0720188617706299
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 30,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0539013147354126
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0488203763961792
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0725854635238647
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 31,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0555481910705566
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0497257709503174
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0728540420532227
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 32,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0550258159637451
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.050076961517334
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0731256008148193
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 33,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0541582107543945
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0497345924377441
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.073464274406433
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 34,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0536142587661743
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.051198124885559
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0740145444869995
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 35,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.053805947303772
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.052051067352295
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0746431350708008
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 36,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.055025577545166
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0521847009658813
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0754070281982422
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 37,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0561772584915161
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0524033308029175
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0762696266174316
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 38,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.057716727256775
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0528634786605835
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0770556926727295
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 39,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0572991371154785
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0533121824264526
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0777746438980103
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 40,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.056994915008545
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0533748865127563
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.078524112701416
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 41,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0572322607040405
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0539140701293945
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.079373836517334
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 42,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.057610273361206
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0546410083770752
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0801026821136475
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 43,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.057774543762207
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.055134654045105
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0804837942123413
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 44,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0579837560653687
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0560698509216309
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0809952020645142
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 45,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.058290958404541
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0573440790176392
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.081697940826416
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 46,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0585678815841675
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0580177307128906
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.082470178604126
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 47,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0588443279266357
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0587235689163208
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0831140279769897
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 48,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0590180158615112
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0592405796051025
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0838370323181152
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 49,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0591706037521362
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0596500635147095
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0846141576766968
+        }
+      ]
+    },
+    {
+      "phase": "sweep",
+      "iteration": 50,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0589160919189453
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0604052543640137
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.085312843322754
+        }
+      ]
+    },
+    {
+      "phase": "Taubin",
+      "iteration": 1,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0584357976913452
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.057525634765625
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0820419788360596
+        }
+      ]
+    },
+    {
+      "phase": "Taubin",
+      "iteration": 2,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0587631464004517
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.055376648902893
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0820183753967285
+        }
+      ]
+    },
+    {
+      "phase": "Taubin",
+      "iteration": 3,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0591824054718018
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0545423030853271
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0823343992233276
+        }
+      ]
+    },
+    {
+      "phase": "Taubin",
+      "iteration": 4,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.059577226638794
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0538725852966309
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0820690393447876
+        }
+      ]
+    },
+    {
+      "phase": "Taubin",
+      "iteration": 5,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0599380731582642
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0512343645095825
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.081678032875061
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 1,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.059633731842041
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0514318943023682
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.081470012664795
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 2,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.059443712234497
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0510588884353638
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0812760591506958
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 3,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.059295892715454
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0504432916641235
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.081105351448059
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 4,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0591670274734497
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0497314929962158
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.08095121383667
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 5,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0590487718582153
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0489909648895264
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.080819010734558
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 6,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0589367151260376
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0482542514801025
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0807063579559326
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 7,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0588377714157104
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0475350618362427
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0806105136871338
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 8,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0587420463562012
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0468406677246094
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0805257558822632
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 9,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0586425065994263
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0461722612380981
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.080451250076294
+        }
+      ]
+    },
+    {
+      "phase": "polish",
+      "iteration": 10,
+      "envs": [
+        {
+          "env": 14,
+          "count": 178,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.058547019958496
+        },
+        {
+          "env": 21,
+          "count": 130,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0455317497253418
+        },
+        {
+          "env": 2,
+          "count": 205,
+          "valid": 1,
+          "fail_mask": 0,
+          "min_distance": 1.0803886651992798
+        }
+      ]
+    }
+  ],
+  "encoded_frames": 90,
+  "duration_seconds": 11.25,
+  "frame_size": [
+    1216,
+    684
+  ],
+  "poster_frame_size": [
+    1216,
+    684
+  ],
+  "aspect_ratio": "16:9",
+  "theme": "dark",
+  "geometry_sha256": "83560707c85bfd765c08780c823377cf3d3c95b338c8bbd713cef6e7302cf033",
+  "render_geometry": {
+    "frame_0000.png": "f4fd22b58007c0a58bfe7ccf11365020589dc26c295e63f2aa0d85f4fe01b1d8",
+    "frame_0009.png": "9a90ccbad27c0c04acbe48a5226c2018c20e3ee9b3b023a72a1c280785a58b70",
+    "frame_0010.png": "e6d491c440592f68be5b55c6396787548c1b02c260c2c5a51ce09253e5489789",
+    "frame_0011.png": "f78e9f2aa14d26654ef2a09b00a8f03dd52c763a6cb4c6cc46b5fda8f6d63d5e",
+    "frame_0012.png": "eb4c8fcfb5cd52e3f6858325c84f220ce0637e0bf3e7e44473d29605f0332278",
+    "frame_0013.png": "25fb09fee16b20bb7bcb98e311a115bd0d3a452fa2eebee712a144247fad228c",
+    "frame_0014.png": "1223850081daf7f45050dbd93e9d714054003a9029f3f01109d81413a212e7ed",
+    "frame_0015.png": "4c68ea1d7433bc9047a885c694c93a6356bcd101c0e7fea9108b5b107fdabf35",
+    "frame_0016.png": "168c280781ea1af87e355a8be0a9bc0ea7ca9a2682b93f231dc696972d732361",
+    "frame_0017.png": "3fb68d81e8f60ba211a5322b2f71f88000adc50175a0d9ca16b5c4d993c69598",
+    "frame_0018.png": "0a664d539d91483cb3d8186548f1b04d5be229de8f6c758a8d7cd48fc78ebdc2",
+    "frame_0019.png": "18aca47f9dc033918e10444e5e206b6ca019f0ee0d7c23814dff3eda886c41d0",
+    "frame_0020.png": "3b4dee759e58883434fd9b0b9e59263e543443f3c1e96ef1f19a271d3504c5f6",
+    "frame_0021.png": "ccd148344d7bf7ef4bcdaaf0cb4d9d5e90d3906ccf2f5420b1a09cbb4fc8843c",
+    "frame_0022.png": "0066643864c956f95097972a5990f5fb33a38cae132d70b8c22c3dbac28d471f",
+    "frame_0023.png": "8a89f31b16572866e7db9f66768a1c747b90ea6beda61bdedef80d947004a775",
+    "frame_0024.png": "6f8e00dc2204f8c34c978133cf1c8fa716ff3d2c2df3ed0813191a8d67256601",
+    "frame_0025.png": "2074263d98b584ae17a66a11af24dc08c4d890a8da5bbd4cf660429a5c2823f4",
+    "frame_0026.png": "2b0c4e194e24fc8cb3920e942fa2cc615741d1a7649e27c987a296cbe876e6de",
+    "frame_0027.png": "3a06f811fed5f4e3856de30fd5e96327ca986fb997984e8af5d9c3db9816f058",
+    "frame_0028.png": "05d6d3bb47cf4938d5d4898e4722d512c3ab59efb1a7c8947fd44bca6ea40fbb",
+    "frame_0029.png": "8fa1f570cb9f3b50668d70b80d7319e6bf1885ce21ced7414ca7d04b9bb34c7f",
+    "frame_0030.png": "25005cfa621fdb5ce9ff42e0df06ba5e12c2a5654f2fec97c25a080ddb1c7cfc",
+    "frame_0031.png": "3a8f4d13940574872a5c36c5b1d9d00d00823039621a4298c02a54261a656123",
+    "frame_0032.png": "3a6591128c8f8ce51be0e78cb5fc2fd12b8963927a3b2cced7b62419a3351372",
+    "frame_0033.png": "6880f4aeff6b43bce362e82091216e7019b70c645eb72af7ebacfbb47cbf2b2e",
+    "frame_0034.png": "bc2a1a397c0962fe6a8b5e501ccd9603b41714c8134802c9971553b601fca166",
+    "frame_0035.png": "f78cd72d66f63dbc2f106c7a6ea40b3ae35d9b9cee93d020ccc98fb69b776528",
+    "frame_0036.png": "9a23a0a4af9aec00c4f29d9d4b4b4d96085f964dd644716f1193fc158ac8417a",
+    "frame_0037.png": "a948d6f2ba81ca56f64f3c3afc45f5a254a17d5b8b45f4b6a8663311d88c014f",
+    "frame_0038.png": "d9a92088744c08a2884d058d889321ffd5eb8242c02767bc8f402975a1e5cb7b",
+    "frame_0039.png": "3d52b573a34baeca9e134d004e0faeb4acdd9c55b973c6cb5f653330b8a271a9",
+    "frame_0040.png": "9ce920bbd03cd8b662777d5187d0ce113e78568470d2cc32d3ffa24814d98c59",
+    "frame_0041.png": "c5d41e9174d64add4f5181a342cee3665d8040e722de511b295a4171959a73af",
+    "frame_0042.png": "0477a17717f85a23fba984ae38d129089b27d54f7fb9a74e87596db731d1e7d3",
+    "frame_0043.png": "0308877d29aaea8e945169b93403c3d8189102783ff668faad1e9f88b49de7dc",
+    "frame_0044.png": "5af9ac0a984dee569833976a21352143e023ed7bf6ebc914bef1c71b503856a5",
+    "frame_0045.png": "ade5da47e204e15a5b248c2e07a23a5cbba864839a61257c1540907bac5aa69f",
+    "frame_0046.png": "6d0f589892076fbb916d922031c3f742b7ab3a0811f937f4b28f2a68cc316d79",
+    "frame_0047.png": "2bd28c81b12ab79992a04e414c2c3c926743c89676e43075870a541c6c253861",
+    "frame_0048.png": "a0d18dc7eac6e2d78e1322a289d63dbf7158dbebe97ba888c76f68a3e8f227da",
+    "frame_0049.png": "b364acb36db1b744eea4f174d17ef1ed6ae663a82ae3f3b9dd33a1a37e61913f",
+    "frame_0050.png": "fc49461a53b3827fc486197bdbbed6797fe546cb672d028f652ef180dea75ded",
+    "frame_0051.png": "d6153b4de610b1104f44f3758452593230f780215495de0c4a53b2bca7ec55b0",
+    "frame_0052.png": "c58a23e057586ad022f413bf7bff7ffb0780feb2a399e186d0e8214bb466d7bd",
+    "frame_0053.png": "2251cb6374a8ce2dde08a0c55c00c4bcf716c39428df5003bcdeaaa78ffaf0d5",
+    "frame_0054.png": "1a042bf71b94939b7a251d65f0be3ad706b828d6d166e2ba9d1d3a4ac84e6359",
+    "frame_0055.png": "97bd710d5e056829dcd12feb64f7e7d9a6f35d0e7292d105eb36ea494a15dd12",
+    "frame_0056.png": "8e34702735fb90540b487b8253b55276a2e26b816936e2d9def1fded80027a0a",
+    "frame_0057.png": "51817bb209c7a235cb7c1fcf7556baa729f849821286a5c95311758dfcba8626",
+    "frame_0058.png": "f50389108299b720cfa6effffc8d096d8c38f0b8d0c0f519c6c315fad1f1c019",
+    "frame_0059.png": "6ee6a297181af3803eebb89c64c5e1a551084f84d60c15082e5877b3634736fe",
+    "frame_0060.png": "8691fc9d0762ddb1a7c8000e224bc6fa01ebd8ad5cd240b49926a656f4dcce86",
+    "frame_0061.png": "5e20c6f459a210220d78864a25667848562ca6cbb7a0479e47a1169b333f2d79",
+    "frame_0062.png": "b95655a8811b3b2810a325dc4002bd8da2fb1e70b4c25d4b07302ac14a02f30b",
+    "frame_0063.png": "be9064871eeebcdfaab0c183f40fb2483e3d689e642a7defd1dd2af762a8157f",
+    "frame_0064.png": "999dbc790c0f6f776e3bcb8ca6747e27502f17f3b742badcb41691f25c882c39",
+    "frame_0065.png": "ba75687f8a0192cc9ac8288f43a9bb78662e26334f3b0191bb2a64508a560ffe",
+    "frame_0066.png": "e96ac6f4111971f619456b9c3dea719a6de1ab65efb5f5713f8a7df12d41655f",
+    "frame_0067.png": "2ad779aa3df6925b8152d0a5cf6cd43bb78b2924235de2ae6815ec84de5b56b6",
+    "frame_0068.png": "a00edc86541767aef18dbc17f6c9ad8c953ecf5eb3458d19c1e17ed9a1d08627",
+    "frame_0069.png": "8e1b89674b216f1dcdb5a16c34ae3fdd89567d1ba56d1ddaedc314d1bf4b182e",
+    "frame_0070.png": "27c8f0a768b06f327242ada8f38914eda25cc9f16ec5eec9e9b6393af980c2c4",
+    "frame_0071.png": "300a9d49260d21eeffd3039e2602e9635f0bfdf6dcd406720d410a3402688024",
+    "frame_0072.png": "4c87adbae322926237eed04aca8acd35f03d1c7960bab2126170e2c140213047",
+    "frame_0073.png": "8f604976a3741e05000ed99416b67d3b78ce0721ccd9930302a8f053afbadfb3"
+  },
+  "source": {
+    "git_commit": "a25ef61c6a1d52ae4a87b42f970c326a0730bb8f",
+    "source_tree_dirty": false,
+    "python_source_sha256": {
+      "track_gen/__init__.py": "73ed2669e4c3e5c889e8d8bdebf26deb61c2ce5f5ea61bbf9753a217056be017",
+      "track_gen/_experimental/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "track_gen/_experimental/checkpoint_clip_bench.py": "864cb13fd8f031a0a60b638aa8e471cb42f31d6ffdb2bebb2a1cd6275b39dd9e",
+      "track_gen/_experimental/checkpoint_clip_grid.py": "c0289b286cab47f45cdb2bd0da7c794b9a377ae3aa0f8eeff8e14ab10b4f8315",
+      "track_gen/_experimental/checkpoint_proto.py": "ae6b9a8669ac6378995fe2621eff2a0d3c3a98f804823be01dc0a80932bc122d",
+      "track_gen/_experimental/fourier.py": "393e252b7f07a56e97b84bf54ace2fe7f6a61ef37d6858e8f3b6237f7b51338b",
+      "track_gen/_src/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "track_gen/_src/builtin_params.py": "4df21fce79ef33dd3f5c73a458a42d399079afc7a402c8037e50f9c122876892",
+      "track_gen/_src/builtin_plugins.py": "05820d6a8b2179762b08f02b2e6d00bb22b4a435a4efe245c5b5ddea9a128b66",
+      "track_gen/_src/builtin_stage.py": "04a7ef361eb9f91c42e1f19c3c39ca524cc0a7ece33d416dc3f9cf46b7fdc683",
+      "track_gen/_src/checkpoints.py": "773aab155e31c4141472a880ff27f5227c7408c9c543d3710bc82861b9180c66",
+      "track_gen/_src/collision.py": "a12943a6c95376de35c7d6c533746f6070a243e8a9841b9c5ff3769361bc58f8",
+      "track_gen/_src/collision_discs.py": "1f310d09e8cc82f3007d890a51fe18b5168d6404831e0de0982db4255fc9b71c",
+      "track_gen/_src/collision_frames.py": "9dd2e422dfb0c2b5fa29dbe1234ba7f86e71237874e4eb6c4c23023ff5653302",
+      "track_gen/_src/collision_geom.py": "68c389cad085c10beb937e3f938be877b8855ccda03ad8cf4ea2333a2e5aa3ec",
+      "track_gen/_src/collision_sdf.py": "8d90b79ee728f50ce945ae8da325d910e76ea46c1837d87877ce24ac781b7353",
+      "track_gen/_src/course.py": "4b75d9e9c81d519fd4bd524b2a0c9ab3bce2f78cecf1faeea0189a6182e86335",
+      "track_gen/_src/course_line.py": "913ec5d7653d202393798a89f5e5c3182f5e9c8b9043806e56c57b592ce62952",
+      "track_gen/_src/gate_generator.py": "abdf91fb7024c6093bd53b8463b6fce80726ec58ff2ce3dd9dd2581e9401e3cc",
+      "track_gen/_src/generator_binding.py": "0d8008c5a17beb88babaef5071f987e83b82f232e12bf8373f553024f639f081",
+      "track_gen/_src/heightfield.py": "541c2d89092c1097168938b33e09fc682728b7de0207861e2018e977208c727c",
+      "track_gen/_src/localize.py": "308ba797e57e0adc5cf4bed91b7a88e82489dc029ff32bb62bd4e716eb610ec4",
+      "track_gen/_src/progress.py": "fb6570c23052b4966e8f6707ff294dd705e9f824c14683ac6926428b613adde8",
+      "track_gen/_src/props.py": "2c12315aae013cd8f8e10210fdce131959b6ed91692c5722bef5df824ab10680",
+      "track_gen/_src/repulsive_barrier_energy.py": "9c1ec7397facd3a25109eb697c30153930793be6e3a08639cf66ea0b0f6b4c70",
+      "track_gen/_src/repulsive_clearance.py": "e0f8d9b70fae0112da5f2696b34a8bf7b78c6bb3ef82c2c9de6e504547fae4e6",
+      "track_gen/_src/repulsive_parallel_energy.py": "581ee77dc0b0280835cbce76bf1ae19d8bdf2f865aa19773392eb8f688979eb5",
+      "track_gen/_src/repulsive_parallel_proposals.py": "eac19704afd2d6c3c57c42ed2856e9c50189b522e75f439a00c1523999f3e0d0",
+      "track_gen/_src/repulsive_tangent_energy.py": "8d3fb4dc49a7cac55e2d9b72c76ca94f789846b860fd2d404ccd296f6fc8fad9",
+      "track_gen/_src/rng_kernels.py": "62b27bd17f5545fe31ac7bb3dbe31aec0a9b6eebaa51306786a5e5747cec5bed",
+      "track_gen/_src/rng_utils.py": "0689b24f73bbeaa4c453b1d1a3336a646c0425203be02542207ddf0ed9fe4616",
+      "track_gen/_src/runtime.py": "09541e280dbcde7241c200f71fee9d03968c7bb625f06790c1627a147ced1ae9",
+      "track_gen/_src/track_generator.py": "ec80ed8332b71b3ca2bac4345e310234ad5926f89448e9a2eddd794862af7831",
+      "track_gen/_src/types.py": "4f724b661c28034849f734939525aa114cb6800b2e1b8de30a9f03d9bf000ab1",
+      "track_gen/_src/warp_gate.py": "6998009f8e468def278112fa5b060c88dabba62a086bb78d792df81d8ca5d23e",
+      "track_gen/_src/warp_generate.py": "c8a3e7d3493b3d79f2edb5580d6a43a3a7f352665b5865d291734216195240ea",
+      "track_gen/_src/warp_generate_checkpoint.py": "f208864a14e20cb5b258100d03900388b7c6be95de2d65974665b73f010f8c97",
+      "track_gen/_src/warp_generate_checkpoint_gates.py": "b3b306e3818bea0a10e16c728a9a6d06d72fddd73b394287df1ff85044985b02",
+      "track_gen/_src/warp_generate_gates.py": "4e45680d1d7251259259a1fbcceadde3be872734eac6cfd3f2741d73f9503db9",
+      "track_gen/_src/warp_generate_hull.py": "e4f6400cfc0f0534c8139f92056a8651d99d3d3b629222d3e39a32969d69f5a4",
+      "track_gen/_src/warp_generate_polar.py": "0cbf662125aeca8bf5add5115874d23f1f320f0180974fa02834fc940f5c2920",
+      "track_gen/_src/warp_generate_polar_gates.py": "e4e4337ef631241e8988ae7d6b7ec68571d6b86564c2884dc0efad1397c6aaf9",
+      "track_gen/_src/warp_generate_repulsive.py": "0028dc6ce25a42a54ceb53c8006d3cc3068736f17c0fda2f904eb3ce556b6c5e",
+      "track_gen/_src/warp_generate_voronoi.py": "5833c2714fa6262b28bdc22024e7adfab4656b56c067ff1d816c77fd619fa331",
+      "track_gen/_src/warp_generate_voronoi_gates.py": "bdf6dc5371bc5435d0e3833c49dd51cb3a14da6ec00f399bc98553cb9faa3e32",
+      "track_gen/_src/warp_pipeline.py": "bd563a7c722513d0ddc7615dedda7ccef42b90932976785f53c0754c3b6cb75f",
+      "track_gen/_src/warp_relax.py": "70770e40ca3c0e41f2e63ff2b0f413ad2d1294c219f6e17cf5609a9d4d8c22f8",
+      "track_gen/_src/warp_width.py": "4d8358af796db3ce2330de3f57880831c18caab3ffa75c8536523e50c72b02d2",
+      "track_gen/_src/warp_zprofile.py": "73212b536ede96e880617f32b0e571d5c498e94a323ca48ca7a4bb135bbd014e",
+      "track_gen/_version.py": "88c46562f98dffa3ffa72f2fb6ef660e87759f33d734d7d280158737b705f470",
+      "track_gen/checkpoints.py": "0eb3a9262ed06c73a24ed358d4c8dd3c2a251480a7b98df341bf53d4b7508550",
+      "track_gen/collision.py": "49dcac997308574989c681fda7b17ffb8614b941aa9a29fb33e8005a5fdc5083",
+      "track_gen/course.py": "a91b3472bb6823a1d166b0276dd8b99bd7516e397e737ac56488ebe6869b5b71",
+      "track_gen/exec/__init__.py": "4693b106186f8c442982ef4f470f506109f26fed955d4ca7ab3c37bc42f315e8",
+      "track_gen/exec/_compat.py": "998aee708239e27790f0f6b046833d3adf0bfbfa7f0b492789027c93523bc8bb",
+      "track_gen/exec/context.py": "e4263235dca69e02b881fd0a10c0a5923a652f8a9bb39a448aa69d743b4066d7",
+      "track_gen/exec/errors.py": "f62560fcafcbc7949e4a03cce7a75c1791baa2e20c5ffa246e17244ca13527e1",
+      "track_gen/exec/host.py": "65ff1e9c23a552b6d2f761a89ad288c8dc228f3295d68a1798531c81e4790ac6",
+      "track_gen/exec/runner.py": "ea3febbe5670869b6fcdb4f128d3164d0d7165efb3036e355281657e223bfff3",
+      "track_gen/heightfield.py": "86be7a8d552b734ad10bbc44a53f08179b6bc9532a08228a512fb94c46440268",
+      "track_gen/interop/__init__.py": "f74f29e8bd15926981d365e03d28aba487cd33d34481a23d812746e0e62335d3",
+      "track_gen/interop/torch.py": "a8c30f5a67830ff4d3b03f071c9295004e4189b5c5be580c298ba448d19d54f3",
+      "track_gen/localize.py": "ea7715982f363f48e6ba4a40c91c94a55ead28c703077c71fec8dc2df7cdb2df",
+      "track_gen/ops/__init__.py": "9d2c8ce778339ce58eb4221b291a883b49c279822d500668be630c274b33e065",
+      "track_gen/ops/check.py": "4aed73f5d6f39eeddbb6710f143eb463048bbcb079d8e79636e2853e9e6bf646",
+      "track_gen/ops/constants.py": "1d446abbb2664e80ce3f1777c2b4dc76b75f95c53afc9f44043d4cd3122a5458",
+      "track_gen/ops/curves.py": "0678c2852e67d7e377bcf7ff603a4f17c97cef55c5025dcffc521b5cef0cdef5",
+      "track_gen/ops/fill.py": "78dbb1a2ca74c97a58c38cc4fcacc31ac22da39b82315ead67eb6f5925472c1d",
+      "track_gen/ops/funcs.py": "f84ea99a78ed0e236023a4b9da363542cd43eb8767d898f3c0a001ddf1eab3d5",
+      "track_gen/ops/geometry.py": "7332814e1109d609fc0aa238dbac9238c99632023867e0c732fe3a601d09c26e",
+      "track_gen/ops/hash.py": "8717b29f1cba59d6e63ab8a436faefbcee76a31b54c1af29f6e4385e4847ede9",
+      "track_gen/ops/reduce.py": "2ff3e237087389abdbcac72d4babc45736b9405cb1304050f3f6a932b9567713",
+      "track_gen/ops/resample.py": "591bc2de6bbf14b1acaa6df268a6fc8e30ccb5b47c8bfc737b4e2913ce837c65",
+      "track_gen/ops/rng.py": "b958fe81c4a0cbb99945aef3cfd53ebf436c7ce8c7d0eeed56cb716fbcb61bd9",
+      "track_gen/ops/sampling.py": "3826ca2d72a2dff9ee3a1433f91b2b5ba1037905062869735244df39b0f71a3d",
+      "track_gen/pipeline/__init__.py": "ff713e5847f662784f6c785e21284a2f51fca3ea80a39063db282f95ab783101",
+      "track_gen/pipeline/ingest.py": "db710f00e4a0fbe95991caeaed0c245e315a8f77cf3d2157dc39fcdfb2652afb",
+      "track_gen/pipeline/legacy.py": "ac1208a27236dd5d88dca71a574094a398239bb0e0ec55fd4d7a8959ce43664c",
+      "track_gen/pipeline/planner.py": "4df9808bf939f23d76998c11f55676391e714517216f1b49a619ecf1236858aa",
+      "track_gen/pipeline/presets.py": "5331f9480bb8b434ee2bb2736e7cae20ce4f4b001dd17db9fce76afb55ee9222",
+      "track_gen/pipeline/producer.py": "8a68b64db6e2fc61fd719a17b2524cfc5f7a1dc9aea9a2b9d9bdd8477bab4a15",
+      "track_gen/pipeline/program.py": "4a93e4c034be9517475bcd12c9b4a7380f88dd1bcd3819ec20c68c7db2a6480a",
+      "track_gen/pipeline/spec.py": "6be54d6401eee9df72612eb4df69e6184a081cbf6de3726fad7d7d4f8d7dcd36",
+      "track_gen/plugin/__init__.py": "aa3aced2e696b2c85f298152a81307ab8fbaedc2917c3bad4ddba87d1d304565",
+      "track_gen/plugin/_registry.py": "1760edac2bbe5fa72831b281fa4a5f99cef46e1206a85e677d4262e21d573672",
+      "track_gen/plugin/_specs.py": "cc60a1c515231e55628db22987005b3243c8892a961108020e9cb5ddfbdc445b",
+      "track_gen/plugin/params.py": "49071226c8b7f49ffa97f5e91d199cb099a1b8733c9f560d3b3f1926f86f3f20",
+      "track_gen/plugin/stage.py": "1e69f3db11d7035802822463436a26c7cd40b1175f24cd986336199ec2c910dc",
+      "track_gen/progress.py": "8832a2054230606614a00739582bfe94b715c6de02b35cc40d5c3ee90889b5ce",
+      "track_gen/props.py": "f73fb3a4da1a30352ff5fdf751778ba27c45a8de20c4aa8b43b1f9233445a02b",
+      "track_gen/results.py": "b270fb1298f8de63345ceee8c789d645de40d70fcd35332e8b79508f9d100f89",
+      "track_gen/seeds.py": "14ef68bc064b6c7fd9fc685e20a0039d5a2bcfcacf3132569ea47ec4f89538f0",
+      "track_gen/stages/__init__.py": "f2ff2af81be707bebf9a580f9c36b519e3c76e6af5380e46e8756b90e80fb328",
+      "track_gen/stages/channels.py": "eeb20515da0ba95b6872206eb4bd89fafe142cf0bd2c518fe0513b2b513b2096",
+      "track_gen/stages/commit.py": "f10cadddb1466256941f1767de00e2fb9dd04222ec4d0289f9470671335f6df0",
+      "track_gen/stages/external.py": "b1d4f11a10918eab8892dc2ca961f81729b7726a51c65a40344300c546d8527e",
+      "track_gen/stages/gates.py": "5450cb2c32d18cec7e549345fb5d615277587b52e082c88b227e21c02b1fb17d",
+      "track_gen/stages/params.py": "4b11038893833b0091361acfbd1f78126e19aa2915d269841b703ebaea1efe2e",
+      "track_gen/stages/randomize.py": "a03e26273c3708e5d681bd77587a1952d5b46baf4dc4d261a7d8c1f2c7e02fab",
+      "track_gen/stages/track.py": "2f025fc1b184001a8ffc4418b3f321d8b0c7e017b352d41e66ef11c0fbc32670",
+      "track_gen/testing/__init__.py": "9e6d8dadeb433708281bb23f85341b8e721cfa429d69195eb5ba648d65c3efc6",
+      "track_gen/testing/_interpose.py": "00a0744c9c6d99c655355aa84248dea00038e46d2abd1c9b249855491e7e9bcb",
+      "track_gen/testing/capture.py": "6750e80e4c1faed3c6d093c976a70aa1b4f23f3f646bb8af58867630a616c07d",
+      "track_gen/testing/components.py": "c5e5fc99ccd50c2dee955bf2777f714f06c74ea3c3bdae13d044bbf24f1c5c78",
+      "track_gen/testing/conformance.py": "0955b217bb702a1779f97248b9c64b1c13c0332e97b230fdaae9d2721665df4f",
+      "track_gen/testing/contract.py": "17cf483c7ec326d53c91d3af3b12d1c92904172ff8560fa8412c72065d02fea2",
+      "track_gen/testing/pytest_plugin.py": "d9a99be3ad9dde600659204775ebb632a48c564fa02bdca0acffca4efe982265",
+      "track_gen/testing/trace.py": "51b2baed4ffa2969eefbfd316ddbb4057cef0347488701e919375047302ee317",
+      "track_gen/tools/__init__.py": "4d97637ee7722146452e3d61325e5204e1fba65562cae78c64f9047b5ad8b019",
+      "track_gen/tools/_adapters.py": "36c433d90c51955195c255338ddb6096fa98da1dff5c915290e4cd78d4411f06",
+      "track_gen/tools/_component.py": "1be66f65e1d9602ebb315754682b5ea54ee9ec6d6f0bf418f880ac277b29a6f6",
+      "viz/capture_parameter_explorer.py": "6914ec1f9b89113bb5f1918b8eea32464fd37c981346dc6e8a03c7aa4ea40dd4",
+      "viz/make_report.py": "ec4cf83fceb9a86d1872bbbeb1953a75a9bc8379aa0f21ed6fe9e65c270b7ec0",
+      "viz/param_explorer.py": "76d5169cdaf1551f44ccc4bcf646bf82f0b1601ae959f60eb20e15f0396a1d62",
+      "viz/plot_ablations.py": "dc30ec581d617d63f2d34f2dcec0325b8e5872e8807d35267d32ca9f64fc0545",
+      "viz/plot_gate_courses.py": "b1015afe41f837d363e3f76231efe6bc94a27a593d716037ff7600b9167508f0",
+      "viz/plot_tracks.py": "2d5be8920e4edcf4fc85f7a137d95ad892592dc41c7d2876cac24db67b3ccbe2",
+      "viz/plot_tracks_3d.py": "d48f65453c2aff6ac6951600413c3b8260181c622ccdde40702714f124fdfc38",
+      "viz/plot_z_profiles.py": "7462c6ed64d16f90f810bf9ed3cdb31955a718aa4bff3c562a8bf3ec18f4655f",
+      "viz/racing_theme.py": "961a821dafa11100adaa48dbce3ccf18283884cef904758c07b06b1e1899a02d",
+      "viz/render_brand_assets.py": "9830a38739d1ce506ab8fa96be5af61469af38c6f4a8725bf0468b3f46b4e894",
+      "viz/render_collision_guide.py": "7514428ddbb6309979f5fe8c565e3de295a6baf9ba60caa650686d84ac103d55",
+      "viz/render_course_guide.py": "3b1d02d219503fb2093155a90624e0dc6eebf95f18f1cbec39d52236650b36fc",
+      "viz/render_data_guide.py": "57b0899bd6f9dd2ab37d090aca89fb26dad0e1a64b38df45aa201bbe2c74e77f",
+      "viz/render_generator_guide.py": "42302888a8977814f5ea432f80ad926b0d0dd6ae96c307a36409e121e283cd86",
+      "viz/render_readme_assets.py": "752f8e53853aafdcaa2dcec65fb95b80127e3d5ce692a0a277e5df983f8758af",
+      "viz/render_relaxation_guide.py": "454fb741f4e93fa47c18a2f4b50f559666a410c39d9507a5d1d1c8675ee131ba",
+      "viz/render_relaxation_video.py": "6a4cf705adff10c557c3c0a56960a4137a718cbc1966dde1048d18078a9825fb",
+      "viz/render_utility_assets.py": "f4e36737e66c2bc66f30fa7751ff6fb2ada58d677573b17d5bd4f472be41c541",
+      "viz/storyboard_bezier_hull.py": "da645224a25ebcfdf3b96a8242dfb1ee05cd62f652dd424d79a45c4bf717e591",
+      "viz/storyboard_polar.py": "8d8219a307d0769f0552d0ff5f48e8c5fb7c9b3d544ad0e06a16bcd5f5635dc4",
+      "viz/storyboard_spacing.py": "11c74a3628f8e63d4913b4d6db370abad7b22228288ed7faef82e53b55372ee4"
+    },
+    "theme": "dark",
+    "renderer_sha256": "6a4cf705adff10c557c3c0a56960a4137a718cbc1966dde1048d18078a9825fb",
+    "capture_command": "python -m viz.render_relaxation_video --device cpu --batch 24 --seed 0 --sweeps 50 --rounds 16 --smooth-passes 5 --polish 10 --out-dir DIR --theme both",
+    "python_version": "3.12.14",
+    "matplotlib_version": "3.11.2",
+    "numpy_version": "2.5.4",
+    "palette_sha256": "a6509a087b4df1335adc35330b563b093e08de11f5dc31309f460f5bcae1d55f"
+  },
+  "asset_sha256": {
+    "relaxation-iterations.mp4": "64463b6a7d56e6b49c201b16a8ea9fd6adfe3ff735fdc152660dd83154b7b597",
+    "relaxation-iterations-poster.png": "b9f2fd6f838d3d721c70620099d657482a6ebf517873d2ff0d37eb2bed5137c6"
+  }
+}

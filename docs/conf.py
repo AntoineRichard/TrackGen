@@ -5,6 +5,7 @@ from pathlib import Path
 
 _HERE = Path(__file__).parent
 sys.path.insert(0, str(_HERE / "_ext"))
+sys.path.insert(0, str(_HERE / "_tools"))
 
 project = "TrackGen"
 author = "Antoine Richard"
@@ -24,6 +25,7 @@ extensions = [
     # Local checks (docs/_ext/trackgen_docscheck.py): every public symbol documented, no
     # roadmap / version jargon outside upgrading/*, every data file present.
     "trackgen_docscheck",
+    "themed_media",
 ]
 
 # Internal planning pages, review notes and the build tooling stay in the repository but
@@ -64,7 +66,7 @@ intersphinx_mapping = {
 # Nitpicky: every cross-reference must resolve. Third-party targets that have no
 # inventory are ignored by pattern; the remaining docstring-origin targets that do not
 # resolve yet are listed in _tools/nitpick_allowlist.txt (generated from a nitpicky build;
-# entries may only be removed, the list goes to zero by 1.0). A new unresolved reference in
+# entries may only be removed as their targets are resolved). A new unresolved reference in
 # a page fails the build. The allowlist is applied by trackgen_docscheck (not
 # nitpick_ignore), which also fails a full build on an entry that no longer silences
 # anything.
@@ -99,7 +101,7 @@ trackgen_nitpick_allowlist = _read_allowlist(_HERE / "_tools" / "nitpick_allowli
 # upgrading/*; "report" (local triage only) logs them as docscheck: ... lines and in
 # <doctreedir>/docscheck.txt without failing. Missing data files always warn.
 trackgen_docscheck = "error"
-trackgen_jargon_exclude = ("upgrading/",)
+trackgen_jargon_exclude = ()
 # Public names that are deliberately not documented, with the reason.
 trackgen_api_exempt = {
     # The library's own constructors call it to refuse construction inside a capture
@@ -150,6 +152,27 @@ trackgen_api_exempt = {
 
 html_theme = "furo"
 html_static_path = ["_static"]
+templates_path = ["_templates"]
+html_theme_options = {
+    "light_logo": "brand/trackgen-circuit-wordmark.svg",
+    "dark_logo": "media-dark/trackgen-circuit-wordmark.svg",
+    "sidebar_hide_name": True,
+}
+html_favicon = "_static/brand/trackgen-circuit.ico"
+html_css_files = ["brand.css"]
+# Short generator-construction clips are copied verbatim; rendering stays optional.
+html_extra_path = [
+    "assets/racing/generator-bezier-construction.mp4",
+    "assets/racing/generator-hull-construction.mp4",
+    "assets/racing/generator-polar-construction.mp4",
+    "assets/racing/generator-polar-construction-poster.png",
+    "assets/racing/generator-voronoi-construction-poster.png",
+    "assets/racing/generator-checkpoint-construction-poster.png",
+    "assets/racing/pipeline-sampling.mp4",
+    "assets/racing/generator-voronoi-construction.mp4",
+    "assets/racing/generator-checkpoint-construction.mp4",
+    "assets/racing/generator-repulsive-growth.mp4",
+]
 html_title = "TrackGen"
 
 linkcheck_timeout = 30

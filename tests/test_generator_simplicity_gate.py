@@ -20,7 +20,7 @@ def test_simple_gate_applied_in_generate():
     pytest.importorskip("warp")
     import warp as wp; wp.init()
     from track_gen._src.rng_utils import PerEnvSeededRNG
-    from track_gen._src.types import TrackGenConfig
+    from tests._oracle.config import OracleConfig as TrackGenConfig
     E = 16
     seeds = torch.arange(E, dtype=torch.int32) + 7
     rng = PerEnvSeededRNG(seeds=wp.from_torch(seeds, dtype=wp.int32), num_envs=E, device="cpu")

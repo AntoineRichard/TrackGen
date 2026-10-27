@@ -108,9 +108,9 @@ TRACK_CONTROL_KEYS = [
     "repulsive_domain_init_ratio", "repulsive_obstacle_count_min",
     "repulsive_obstacle_count_max", "repulsive_obstacle_radius_min_frac",
     "repulsive_obstacle_radius_max_frac", "repulsive_ratchet_rate",
-    "repulsive_alpha", "repulsive_beta", "repulsive_tau", "repulsive_w_len",
+    "repulsive_alpha", "repulsive_beta", "repulsive_tau",
     "repulsive_settle_iters", "repulsive_resample_every", "repulsive_stall_window",
-    "repulsive_stall_area_tol", "repulsive_deactivate_obstacles",
+    "repulsive_stall_area_tol",
     "spacing", "n_max", "relax_iters",
     "relax_sep_relax", "relax_spc_relax", "relax_bend_relax", "relax_margin",
     "relax_sep_every", "relax_sep_cache_slots", "relax_sep_cache_skin",
@@ -327,12 +327,10 @@ def default_params() -> dict:
         "repulsive_alpha": cfg.repulsive_alpha,
         "repulsive_beta": cfg.repulsive_beta,
         "repulsive_tau": cfg.repulsive_tau,
-        "repulsive_w_len": cfg.repulsive_w_len,
         "repulsive_settle_iters": cfg.repulsive_settle_iters,
         "repulsive_resample_every": cfg.repulsive_resample_every,
         "repulsive_stall_window": cfg.repulsive_stall_window,
         "repulsive_stall_area_tol": cfg.repulsive_stall_area_tol,
-        "repulsive_deactivate_obstacles": cfg.repulsive_deactivate_obstacles,
         "checkpoint_count": cfg.checkpoint_count,
         "checkpoint_radius_min_frac": cfg.checkpoint_radius_min_frac,
         "checkpoint_angle_jitter": cfg.checkpoint_angle_jitter,
@@ -374,12 +372,10 @@ _REPULSIVE_BUILD_FIELDS = (
     ("repulsive_alpha", float),
     ("repulsive_beta", float),
     ("repulsive_tau", float),
-    ("repulsive_w_len", float),
     ("repulsive_settle_iters", int),
     ("repulsive_resample_every", int),
     ("repulsive_stall_window", int),
     ("repulsive_stall_area_tol", float),
-    ("repulsive_deactivate_obstacles", bool),
 )
 
 
@@ -465,7 +461,6 @@ def build_config(p: dict) -> TrackGenConfig:
         rad=float(p["rad"]),
         edgy=float(p["edgy"]),
         handle_clamp_frac=float(p.get("handle_clamp_frac", 0.4)),
-        output_mode="constant_spacing",
         N_max=int(p["n_max"]),
         relax_iters=int(p["relax_iters"]),
         relax_sep_relax=float(p["relax_sep_relax"]),
@@ -710,7 +705,7 @@ def track_visible_sections(generator: str) -> dict[str, bool]:
 # its header markdown plus its controls, in the SAME order as ``track_mode_outputs``.
 TRACK_MODE_SECTION_SIZES = (
     ("sampling", 4), ("smoothing", 2), ("bezier", 4), ("hull", 2),
-    ("polar", 4), ("voronoi", 6), ("checkpoint", 9), ("repulsive", 19),
+    ("polar", 4), ("voronoi", 6), ("checkpoint", 9), ("repulsive", 17),
 )
 
 
@@ -1196,9 +1191,6 @@ def build_app():
                         rep_tau = gr.Slider(0.05, 1.0, value=defaults["repulsive_tau"], step=0.01,
                                            label="repulsive_tau (flow step size)",
                                            visible=track_mode_visible["repulsive"])
-                        rep_w_len = gr.Slider(0.0, 100.0, value=defaults["repulsive_w_len"], step=1.0,
-                                              label="repulsive_w_len (length regularizer weight)",
-                                              visible=track_mode_visible["repulsive"])
                         rep_settle_iters = gr.Slider(5, 200, value=defaults["repulsive_settle_iters"], step=5,
                                                      label="repulsive_settle_iters (>= 1)",
                                                      visible=track_mode_visible["repulsive"])
@@ -1211,9 +1203,6 @@ def build_app():
                         rep_stall_tol = gr.Slider(0.005, 0.20, value=defaults["repulsive_stall_area_tol"], step=0.005,
                                                   label="repulsive_stall_area_tol",
                                                   visible=track_mode_visible["repulsive"])
-                        rep_deac = gr.Checkbox(value=defaults["repulsive_deactivate_obstacles"],
-                                               label="repulsive_deactivate_obstacles (close disc halos at target length)",
-                                               visible=track_mode_visible["repulsive"])
                         # Plugin generators: one schema-driven section each.
                         track_plugin_outputs = _plugin_components(gr, track_sections,
                                                                   generator_default)
@@ -1263,9 +1252,8 @@ def build_app():
                             checkpoint_best_of_k, checkpoint_clip_fallback,
                             rep_grow_min, rep_grow_max, rep_domain_frac, rep_domain_init_ratio,
                             rep_obs_count_min, rep_obs_count_max, rep_obs_rad_min, rep_obs_rad_max,
-                            rep_ratchet, rep_alpha, rep_beta, rep_tau, rep_w_len,
+                            rep_ratchet, rep_alpha, rep_beta, rep_tau,
                             rep_settle_iters, rep_resample_every, rep_stall_window, rep_stall_tol,
-                            rep_deac,
                             spacing, n_max, relax_iters, sep, spc, bend, margin,
                             sep_every, sep_slots, sep_skin, grid_n, seed, batch_size]
                 if len(controls) != len(TRACK_CONTROL_KEYS):
@@ -1284,9 +1272,8 @@ def build_app():
                     checkpoint_lookahead_frac, checkpoint_best_of_k, checkpoint_clip_fallback,
                     repulsive_md, rep_grow_min, rep_grow_max, rep_domain_frac, rep_domain_init_ratio,
                     rep_obs_count_min, rep_obs_count_max, rep_obs_rad_min, rep_obs_rad_max,
-                    rep_ratchet, rep_alpha, rep_beta, rep_tau, rep_w_len,
+                    rep_ratchet, rep_alpha, rep_beta, rep_tau,
                     rep_settle_iters, rep_resample_every, rep_stall_window, rep_stall_tol,
-                    rep_deac,
                 ]
 
                 if len(track_mode_outputs) != len(track_mode_visibility(generator_default)):

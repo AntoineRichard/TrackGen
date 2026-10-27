@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse, time
 import torch
 
-from track_gen import TrackGenConfig
+from tests._oracle.config import OracleConfig as TrackGenConfig
 from tests._oracle import relaxation, geometry, inflation
 from tests._oracle.generators import BezierCenterlineGenerator
 

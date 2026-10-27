@@ -1,0 +1,1594 @@
+.. _generator-contracts:
+
+Generator contracts and advanced examples
+=========================================
+
+Start with :ref:`writing-a-generator` for a complete generator you can run. This page
+specifies the deeper contracts: typed settings, ports and storage, attributes, supplied
+geometry, live values, random streams, and reusable geometry operations.
+
+.. contents:: On this page
+   :local:
+   :depth: 2
+
+.. _generator-params:
+
+Parameters: ``Params``
+----------------------
+
+A generator declares its own parameters as a ``Params`` class: a frozen, keyword-only
+dataclass deriving from ``track_gen.plugin.Params``. Users set the values with
+``generator_params=`` (of ``presets.track``, ``presets.gates``, ``TrackGenConfig`` or
+``GateGenConfig``), so a plugin does not subclass ``TrackGenConfig`` to add knobs. A
+``Stage`` names the class in its ``Params`` attribute; a ``GeneratorSpec`` passes it as
+``params=``.
+
+Each field is made with ``static`` or ``dynamic`` (a plain dataclass field counts as
+static):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 41 41
+
+   * - Made with
+     - ``static(default, *, lo=None, hi=None, choices=None, doc="", ui=None)``
+     - ``dynamic(default, *, lo=None, hi=None, doc="", ui=None)``
+   * - The stage gets
+     - A host value, on the ``params`` object ``build`` receives
+       (``config.generator_params`` for a ``GeneratorSpec``).
+     - An ``[E]`` device array, ``b.param(field)``, that its kernels read by pointer.
+   * - Types
+     - Any value: ``int``, ``float``, ``bool``, ``str``, tuples, ``None``, enums.
+     - ``float`` (a ``wp.float32`` array), ``int`` or ``bool`` (a ``wp.int32`` array).
+   * - It changes
+     - Never: build a new generator to change it.
+     - Per env, at run time, between or inside graph replays, with nothing recorded
+       again (see :ref:`generator-runtime-params`).
+   * - Use it for
+     - Shapes, buffer sizes, iteration counts, enums, anything a Python branch reads.
+     - Continuous knobs a curriculum or a domain randomisation varies per env.
+   * - Declared by
+     - A ``Stage`` or a ``GeneratorSpec``.
+     - A ``Stage`` only.
+
+The keyword arguments describe the field. ``lo`` and ``hi`` are inclusive bounds: a value
+with ``v < lo`` or ``v > hi`` raises ``ValueError`` at construction (a NaN passes, as with
+any comparison), and so does a scalar ``set`` outside them. For a dynamic ``float``
+field the comparison is made in ``float32``, the precision of its array
+(``f32(lo) <= f32(v) <= f32(hi)``), so a value read back from the array is always
+accepted. A field annotated ``int``, ``float`` or ``bool`` must hold a value of that
+type, static or dynamic: an integral (not a bool) for ``int``, any real (not a bool) for
+``float``, a bool (or ``0`` / ``1``) for ``bool``; anything else, such as the string
+``"70"``, raises ``ValueError``. ``choices`` lists the values a static field accepts.
+``doc`` is a one-line description and ``ui`` a free-form hint for tools: a widget name
+such as ``"slider"``, or a mapping with ``widget``, ``label``, ``step`` or ``group`` keys.
+All of them appear in the generator's :ref:`schema <generator-describe>`.
+
+``registry.add`` checks the class before it registers the generator (a plugin that fails
+a check is quarantined under ``warn``, :ref:`plugin-quarantine`):
+
+- it derives from ``Params`` and is decorated with
+  ``@dataclasses.dataclass(frozen=True, kw_only=True)`` itself (an undecorated subclass is
+  rejected);
+- every field has a default, inside its own ``lo``/``hi``/``choices``, so the class can
+  be built with no arguments and ``from_legacy`` always works;
+- no field is named ``validate``, ``from_legacy``, ``to_dict``, ``from_dict``,
+  ``replace``, ``schema``, ``fields`` or ``describe``, or starts with ``_`` (reserved for
+  Params helpers);
+- a dynamic field is annotated ``float``, ``int`` or ``bool``;
+- the ``params=`` class of a ``GeneratorSpec`` has static fields only: a dynamic field
+  needs a Stage's ``b.param``. The built-ins' classes have dynamic fields, so
+  ``GeneratorSpec(..., params=registry.get("generator", "bezier").Params)`` is refused
+  (``TypeError``).
+
+Two methods can be overridden:
+
+- ``validate(self, layout)`` checks the object's own fields and raises ``ValueError``. It
+  runs when the generator is constructed, and only for the selected generator, before the
+  generic ``lo``/``hi``/``choices`` checks. ``layout`` is the run's ``Layout``
+  (``num_envs``, ``stride``, ``device``, ``closed``). The default checks nothing.
+- ``from_legacy(cls, cfg)``, a classmethod, gives the instance used when
+  ``generator_params`` is ``None``. The default returns ``cls()``. Override it to map
+  fields from a custom ``TrackGenConfig`` subclass into typed Params:
+
+.. snippet: group=legacy-params requires=contributing/writing-a-generator#wobble
+
+.. code-block:: python
+
+   @dataclasses.dataclass(frozen=True, kw_only=True)
+   class WobbleParams(plugin.Params):
+       lobes: int = plugin.static(3, lo=2, hi=12, doc="lobes per loop")
+       amp: float = plugin.dynamic(0.2, lo=0.0, hi=0.4, doc="radial wobble amplitude")
+
+       @classmethod
+       def from_legacy(cls, cfg):
+           # map the field declared by your custom TrackGenConfig subclass
+           return cls(lobes=getattr(cfg, "acme_lobes", 3))
+
+.. snippet: after
+
+   from track_gen import TrackGenConfig
+   assert WobbleParams.from_legacy(TrackGenConfig()).lobes == 3
+
+When a ``TrackGenerator`` or ``GateGenerator`` (or a :term:`course`) is constructed, it
+resolves the parameters before it allocates anything:
+
+1. The registry looks the generator up, so an unknown name is reported first.
+2. ``generator_params`` becomes an instance of the class. ``None`` gives
+   ``from_legacy(config)``. An instance of the class is used as it is. A mapping gives
+   ``WobbleParams(**mapping)`` (for the quick start): keys left out take the class
+   defaults, and an unknown key raises ``ValueError`` listing the valid fields. Any other
+   type raises ``TypeError`` naming the expected class. A mapping's values are converted
+   by each field's annotation: a list becomes a tuple for a ``tuple[...]`` field (also
+   inside ``T | None``), and a value becomes the member for an ``Enum`` field. A mapping
+   shaped like the generator's :ref:`schema <generator-describe>` (from JSON, YAML or
+   Hydra) therefore gives the same, hashable instance.
+3. ``validate(layout)`` runs, then the ``lo``/``hi``/``choices`` checks and the type
+   checks of the dynamic fields.
+
+``gen.params["generator"].params`` is then the resolved instance. A generator without a
+Params class takes no ``generator_params``: a non-empty mapping raises ``ValueError``.
+The configuration reference covers the built-ins' classes and how ``generator_params``
+combines with their flat fields: :ref:`generator-params-config`.
+
+.. _generator-stage-contract:
+
+The ``Stage`` contract
+----------------------
+
+Register the class (``reg.add(Wobble)``), not an instance. The pipeline creates one
+instance per generator, with no arguments, and calls ``capacity`` and ``build`` on it.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 78
+
+   * - Class attribute
+     - Meaning
+   * - ``kind``
+     - ``"generator"``. ``registry.add`` reads the kind from it.
+   * - ``name``
+     - The ``generator=`` string that selects it. Dotted for third parties (see
+       :ref:`plugin-names`).
+   * - ``output``
+     - ``"centerline"``, required for a track generator. A gate generator declares
+       ``kind="gate_generator"`` and ``output="anchors"`` (see
+       :ref:`gate-generator-stage`).
+   * - ``Params``
+     - The stage's Params class. The default ``NoParams`` takes no ``generator_params``.
+   * - ``writes``
+     - ``{local port: channel}``. A generator maps one port to ``"raw.xy"`` (required),
+       may map one to ``"gen.valid"``, and one each to ``"raw.z"`` / ``"raw.half_width"``
+       (what it ``provides``) and to its per-point attributes
+       ``"raw.<package>.<name>"`` (see :ref:`generator-attributes`). Each value is a
+       :term:`channel`.
+   * - ``capture``
+     - A ``CaptureClass``, ``STATIC`` by default (see :ref:`stage-capture-classes`).
+   * - ``topology``
+     - ``"closed"`` (default) or ``"any"``. Open tracks are not supported in 0.x: a
+       pipeline built with ``BatchSpec(closed=False)`` is refused before any stage is
+       bound, naming the stages that declare ``"closed"`` (:ref:`results-topology`).
+   * - ``seeded``
+     - ``True`` (default): the output depends on the seed. Declare ``False`` for a
+       generator whose output is the same for every seed (an ingestion generator, see
+       :ref:`ingestion-generator`); the conformance kit then reports its ``diversity``
+       check as skipped instead of failing it, and ``describe()`` reports it. A
+       ``GeneratorSpec`` counts as seeded.
+   * - ``preferred``
+     - ``{}`` by default. A centerline generator may set the single key ``"relax"``: the
+       relax stage presets use when ``relax="auto"`` (their default), a registered relax
+       name or ``"none"`` (``{"relax": "none"}`` keeps the generator's points as they
+       are; ``"auto"`` is reserved). A gate generator's keys are ``"order"`` and
+       ``"normalize"`` (:ref:`gate-generator-stage`).
+   * - ``reads``
+     - Must stay empty: a generator reads no channel (its seed is ``b.seed``). Read
+       ports are for the pipeline's other stages (see :ref:`writing-a-stage`).
+   * - ``provides``
+     - A subset of ``{"z", "half_width"}`` naming exactly the catalogue attributes it
+       writes (``raw.z``, ``raw.half_width``); empty by default. The pipeline then drops
+       the stage that would compute them (see :ref:`generator-provides`). A gate
+       generator's ``provides`` is described in :ref:`gate-generator-stage`.
+   * - ``api_version``
+     - The plugin API version the stage targets (default ``1``). A version above
+       ``track_gen.plugin.API_VERSION`` is rejected.
+
+And four methods:
+
+- ``build(self, b, params) -> enqueue`` (abstract) allocates everything through ``b``,
+  once, and returns ``enqueue(ctx)``.
+- ``declare(cls, params) -> (writes, provides)``, a classmethod, returns the ports the
+  stage writes and the attributes it provides for these ``params``. The default returns
+  the class attributes ``writes`` and ``provides``; override it when they depend on a
+  static parameter (an attribute written only when a flag is set: see
+  :ref:`ingestion-generator`). It is read for centerline generators only in 0.x
+  (overriding it on another kind raises at registration), and checked against the
+  generator rules below when the pipeline binds the generator. ``registry.describe``
+  reports the declaration at the default Params.
+- ``capacity(self, params, layout)`` returns the buffer sizes the stage needs. A generator
+  may return ``{"raw": n}``, its ``"raw.xy"`` points per env (an integer ``n >= 3``, a
+  numpy integer included); the default ``{}`` means ``num_points``. Any other key raises
+  ``ValueError``. The pipeline resamples the raw loop by arc length, so ``n`` need not be
+  ``num_points``.
+- ``capture_class(cls, params)``, a classmethod, returns the capture class for
+  ``params``. The default returns ``capture``; override it when the capture class depends
+  on a parameter.
+
+All four receive the params with their **static fields only**: reading a dynamic field
+there raises ``AttributeError`` ("read it on the device through ``b.param('amp')``"). A
+host scalar computed from a dynamic field would be baked into the launches (and into any
+recorded graph), so a later ``set`` would silently do nothing. ``isinstance(params,
+WobbleParams)`` still holds; ``gen.params["generator"].params`` is the full instance.
+
+``registry.add`` checks the declaration before it registers the class, and raises
+``TypeError`` or ``ValueError`` (a plugin is then quarantined under ``warn``) for an
+instance, an abstract class, a missing or mismatched ``kind``, an ``api_version`` above
+``API_VERSION``, a ``capture`` that is not a ``CaptureClass``, a Params class that breaks
+the rules above, an ``output`` other than ``"centerline"`` (an ``output="anchors"`` Stage
+must declare ``kind="gate_generator"``), a ``writes`` without ``"raw.xy"`` or with a
+channel outside ``raw.xy``, ``gen.valid``, ``raw.z``, ``raw.half_width`` and
+``raw.<package>.<name>`` (or two ports on one channel), a non-empty ``reads``, a
+``provides`` that does not name exactly the catalogue attributes written (``Stage X:
+provides ['z'] must name exactly the catalogue attributes it writes (['half_width', 'z']:
+raw.z -> 'z', raw.half_width -> 'half_width')``), a ``preferred`` with a key other than
+``"relax"`` (or a value that is not a string), a ``seeded`` that is not a ``bool``, or
+another ``topology``. A Stage of kind ``"gate_generator"`` is checked by the anchors
+rules of :ref:`gate-generator-stage`, and one of kind ``"relax"``, ``"width"``,
+``"elevation"``, ``"validity"``, ``"order"`` or ``"stations"`` is a pipeline stage,
+checked by the rules of :ref:`writing-a-stage`; any other kind (``"resample"``,
+``"lift"``, ...) is rejected as not open to plugins.
+
+``build`` and ``enqueue``
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``build`` runs once, at construction, before the warm-up pass. Allocate everything there,
+through ``b`` only, and compute the host scalars ``enqueue`` needs from ``params``; once
+``build`` has returned, the builder refuses to allocate (``RuntimeError``).
+
+``enqueue(ctx)`` runs once at the warm-up (construction runs one eager generation, which
+also loads every kernel), then once per eager call (``cpu``) and once per recording:
+into the generator's own CUDA graph on its first ``cuda`` call, or into your graph when
+``generate()`` is called inside your :term:`capture` (:ref:`capture-rules`). Replays do
+not run Python, so host scalars and Python state freeze at record time.
+
+``enqueue`` follows the :ref:`hard rules <generator-hard-rules>`: device work only through
+``ctx.launch``, ``ctx.copy``, ``ctx.fill`` and ``track_gen.ops``; no allocation; no host
+sync; no branch on device data or on ``ctx.capturing`` (a ``HOST`` stage reaches the host
+through ``ctx.host()``, see :ref:`stage-host`). Per env, its output must depend only on
+``b.seed[e]``, env ``e``'s dynamic parameters and inputs, and the static parameters:
+carry no state from one generation to the next. A masked regeneration recomputes every
+env, and the commit then restores the ``Track`` rows of the envs it leaves out (see
+:ref:`pipeline-commit`); the conformance kit's ``determinism`` and ``statelessness``
+checks still hold a generator to this rule. A scratch buffer is zeroed once, at
+allocation: write it before you read it.
+
+**The raw loop.** Write a closed loop of ``b.raw`` points per env into ``raw.xy``; it is
+closed implicitly: do not repeat point 0 at the end. Size it to
+``ops.constants.TARGET_EXTENT * scale`` (``1.44`` at scale 1) on its longest bounding-box
+side, as the quick start does with ``ops.normalize_extent``: ``polar``, ``voronoi`` and
+``checkpoint`` centre each loop and scale it to exactly that, ``bezier`` and ``hull`` land
+near it by construction of their sampling grid (a longest side of about 1.0 to 1.8, not
+centred), and ``repulsive`` is larger (about 2.2). The default ``half_width``,
+:term:`spacing` and :term:`N_max` are tuned for that size, and a much larger loop needs
+more than ``N_max`` resampled points and fails as truncated. The output must be finite
+(no NaN) for every env you mark valid.
+
+**What you do not have to guarantee.** A simple (non-self-intersecting) loop is preferred
+but not required. The pipeline's validity stage judges every env after relaxation
+(turning, thickness, truncation, ...: one of the :term:`fail bits` each, listed in
+:ref:`pipeline-fail-bits`) and ANDs in your ``gen.valid`` flag: write ``0`` there to
+reject an env outright. A generator
+that never writes ``gen.valid`` gets it filled with ``1`` once, at construction. Local
+fallbacks are your choice: ``bezier``, ``hull`` and ``voronoi`` rebuild only the envs
+whose smooth curve crosses itself from straight segments (``ops.self_intersections``,
+then ``ops.arc_resample(..., active=...)``; :ref:`generator-ops`), ``checkpoint`` keeps
+the best of K candidates, ``polar`` has no fallback.
+
+.. _generator-hard-rules:
+
+Hard rules
+~~~~~~~~~~
+
+Five rules hold for the ``enqueue`` of every Stage whose capture class is not ``HOST``
+(and for the ``generate`` of a ``GeneratorSpec`` with the default ``capturable=True``,
+:ref:`plugin-abis`):
+
+1. **Pure Warp kernels only.** Launch through ``ctx.launch``; one env per row. No torch
+   code: TrackGen does not depend on torch.
+2. **Zero dynamic allocation in** ``enqueue``. Every buffer comes from the
+   ``StageBuilder`` in ``build`` (from ``alloc_scratch`` for a ``GeneratorSpec``).
+   ``track_gen.ops`` never allocates: you pass it the working buffers, allocated there.
+3. **Recordable in a CUDA graph.** No host sync, no host-side retry loop conditioned on
+   generated data, no per-env Python branching in ``enqueue``.
+4. **Fixed bounds for every loop and buffer.** Graph recording requires static shapes. A
+   loop that should stop once every env has converged is a ``ctx.bounded_loop`` with a
+   static bound, in a ``BOUNDED`` Stage (see :ref:`stage-bounded`).
+5. **Deterministic in the per-env seed and the parameters.** Draw every random number
+   with the Warp RNG from the env's effective seed. A Stage takes its salts from
+   ``b.salt`` (:ref:`stage-salts`); a ``GeneratorSpec`` chooses constants of its own.
+   Mix each salt through ``ops.rng.init`` or ``init_at``. For the public ops samplers,
+   give each independent stream its own uint32 salt and int32 index
+   (:ref:`ops-rng-keying`). Existing plugin streams can retain their own formulas.
+   CPU and CUDA results may differ, as elsewhere in TrackGen.
+
+The conformance kit checks these rules mechanically: ``check_generator`` fails a
+generator that host-syncs, allocates, launches off the call's stream, changes its launch
+sequence from one call to the next, or is not reproducible from its seeds (see
+:ref:`conformance-checks`).
+
+.. _stage-builder:
+
+The ``StageBuilder``
+~~~~~~~~~~~~~~~~~~~~
+
+The pipeline creates the builder and hands it to ``build``; plugins never construct one.
+Its attributes:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 82
+
+   * - Attribute
+     - Meaning
+   * - ``E``
+     - The number of envs.
+   * - ``layout``
+     - The run's ``Layout``: ``num_envs``, ``stride`` (``N_max`` for tracks), ``device``
+       (canonical, e.g. ``"cuda:0"``) and ``closed``.
+   * - ``device``
+     - The ``wp.Device``.
+   * - ``stage_id``
+     - ``"generator"``.
+   * - ``scale``
+     - The pipeline's ``scale``, a core field rather than a parameter.
+   * - ``seed``
+     - ``[E]`` int32: each env's effective seed (its seed and :term:`epoch` folded),
+       written at the start of every generation. Read it in ``enqueue``.
+   * - ``raw``
+     - The points per env of ``"raw.xy"`` (``capacity()["raw"]``, else
+       ``num_points``). A generator-stage attribute.
+
+Call its methods in ``build`` (``write``, ``scratch`` and ``input`` allocate, and raise
+``RuntimeError`` once ``build`` has returned):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 36 64
+
+   * - Method
+     - What it returns
+   * - ``write(port, dtype=None, *, per=None, interp=None, export=False)``
+     - The output buffer of ``writes[port]``: ``[E * raw]`` ``wp.vec2f`` with
+       ``per="raw"`` for ``"raw.xy"``, ``[E]`` int32 with ``per="env"`` for
+       ``"gen.valid"``, ``[E * raw]`` float32 for ``"raw.z"`` / ``"raw.half_width"``
+       (omitted ``dtype`` / ``per`` are the channel's), and ``[E * raw]`` of the
+       ``dtype`` you give for a ``"raw.<package>.<name>"`` attribute, with its
+       ``interp=`` policy (required there) and ``export=`` (see
+       :ref:`generator-attributes`). The pipeline owns it and reads it directly (no
+       copy). Call it once per port. An undeclared port, another channel or a second
+       call raises ``ValueError``, a wrong ``dtype`` or ``per`` ``TypeError``; the
+       ``interp=`` and ``export=`` rules raise ``TypeError`` / ``ValueError`` as
+       described there.
+   * - ``scratch(name, dtype, shape)``
+     - A private zero-initialised buffer, named ``"scratch:generator/<name>"``. A second
+       buffer with the same name raises ``ValueError``.
+   * - ``temp_like(port)``
+     - A private zero-initialised buffer with the dtype and length of a write port's
+       channel (``[E * raw]`` ``wp.vec2f`` for ``"raw.xy"``), allocated as
+       ``scratch("<port>.tmp<k>")``, ``k = 0, 1, ...`` per port: a ping-pong partner for
+       the output. An undeclared port raises ``ValueError``.
+   * - ``param(field)``
+     - The ``[E]`` working array (``float32`` or ``int32``) of a dynamic field, copied
+       from the live array at every generation (see :ref:`generator-runtime-params`; for
+       a drawn field, the array its randomizer fills during the generation). Read each
+       env's own entry, ``param[e]``: the kit's ``params.per_env`` check fails a kernel
+       that reads ``param[0]`` or a host copy. **Read-only** for the stage: never write
+       it, not even as scratch. A static field raises ``KeyError`` (read it from
+       ``params``), and so does an unknown one.
+   * - ``input(name, dtype, default=0, *, per="env")``
+     - A device input that is not a parameter, published as ``gen.inputs[name]`` and
+       filled with ``default``. ``per="env"`` (default): a live ``[E]`` array (a
+       difficulty level your training loop computes, say) of ``wp.float32`` or
+       ``wp.int32``, and the working copy this returns, copied like a dynamic parameter.
+       ``per="raw"`` (centerline generators only): one ``[E * raw]`` array of
+       ``wp.float32``, ``wp.int32``, ``wp.vec2f`` or ``wp.vec3f``, **not copied**: this
+       returns the published array itself, read during the generation (see
+       :ref:`ingestion-generator`). Either is **read-only** for the stage. Name inputs
+       with dotted paths in your stage's own namespace (``"acme.difficulty"``);
+       ``centerline.*`` is the ingestion namespace. A name that exists already
+       (``"regen_mask"`` included) raises ``ValueError``.
+   * - ``salt(stream)``
+     - A ``uint32`` salt for one random stream (see :ref:`stage-salts`).
+
+When ``build`` returns, ``"raw.xy"`` must have been written (``ValueError`` otherwise)
+and the return value must be callable (``TypeError`` otherwise). A generator that writes
+``"gen.valid"`` must write it every generation: ``0`` rejects the env outright, since the
+validity stage ANDs the flag in.
+
+.. _stage-salts:
+
+Random streams: ``b.salt``
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``b.salt(stream)`` returns ``hash32_host(fnv1a_32(f"{stage_id}/{stream}".encode()))``,
+an unsigned 32-bit integer computed from the stage id and the stream name only (the stage
+id is ``"generator"`` for every generator). The formula is frozen for plugin API version
+1, so a plugin's outputs stay reproducible across TrackGen releases. Key each env's
+stream on the effective seed and the salt with :func:`track_gen.ops.rng.init`.
+Use the same shared initializer as the quick start:
+
+.. snippet: skip=fragment
+
+.. code-block:: python
+
+   from track_gen.ops import rng
+
+   state = rng.init(seed[e], salt)
+
+The shared initializer retains the salt's effect at
+seed 0, avoiding the systematic collapse of linear ``seed * salt + offset`` keying.
+The finite 31-bit keys can still collide. Use one stream name per independent draw.
+Asking for the same name again returns the same salt, and two names whose salts
+collide raise ``ValueError``. Built-ins use fixed namespaces independent of Stage IDs
+(:ref:`ops-rng-keying`); plugin ``b.salt`` remains tied to the Stage ID.
+
+.. _stage-capture-classes:
+
+Capture classes
+~~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 82
+
+   * - ``CaptureClass``
+     - Behaviour
+   * - ``STATIC`` (default)
+     - A fixed launch sequence, recorded into the generator's own CUDA graph and into
+       callers' graphs.
+   * - ``BOUNDED``
+     - An iteration with a static bound and a data-dependent early stop, through
+       ``ctx.bounded_loop`` (``repulsive``). Recordable by anything: the generator's own
+       graph, or a Warp-registered capture with :term:`conditional node`
+       support (CUDA 12.4+), skips the converged windows on device; other
+       captures (a plain ``torch.cuda.graph``, older drivers, inside
+       ``track_gen.exec.unconditional()``) and eager ``cuda`` calls run the full bound;
+       an eager ``cpu`` call stops early. The outputs are the same bytes (see
+       :ref:`stage-bounded`). A stage that calls ``bounded_loop(active=...)`` must not
+       declare ``STATIC`` (declare ``BOUNDED``): one declared ``STATIC`` raises
+       ``ValueError`` at construction.
+   * - ``HOST``
+     - Host readbacks or host control flow, through ``ctx.host()``: runs eagerly on
+       every call, on CUDA too, as its own segment while the rest of the pipeline
+       replays from graphs. Recording it into a caller's graph raises
+       ``NotCapturableError`` before any launch (see :ref:`stage-host`).
+
+``registry.describe(kind, name).capturable`` is ``False`` for a stage whose
+``capture_class``, called with the Params defaults, returns ``HOST``; it reflects the
+defaults only, so a stage whose capture class depends on its params can differ for other
+values (``describe().capture`` reports the class for the defaults).
+
+.. _generator-attributes:
+
+Per-point attributes
+--------------------
+
+A generator often knows more about each point than its position: a surface type, a grip
+coefficient, a lane index, a curb flag. It writes each as a **raw attribute**, a channel
+``raw.<package>.<name>`` with one value per raw point, and the pipeline carries it with
+the points: the constant-spacing resample interpolates it onto the beads
+(``cl.<package>.<name>``), it stays attached to its bead through relaxation, and the
+uniform resample interpolates it onto the final points, where an exported one becomes
+``Track.attributes[<package>.<name>]`` (:ref:`pipeline-carried-channels`). This generator
+(with the quick start's imports) writes a lane index and a grip coefficient next to its
+loop, and a half-width profile that a width stage can read (:ref:`stage-width`):
+
+.. snippet: group=ribbon requires=contributing/writing-a-generator#wobble register=register
+
+.. code-block:: python
+
+   @wp.kernel
+   def _ribbon_k(seed: wp.array(dtype=wp.int32), salt: wp.uint32, n: int, r: float,
+                 xy: wp.array(dtype=wp.vec2f), lane: wp.array(dtype=wp.int32),
+                 grip: wp.array(dtype=wp.float32), hw: wp.array(dtype=wp.float32)):
+       t = wp.tid()                                  # one thread per raw point
+       e = t // n
+       i = t - e * n
+       state = rng.init(seed[e], salt)
+       phase = 6.2831853 * wp.randf(state)
+       theta = 6.2831853 * float(i) / float(n)
+       rr = r * (1.0 + 0.2 * wp.sin(3.0 * theta + phase))
+       xy[t] = wp.vec2f(rr * wp.cos(theta), rr * wp.sin(theta))
+       lane[t] = (4 * i) // n                        # a per-segment label: 0, 1, 2, 3
+       grip[t] = 0.9 + 0.1 * wp.cos(theta + phase)   # a continuous value
+       hw[t] = 0.1 + 0.03 * wp.sin(3.0 * theta)      # a half-width profile, not exported
+
+
+   class Ribbon(plugin.Stage):
+       kind = "generator"
+       name = "acme.ribbon"
+       output = "centerline"
+       writes = {"xy": "raw.xy", "valid": "gen.valid", "lane": "raw.acme.lane",
+                 "grip": "raw.acme.grip", "hw": "raw.acme.hw"}
+
+       def build(self, b, params):
+           n = b.raw
+           xy = b.write("xy", wp.vec2f, per="raw")
+           valid = b.write("valid", wp.int32)
+           lane = b.write("lane", wp.int32, per="raw", interp="previous", export=True)
+           grip = b.write("grip", wp.float32, per="raw", interp="linear", export=True)
+           hw = b.write("hw", wp.float32, per="raw", interp="linear")
+           salt = b.salt("shape")
+           r = 0.5 * ops.constants.TARGET_EXTENT * b.scale
+
+           def enqueue(ctx):
+               ctx.launch(_ribbon_k, b.E * n, [b.seed, salt, n, r, xy, lane, grip, hw])
+               ops.fill(ctx, valid, 1)
+           return enqueue
+
+
+   def register(reg):
+       reg.add(Ribbon)
+
+.. snippet: group=ribbon
+
+.. code-block:: python
+
+   gen = TrackGenerator(presets.track(num_envs=64, device=device, generator="acme.ribbon"))
+   track = gen.generate()
+   track.attributes["acme.lane"]     # [E * N_max] int32, -1 past count[e]
+   track.attributes["acme.grip"]     # [E * N_max] float32, NaN past count[e]
+   gen.program.attributes["acme.grip"].interp    # 'linear'
+
+.. snippet: after
+
+   assert gen.program.attributes["acme.grip"].interp == "linear"
+   assert track.attributes["acme.lane"].dtype == wp.int32
+
+The rules:
+
+- **Name and size.** ``raw.<package>.<name>``, at least two identifiers after ``raw.``;
+  ``per`` is ``"raw"`` (fixed by the prefix), the buffer ``[E * raw]``. Write all ``raw``
+  points of every env on every call, like ``raw.xy`` (the kit's ``attributes.written``
+  check poisons the buffer and reports a slot left unwritten).
+- **dtype**: ``float32``, ``int32``, ``vec2f`` or ``vec3f`` (``TypeError`` otherwise).
+- **interp** is required: ``"linear"`` (floats and vectors), ``"nearest"`` (ties go to
+  the segment start), ``"previous"`` (the last source point at or before: per-segment
+  labels) or ``"angle"`` (``float32`` radians, interpolated the short way round; give
+  values in ``[-π, π)``, others are normalised). An ``int32`` attribute takes
+  ``"nearest"`` or ``"previous"``. The table of :ref:`pipeline-carried-channels` gives
+  each formula. ``"linear"`` blends across the closing segment (from the last point back
+  to the first), so an arc fraction that jumps from 1 back to 0 there takes intermediate
+  values: carry a ``(cos, sin)`` pair (``vec2f``) or an ``"angle"`` instead.
+- **export**: ``True`` (or the key itself, ``"acme.grip"``) makes the final version a
+  ``Track.attributes`` entry, keyed by the name without ``raw.``: ``[E * N_max]``, NaN or
+  ``-1`` padding, the same array forever, held and restored by a masked regeneration,
+  emptied by ``on_invalid="poison"``, copied by ``Track.clone()``. Another string raises
+  ``ValueError`` (no renaming). An attribute that is not exported is still carried (a
+  stage can read its ``cl.*`` image, ``width.from_channel`` can make it the width, see
+  :ref:`stage-width`); ``Program.tap`` reads it.
+- **Bead attachment.** Through relaxation an attribute keeps the point it was carried to;
+  XPBD moves points without re-indexing them (:ref:`bead attachment
+  <pipeline-bead-attachment>`). A ``"nearest"`` label boundary moves by up to half a raw
+  step at the first resampling and half a bead step at the second; ``"previous"`` lags by
+  at most a step each time.
+- **Geometry is unchanged.** Carrying attributes never changes the points: the
+  resamplers' table-writing kernels compute the same bytes, so ``acme.ribbon`` with and
+  without its attributes gives the same ``Track`` geometry.
+- **Cost.** Two launches per attribute and generation (one per resampler), the resample
+  tables (12 B per point, per resampler) and one buffer per attribute per point set,
+  plus a held copy of each exported one.
+
+In a gate pipeline (``presets.gates(generator="acme.ribbon", ...)``) the stations carry
+the attributes to the anchors and ``carry.attributes`` to the gate slots, so the exported
+ones appear in ``GateSequence.attributes`` too, with the stations' default ``order.raw``
+(:ref:`pipeline-gate-plugin-channels`). A gate generator writes per-anchor attributes,
+``anchors.<package>.<name>``, the same way (no ``interp=``: they are carried by index, see
+:ref:`gate-generator-stage`).
+
+.. _generator-provides:
+
+Providing altitude and width
+----------------------------
+
+Two attributes have a meaning for the pipeline itself: the altitude and the half-width. A
+generator that computes them writes ``raw.z`` / ``raw.half_width`` (``float32``, one per
+raw point; their policy is ``"linear"``, and passing another ``interp=`` or any
+``export=`` raises) and declares them in ``provides``. This one climbs three times per
+lap:
+
+.. snippet: group=helix-loop requires=contributing/writing-a-generator#wobble register=register
+
+.. code-block:: python
+
+   @wp.kernel
+   def _helix_loop_k(seed: wp.array(dtype=wp.int32), salt: wp.uint32, n: int, r: float,
+                     height: float, xy: wp.array(dtype=wp.vec2f),
+                     z: wp.array(dtype=wp.float32)):
+       t = wp.tid()
+       e = t // n
+       state = rng.init(seed[e], salt)
+       phase = 6.2831853 * wp.randf(state)
+       theta = 6.2831853 * float(t - e * n) / float(n)
+       xy[t] = wp.vec2f(r * wp.cos(theta + phase), r * wp.sin(theta + phase))
+       z[t] = height * wp.sin(3.0 * theta)
+
+
+   class HelixLoop(plugin.Stage):
+       kind = "generator"
+       name = "acme.helix_loop"
+       output = "centerline"
+       writes = {"xy": "raw.xy", "z": "raw.z"}
+       provides = frozenset({"z"})        # exactly the catalogue attributes it writes
+
+       def build(self, b, params):
+           n = b.raw
+           xy = b.write("xy", wp.vec2f, per="raw")
+           z = b.write("z", wp.float32, per="raw")
+           salt = b.salt("shape")
+           r = 0.5 * ops.constants.TARGET_EXTENT * b.scale
+
+           def enqueue(ctx):
+               ctx.launch(_helix_loop_k, b.E * n, [b.seed, salt, n, r, 0.2, xy, z])
+           return enqueue
+
+
+   def register(reg):
+       reg.add(HelixLoop)
+
+.. snippet: after
+
+   _spec = presets.track(num_envs=8, device="cpu", generator="acme.helix_loop")
+   assert "elevation" not in _spec.ids
+   assert TrackGenerator(_spec).generate().valid.numpy().any()
+
+The resamplers carry ``raw.z`` to ``cl.z`` and ``raw.half_width`` to ``cl.half_width``,
+and the presets (``presets.track``, ``presets.gates``, ``legacy.to_pipeline_spec``) drop
+the stage that would have written them:
+
+- ``provides={"z"}``: no ``elevation`` stage, ``lift.elevated``; ``Track.center.z`` is
+  your altitude, interpolated, and the grade check (``z_valid_grade``) reads it. Asking
+  for an elevation (``elevation="noise"``, a non-zero ``z_base``) raises ``ValueError``.
+  In a gate pipeline the stations carry it to the gates (``carry.z``) and can space the
+  gates in 3D (``spacing_metric="xyz"``, :ref:`pipeline-stations-xyz`).
+- ``provides={"half_width"}``: no ``width`` stage; XPBD, the band and the checks use your
+  half-width (:ref:`pipeline-width`). A ``width=`` other than the default ``"constant"``
+  raises ``ValueError``; a hand-built spec can still add a rewrite of
+  ``cl.half_width``. Write a positive value at every point: a point at or below
+  ``w_floor`` fails fail bit 4.
+
+``provides`` must name exactly what ``writes`` holds among ``raw.z`` and
+``raw.half_width`` (``registry.add`` raises otherwise).
+
+.. _generator-runtime-params:
+
+Runtime parameters and inputs
+-----------------------------
+
+``TrackGenerator.params`` (and ``GateGenerator.params``) is a ``ParamTable``: a read-only
+mapping from stage id to that stage's ``StageParams``. Both hold ``"generator"`` and every
+pipeline stage with a dynamic field (an ``"elevation"`` with a non-flat profile, a
+randomizer), keyed by its stage id (see :ref:`stage-runtime-params`).
+
+- ``gen.params["generator"].params`` is the resolved Params instance: the static values
+  and the *initial* dynamic values. It is ``None`` for a ``GeneratorSpec`` without
+  ``params=``.
+- ``gen.params["generator"]`` maps each **dynamic** field to its *live* ``[E]`` device
+  array. The pointer is stable for the generator's lifetime, so your own kernels can write
+  it, inside your own CUDA graph too. A static field raises ``KeyError`` ("build a new
+  generator to change it"). The built-in generators' shape knobs are dynamic too (each
+  generator page lists them, :ref:`generators-per-env`).
+- ``gen.params["generator"].set(field, value, *, stream=None)``, or
+  ``gen.params.set("generator", field, value, stream=...)``, writes the live array in
+  place. A host scalar is checked against ``lo``/``hi`` on the host (in ``float32`` for
+  a ``float`` field), then broadcast with one fill. An ``[E]`` contiguous ``wp.array`` of
+  the field's dtype on the generator's device is copied with one copy, with no range
+  check and no host sync (the built-in stages clamp such values to the declared bounds
+  when their kernels read them; a plugin decides what an out-of-range value means).
+  Either way it is an enqueue on the resolved stream (``stream=``, then the ambient
+  scope, the generator's constructor stream, torch's capture stream and Warp's current
+  stream) and never allocates. Inside a capture it is recorded: a scalar is baked into
+  the caller's graph, an array is read at each replay. A wrong shape, dtype or device, a
+  value that is neither a scalar nor a ``wp.array``, or a scalar out of bounds raises
+  ``ValueError`` before any launch.
+
+A write takes effect at the next generation. Each generation first copies the live
+arrays into the stage's working copies (the arrays ``b.param`` and ``b.input`` returned)
+for the envs it regenerates: every env, or only those with ``mask[e] != 0`` under
+``generate(advance=True, mask=m)`` (:ref:`how the copy works <pipeline-latch>`). An env
+that a masked regeneration leaves out therefore keeps the value its current track was
+built with. The copy costs one small launch per dynamic field or input per generation.
+The stage only ever reads the arrays ``b.param`` and ``b.input`` returned.
+
+**Arrays read during the generation.** Two kinds of array are read *during* the
+generation instead of being copied at its start: a dynamic field drawn per env by a
+``randomize.uniform`` stage (:ref:`config-randomize`), and a ``per="raw"`` input
+(:ref:`ingestion-generator`). ``b.param`` / ``b.input`` return the published array itself
+for them.
+
+- A drawn field is **owned by its randomizer**: it is rewritten at every generation,
+  before the generator runs, so a direct write (through ``gen.params``, or a torch view
+  of the array) is overwritten. ``set`` raises ``ValueError`` (``generator.amp is drawn
+  every generation by stage 'randomize.generator.amp'; set its bounds:
+  params['randomize.generator.amp'].set('lo' | 'hi', ...)``), ``repr`` of the
+  ``StageParams`` marks it (``amp=<drawn by 'randomize.generator.amp'>``), and
+  ``gen.params["generator"].drawn`` maps each drawn field to its randomizer's id. The
+  array still reads back the values the current batch was built with.
+- A ``per="raw"`` input holds your latest write, not what each env's current rows were
+  built from, so order your writes with the generation: on its stream, or with events.
+
+``gen.input_info`` (``Program.input_info``) tells them apart: a mapping from each name
+of ``gen.inputs`` to a ``track_gen.pipeline.InputInfo`` (``name``, ``dtype``, ``per``,
+``length``, ``latched``: ``True`` when the input is copied at the start of each
+generation, and ``stage_id``). ``regen_mask`` is listed with ``latched=False`` (the mask
+is read during the generation it is passed to) and no stage.
+
+A curriculum kernel of yours can write a dynamic field inside your own graph, right
+before the generation that reads it:
+
+.. snippet: group=runtime requires=contributing/writing-a-generator#wobble
+
+.. code-block:: python
+
+   import warp as wp
+
+   E = 64
+   gen = TrackGenerator(presets.track(num_envs=E, device=device, generator="acme.wobble"))
+
+   amp = gen.params["generator"]["amp"]           # [E] float32, stable pointer
+   gen.params["generator"].set("amp", 0.3)        # every env
+   per_env = wp.full(E, 0.25, dtype=wp.float32, device=device)
+   gen.params["generator"].set("amp", per_env)    # an [E] wp.float32 array, one copy
+
+
+   @wp.kernel
+   def curriculum_k(success: wp.array(dtype=wp.float32), amp: wp.array(dtype=wp.float32)):
+       e = wp.tid()
+       amp[e] = 0.1 + 0.3 * wp.clamp(success[e], 0.0, 1.0)   # wobblier as it learns
+
+
+   success_rate = wp.zeros(E, dtype=wp.float32, device=device)   # your training statistic
+
+   # In your own graph: the curriculum kernel writes amp, then the generator runs.
+   with wp.ScopedCapture(device=device) as capture:
+       wp.launch(curriculum_k, dim=E, inputs=[success_rate, amp], device=device)
+       gen.generate(advance=True)
+   wp.capture_launch(capture.graph)               # every replay reads amp anew
+
+.. snippet: after
+
+   wp.synchronize_device(device)
+   assert abs(float(gen.params["generator"].in_effect("amp").numpy()[0]) - 0.1) < 1e-6
+
+**Inputs.** ``gen.inputs`` lists ``"regen_mask"`` and every ``b.input`` the generator
+declared. Each is a live array with a stable pointer: a ``per="env"`` input is ``[E]``
+and copied like a dynamic parameter (write it in place, as you write ``regen_mask``, and
+the next generation reads it); a ``per="raw"`` one is ``[E * raw]`` and read during the
+generation (above).
+
+A ``Course`` has no parameter table of its own: use ``course.generator.params`` and
+``course.generator.inputs`` (:ref:`courses`).
+
+**What each env was built with.** ``gen.params["generator"].in_effect("amp")`` returns
+the ``[E]`` values the stage read for each env's current rows (the working copy, or the
+drawn array), and ``bounds("amp")`` the declared ``(lo, hi)``: the curriculum
+bookkeeping under masked regeneration of :ref:`tuning-in-effect`.
+
+.. _generator-size-convention:
+
+A per-env size
+~~~~~~~~~~~~~~
+
+The built-in generators have a per-env course :term:`size`, ``size``
+(``generator.size``, :ref:`tuning-size`), which ``TrackGenConfig.size``,
+``presets.track(size=)`` and ``randomize={"generator.size": ...}`` set. A plugin
+generator gets the same axis by declaring the field with the convention bounds,
+``track_gen.ops.constants.SIZE_BOUNDS``, and passing it to the op that applies its
+``scale``. The quick start's generator, with a size (and its kernel):
+
+.. snippet: group=size requires=contributing/writing-a-generator#wobble register=register
+
+.. code-block:: python
+
+   from track_gen.ops.constants import SIZE_BOUNDS
+
+
+   @dataclasses.dataclass(frozen=True, kw_only=True)
+   class SizedWobbleParams(plugin.Params):
+       lobes: int = plugin.static(3, lo=2, hi=12, doc="lobes per loop")
+       amp: float = plugin.dynamic(0.2, lo=0.0, hi=0.4, doc="radial wobble amplitude")
+       size: float = plugin.dynamic(1.0, lo=SIZE_BOUNDS[0], hi=SIZE_BOUNDS[1],
+                                    doc="per-env size multiplier of the plan view")
+
+
+   class SizedWobble(plugin.Stage):
+       kind = "generator"
+       name = "acme.sized_wobble"
+       output = "centerline"
+       Params = SizedWobbleParams
+       writes = {"xy": "raw.xy", "valid": "gen.valid"}
+
+       def build(self, b, params):
+           n = b.raw
+           xy = b.write("xy", wp.vec2f, per="raw")
+           valid = b.write("valid", wp.int32)
+           amp, size = b.param("amp"), b.param("size")     # [E] float32 each
+           salt, lobes = b.salt("shape"), int(params.lobes)
+           extent = ops.constants.TARGET_EXTENT * b.scale
+
+           def enqueue(ctx):
+               ctx.launch(_wobble_k, b.E * n, [b.seed, salt, amp, lobes, n, xy])
+               ops.normalize_extent(ctx, xy, n, extent, size=size)  # env e: extent * size[e]
+               ops.fill(ctx, valid, 1)
+           return enqueue
+
+
+   def register(reg):
+       reg.add(SizedWobble)
+
+.. snippet: after
+
+   _gen = TrackGenerator(presets.track(num_envs=8, device="cpu", generator="acme.sized_wobble",
+                                       size=1.5))
+   assert _gen.params["generator"].params.size == 1.5
+   assert _gen.generate().valid.numpy().all()
+   _spec = presets.track(num_envs=8, device="cpu", generator="acme.sized_wobble",
+                         randomize={"generator.size": (0.8, 1.6)})
+   assert TrackGenerator(_spec).generate().valid.numpy().all()
+
+``presets.track(generator="acme.sized_wobble", size=1.5)`` then sets every env's size,
+and ``randomize={"generator.size": (0.8, 1.6)}`` draws one per env at every generation
+(:ref:`curricula`). The rules of the convention:
+
+- ``ops.normalize_extent(..., size=)`` scales env ``e``'s longest side to
+  ``target_extent * size[e]``; ``ops.sample_grid_points(..., size=)`` multiplies each
+  point by ``size[e]`` after ``scale``. Both clamp the value to ``SIZE_BOUNDS`` (by
+  comparisons: a NaN passes), and a size-1 array gives exactly the bytes of
+  ``size=None``, on CPU and CUDA.
+- The flat ``TrackGenConfig.size`` / ``GateGenConfig.size`` reaches the field too: when
+  your ``Params.from_legacy`` leaves ``size`` at its default (the default
+  ``from_legacy`` returns ``cls()``), the flat value is set on it, as ``half_width`` is.
+- Without a ``size`` field, a flat ``TrackGenConfig.size`` other than ``1.0`` with your
+  generator raises ``ValueError`` (naming the declaration above), and
+  ``randomize={"generator.size": ...}`` raises ``PlanError``: a size is never silently
+  dropped. A ``size`` field that is static or an ``int`` (an arena cell count, say) is
+  your own: the flat ``size`` and ``presets.track / gates(size=)`` never write it, and
+  a value other than ``1.0`` raises. A ``GeneratorSpec`` cannot take one (its
+  ``params=`` class is static only): port it to a Stage first.
+- **A gate generator whose gates are re-normalized** (``preferred["normalize"] ==
+  "extent"``, as the ``polar`` / ``voronoi`` / ``checkpoint`` gate generators) needs no
+  ``size``: ``normalize.extent`` rescales its gates to ``scale * TARGET_EXTENT *
+  normalize.size``, which erases any size of its own. ``GateGenConfig.size`` and
+  ``presets.gates(size=)`` go to ``normalize.size`` for it even when it declares
+  ``size``, and a ``generator.size`` randomizer or construction value on it emits a
+  ``UserWarning`` at build (a ``set`` is not checked).
+- **In your own kernel**, multiply by the size where the product does not feed an
+  addition or a subtraction: after your ``* scale`` product (when a constructor or a
+  store consumes it), or folded into a scalar target before a division, as the two ops
+  do. Warp compiles CUDA with FMA contraction on (the module option ``fuse_fp``,
+  default ``True``; ``wp.set_module_options({"fuse_fp": ...})``): a multiply whose
+  result feeds an add may become an FMA, so a ``* size`` inserted on that edge
+  turns ``fma(a, b, c)`` into ``round(round(a * b) + c)`` and changes the last bit at
+  ``size = 1``, while ``x * 1.0`` alone is exact.
+- Scale the plan view only (keep widths and z absolute, as the built-ins do). A larger
+  course needs more points: ``n_max >= size_hi * L_max / spacing + 1``, and a raw
+  ``num_points`` that keeps the raw loop finer than the output spacing
+  (:ref:`tuning-size`).
+
+.. _ingesting-centerlines:
+
+Ingesting your own centerlines
+------------------------------
+
+The built-in generator ``external`` runs centerlines you supply (from a dataset, a
+learned model, a hand-drawn track) through the standard pipeline: resample, width,
+checks, band, elevation and lift, and the gate stations. It reads them from device
+arrays the Program owns, ``gen.inputs["centerline.*"]``, which you fill from the host
+with ``track_gen.pipeline.load_centerlines`` or from your own kernels, inside your own
+graph too. Here, 64 loops saved as ``track_0.npy`` ... ``track_63.npy`` (``[m, 2]``
+arrays in metres):
+
+.. snippet: setup
+
+   import numpy as np
+   for i in range(64):                        # 64 loops of about 3.8 km, in metres
+       t = np.linspace(0.0, 2.0 * np.pi, 900, endpoint=False)
+       r = 600.0 * (1.0 + 0.05 * np.sin(3.0 * t + i))
+       np.save(f"track_{i}.npy", np.stack([r * np.cos(t), r * np.sin(t)], axis=1))
+
+.. code-block:: python
+
+   import numpy as np
+   from track_gen import TrackGenerator
+   from track_gen.pipeline import load_centerlines, presets
+
+   # A 4 km circuit in metres: spacing, half-width and capacity in the data's units.
+   spec = presets.track(num_envs=64, device="cuda:0", generator="external",
+                        num_points=1024,      # raw capacity N: points per env you can load
+                        n_max=2048,           # >= perimeter / spacing + 1
+                        spacing=2.0, half_width=6.0)
+   gen = TrackGenerator(spec)
+
+   loops = [np.load(f"track_{i}.npy") for i in range(64)]   # [m_e, 2] each, m_e <= 1024
+   load_centerlines(gen, loops)                               # pads, sets the counts
+   track = gen.generate()
+
+.. snippet: after
+
+   assert track.valid.numpy().all()
+
+**Inputs.** The generator declares, in ``gen.inputs`` (``N`` is the raw capacity,
+``num_points``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 24 16 30
+
+   * - Input
+     - Shape, dtype
+     - When
+     - Initial value
+   * - ``centerline.xy``
+     - ``[E * N]`` ``vec2f``
+     - always
+     - a circle of radius ``0.6 * scale`` per env
+   * - ``centerline.count``
+     - ``[E]`` ``int32``
+     - always
+     - ``N``
+   * - ``centerline.z``
+     - ``[E * N]`` ``float32``
+     - ``with_z=True``
+     - ``0``
+   * - ``centerline.half_width``
+     - ``[E * N]`` ``float32``
+     - ``with_half_width=True``
+     - ``0.1 * scale``, a placeholder: load yours
+   * - ``centerline.<package>.<name>``
+     - ``[E * N]`` of its dtype
+     - one per entry of ``attributes``
+     - ``0``
+
+So a fresh generator builds valid circles at the default ``scale``, ``half_width`` and
+``spacing``. With settings in your data's units (as in the example above: ``spacing=2.0``,
+``half_width=6.0``), the placeholder circle is far too small for the spacing and every
+env fails (fail bit ``turning``) until you load your centerlines: load them before the
+first ``generate()``. Env ``e``'s loop is the first ``count[e]`` points of its row
+(``3 <= count[e] <= N``), in order, closed implicitly (do not repeat the first point).
+``gen.input_info`` describes each input; ``centerline.count`` is copied at the start of
+each generation like any ``[E]`` input, the per-point inputs are read during it (see
+:ref:`generator-runtime-params`).
+
+**Parameters** (``ExternalParams``, all static, through ``generator_params``):
+
+- ``with_z`` (``False``): read ``centerline.z`` as the altitude. The generator then
+  provides ``z`` (:ref:`generator-provides`): no elevation stage, ``lift.elevated``.
+- ``with_half_width`` (``False``): read ``centerline.half_width`` as the road's
+  half-width per point; it provides ``half_width``: no width stage, XPBD (if any), the
+  band and the checks use it.
+- ``attributes`` (``()``): one ``(key, dtype, interp)`` triple per per-point attribute
+  to carry into ``Track.attributes``, such as ``("acme.surface", "int32", "nearest")``.
+  ``key`` is a plugin key ``<package>.<name>``; ``dtype`` is ``"float32"``,
+  ``"int32"``, ``"vec2f"`` or ``"vec3f"``; ``interp`` a policy valid for it
+  (:ref:`generator-attributes`). Keys must be unique.
+
+**Each generation**, the generator first copies its inputs into the pipeline's raw
+channels, then checks the copies:
+
+1. The count is the one copied at the start of the generation, ``m = count[e]``
+   (clamped to ``[1, N]`` for the copy).
+2. ``centerline.xy`` is copied into ``raw.xy``, the slots past ``m`` filled with the
+   last real point; ``z``, ``half_width`` and each attribute alike.
+3. The env is :term:`valid` (``gen.valid``) when ``3 <= count[e] <= N``, its first ``m``
+   points are finite and, when present, its ``z`` is finite and its ``half_width``
+   finite and ``> 0``. Otherwise it fails fail bit 0 (``generator``), and with
+   ``on_invalid="poison"`` its rows are poisoned.
+
+Repeating the last point is exact: the extra points are zero-length segments, which add
+exactly nothing to the arc-length sums of the resampler (and the stations skip them), so
+a row padded past ``count[e]`` builds the same bytes as a row with exactly ``count[e]``
+points. Validity always describes the data the pipeline consumed, because each input is
+read once, before anything else reads it. The generator launches ``1`` count copy, ``1
++ with_z + with_half_width + len(attributes)`` copies and ``1`` validity kernel per
+generation; it does not depend on the seed (``describe("generator",
+"external").seeded`` is ``False``), so ``advance=True`` rebuilds the same tracks unless
+the inputs changed.
+
+**Sizing and units.** TrackGen has no unit: ``half_width``, ``spacing`` and the
+coordinates of your data are in the same unit. The constant-spacing resample needs
+``floor(L / spacing) + 1`` points for a loop of perimeter ``L``, at most ``n_max``:
+
+.. code-block:: text
+
+   n_max >= L_max / spacing + 1
+
+A loop that needs more is truncated and fails (fail bit ``truncation``). The default
+``spacing`` is ``0.6 * half_width`` and the default ``n_max`` 384: right for the
+built-ins' unit-sized loops, far too small for a 4 km circuit in metres. Set
+``spacing``, ``half_width`` and ``n_max`` explicitly, as in the example, and
+``num_points`` to the longest row you load.
+
+``external`` has no per-env ``size``: it ingests your geometry as given (a size would
+scale a circuit about your data's origin, and the sizing check above could not see it).
+To vary the size, scale ``centerline.xy`` in your own graph before the generation;
+``TrackGenConfig.size`` other than ``1.0``, ``presets.track(generator="external",
+size=...)`` and ``randomize={"generator.size": ...}`` raise with that hint.
+
+**Relaxation is off by default.** ``presets.track`` and ``presets.gates`` take
+``relax="auto"`` (their default), which picks the generator's preferred relax stage:
+``external`` prefers ``"none"``, so your points are resampled but not moved. Pass
+``relax="xpbd"`` to let XPBD repair ingested loops (it separates points closer than the
+road's width, and can move every point). ``TrackGenConfig(generator="external")``
+follows the config's ``relax_enable`` (``True`` by default): set ``relax_enable=False``
+to keep the points there too.
+
+**Loading from the host.**
+
+.. snippet: skip=signature
+
+.. code-block:: python
+
+   load_centerlines(target, xy, *, count=None, z=None, half_width=None,
+                    attributes=None, envs=None, stream=None) -> None
+
+- ``target`` is a ``TrackGenerator``, a ``GateGenerator`` or a ``Program`` (anything
+  else raises ``TypeError``) whose inputs include ``centerline.xy``: any generator that
+  declares the ``centerline.*`` inputs, built in or third party. Another raises
+  ``ValueError`` (``load_centerlines: this generator has no 'centerline.xy' input: its
+  generator is 'bezier' (ingestion: generator='external')``).
+- ``xy`` holds one row per loaded env: an ``[E, m, 2]`` array (every row ``m`` points),
+  an ``[E * N, 2]`` array (rows of ``N``), or a sequence of ``E`` arrays ``[m_e, 2]``
+  (NumPy, or anything ``np.asarray`` reads). ``count=`` (``[E]`` ints) gives each row's
+  real points; by default a row's length (a longer row is cut to its count). Rows are
+  padded here with their last point. ``z`` and ``half_width`` follow the form of ``xy``
+  without its last axis, and ``attributes`` maps each ingested key to rows of its dtype.
+  ``envs=`` (distinct env indices) loads those rows only, ``E`` being then the number of
+  indices: for example the envs a masked regeneration will rebuild.
+- Every per-point input the generator was built with is loaded with the rows:
+  ``z=`` for ``with_z``, ``half_width=`` for ``with_half_width``, each ingested attribute
+  in ``attributes=``. Leaving one out raises ``ValueError`` (``load_centerlines:
+  generator 'external' was built with_z: pass z= for the loaded rows (otherwise the input
+  keeps the previous rows)``): the new loop would otherwise get the previous loop's
+  altitude, width or tags.
+- It checks on the host, with a message naming the env: the row count, ``3 <= m_e <=
+  N``, finite points, altitudes and half-widths, ``half_width > 0``, the kind of every
+  value (real numbers; integers within the ``int32`` range for an ``int32`` attribute,
+  so a float is never silently truncated: ``load_centerlines: env 0:
+  attributes['acme.id'] is an int32 attribute; got float64 values (pass integers)``), the
+  attribute keys, inputs the generator was not built with (``z=`` without ``with_z``),
+  and the **sizing** above (``load_centerlines: env 3: perimeter 4012.0 needs 66868
+  points at spacing 0.06 > n_max 384; set spacing / n_max, or rescale the data
+  (half_width and spacing are in the data's units)``). The sizing check reads the
+  Program's ``resample.constant_spacing`` spacing; it is exact with relax off and a close
+  estimate with relax on (the device's ``truncated`` flag stays authoritative).
+- It uploads through host staging memory (pinned on CUDA), one copy per input (per row
+  with ``envs=``), counts included, on the stream resolved like ``generate``'s
+  (``stream=``, an ambient ``LaunchContext.scope``, the generator's constructor
+  ``stream=``, torch's capture stream, Warp's current stream, in that order), and then
+  waits for the copies: a ``gen.generate(sync=False)`` in flight on that stream is never
+  overwritten. Inside a scope on another stream than the generator's, or after a
+  ``gen.generate(stream=t)``, pass ``stream=`` (or order the streams with events) to keep
+  that guarantee. It allocates and blocks, so keep it outside the hot path; under a
+  capture it raises ``CaptureError`` before any copy.
+
+**Writing the inputs in your own graph.** ``gen.inputs["centerline.xy"]`` (and the
+others) are stable device arrays: a kernel of yours, a learned model's output copied in,
+or a torch view can write them, recorded in your graph before ``gen.generate``. Since
+the per-point inputs are read during the generation, write them on the generation's
+stream (or order the two with events). A masked regeneration rebuilds the masked envs
+from the current inputs and restores the others, so write new rows for the envs you
+mask.
+
+**Gates.** ``presets.gates(generator="external", source="stations")`` (or
+``"relaxed_stations"``) places gates on ingested centerlines; ingested ``z`` and
+attributes reach the gates through the stations and ``carry`` stages
+(:ref:`pipeline-stations-xyz`).
+
+.. _ingestion-generator:
+
+Writing an ingestion generator
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``external`` is written against the public plugin interface only, so a third-party
+ingestion generator (one that decodes a compressed format on device, say) can do the
+same:
+
+- **Per-point inputs**: ``b.input(name, dtype, default, per="raw")`` returns an
+  ``[E * raw]`` array the caller fills, published in ``gen.inputs`` and read during the
+  generation. Name them ``centerline.xy``, ``centerline.count``, ``centerline.z``,
+  ``centerline.half_width`` and ``centerline.<package>.<name>`` to make your generator
+  loadable by ``load_centerlines``; otherwise use your own namespace. Copy them into your
+  ``raw.*`` outputs first and validate the copies, so validity describes exactly what the
+  pipeline consumed.
+- **Parameter-dependent outputs**: override ``declare(params)`` to return the ``writes``
+  and ``provides`` your static parameters select (``external`` adds ``raw.z`` / ``"z"``
+  when ``with_z`` is set, and a ``raw.<package>.<name>`` port per attribute), and write
+  exactly those ports in ``build``.
+- **No seed**: declare ``seeded = False`` when the output does not depend on the seed.
+- **No relax by default**: declare ``preferred = {"relax": "none"}`` when your points
+  must not move; a user still gets XPBD with ``relax="xpbd"``.
+
+.. snippet: skip=fragment
+
+.. code-block:: python
+
+   class Decoded(plugin.Stage):
+       kind, name, output = "generator", "acme.decoded", "centerline"
+       Params = DecodedParams                     # static: with_z
+       writes = {"xy": "raw.xy", "valid": "gen.valid"}
+       seeded = False
+       preferred = {"relax": "none"}
+
+       @classmethod
+       def declare(cls, params):
+           if params.with_z:
+               return {**cls.writes, "z": "raw.z"}, frozenset({"z"})
+           return cls.writes, frozenset()
+
+       def build(self, b, params):
+           code = b.input("acme.code", wp.int32, 0, per="raw")   # the caller's data
+           xy = b.write("xy", wp.vec2f, per="raw")
+           ok = b.write("valid", wp.int32)
+           z = b.write("z", wp.float32, per="raw") if params.with_z else None
+           ...
+
+.. _generator-describe:
+
+Describing a generator: ``describe()``
+--------------------------------------
+
+``registry.describe(kind, name).params_schema`` is the JSON schema (draft 2020-12) of the
+generator's Params class, a plain dict that ``json.dumps`` accepts; it is ``{}`` for a
+generator without parameters (no Params class, or ``NoParams``). Tools build their
+controls from it instead of hard-coding each generator's knobs (``viz/param_explorer.py``
+shows a plugin generator's parameters this way). The quick start's ``WobbleParams``
+gives:
+
+.. code-block:: json
+
+   {"$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "WobbleParams", "type": "object", "additionalProperties": false,
+    "properties": {
+      "lobes": {"type": "integer", "default": 3, "minimum": 2, "maximum": 12,
+                "description": "lobes per loop", "x-static": true},
+      "amp": {"type": "number", "default": 0.2, "minimum": 0.0, "maximum": 0.4,
+              "description": "radial wobble amplitude", "x-dynamic": true,
+              "x-dtype": "float32", "x-bounds": "float32", "x-ui": "slider"}}}
+
+Each field's ``type`` comes from its annotation:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Annotation
+     - JSON schema
+   * - ``bool``, ``int``, ``float``, ``str``
+     - ``"boolean"``, ``"integer"``, ``"number"``, ``"string"``
+   * - ``tuple[T, ...]``, ``list[T]``
+     - ``"array"`` with ``"items"``
+   * - ``tuple[T, T]``
+     - ``"array"`` with ``"minItems"`` and ``"maxItems"`` of 2
+   * - ``T | None``
+     - ``"type": [T, "null"]``
+   * - an ``Enum``
+     - ``"enum"`` of its values
+   * - anything else
+     - no ``"type"``
+
+``default`` is the field's default (tuples as lists), ``minimum`` and ``maximum`` come
+from ``lo`` and ``hi``, ``enum`` from ``choices`` and ``description`` from ``doc`` (left
+out when empty). Exactly one of ``x-static`` and ``x-dynamic`` is ``true``; ``x-dtype``
+is given for dynamic fields, and ``x-ui`` when ``ui`` is set. ``"x-bounds": "float32"``
+marks a dynamic ``float32`` field with a ``minimum`` or ``maximum``: TrackGen compares
+its values with them in ``float32`` (``f32(minimum) <= f32(v) <= f32(maximum)``), so a
+value read back from the array at a bound (``float(np.float32(0.85))``, slightly above
+``0.85``) is in range; a generic JSON-schema validator compares in float64 and refuses
+it.
+
+The rest of ``describe()`` (``capturable``, ``capture``, ``writes``, ``provides``,
+``seeded``, where the spec came from) is listed in :ref:`packaging-a-plugin`. Code that
+walks the registry reads these from ``describe()``: a Stage class has no ``capturable``
+or ``alloc_scratch`` attribute (and ``registry.get`` returns the class).
+
+.. _generator-ops:
+
+Building blocks: ``track_gen.ops``
+----------------------------------
+
+The built-in generators are assembled from the device ops in ``track_gen.ops``, and a
+plugin can use the same ones. They take no config object: every size, salt and bound is
+an explicit argument. Every op:
+
+- takes the call's ``LaunchContext`` as its first argument and launches only through it,
+  so its work lands on the call's stream and is recorded into whatever graph is
+  capturing;
+- never allocates, reads back or host-synchronizes, so it is safe inside ``enqueue``.
+  Working buffers are arguments: allocate them in ``build`` (or ``alloc_scratch``);
+- works on the flat per-env layout of the outputs: env ``e`` owns
+  ``[e*stride, (e+1)*stride)`` of a flat array, and per-env scalars are ``[E]`` arrays.
+  ``E`` is ``src.shape[0] // stride`` for every op that takes an input ``src`` (the
+  samplers take it from ``seeds``), and every other per-env array must be exactly
+  ``[E]``;
+- names its arguments the same way: ``src`` is the input point array and ``stride`` its
+  points per env, ``num`` an exact number of output points per env and ``out_stride`` an
+  output row capacity (NaN-padded past the env's count);
+- takes ``count`` and the env mask ``active`` as keyword-only arguments. Where an op
+  takes a ``count`` array, only the first ``count[e]`` points of a row are real (a count
+  above the stride is clamped to it), and ops that produce points write ``(nan, nan)`` in
+  the slots after them;
+- validates its arguments on the host before launching anything. Data arrays must have
+  the exact shape, the dtype and ``ctx.device``; scratch arrays need the dtype, the
+  device and at least the stated length. A mismatch raises ``ValueError`` naming the
+  argument, except that ``fill`` raises ``TypeError`` for an unsupported dtype and
+  ``any_set`` for an argument that is not an ``int32`` ``wp.array``.
+
+:ref:`reference-ops` documents each op's shapes and semantics. In outline:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Op
+     - What it does
+   * - ``sample_counts(ctx, seeds, salt, offset, lo, hi, out)``
+     - One integer in ``[lo, hi]`` per env (how many corners, points or gates).
+   * - ``sample_grid_points(ctx, seeds, salt, offset, num, num_cells, cell_size, scale,
+       used, out, *, size=None)``, ``grid_cells(min_point_distance)``
+     - ``num`` jittered points per env on distinct cells of a grid where possible (the
+       ``bezier`` and ``hull`` sampler). The jitter is an absolute ``[-0.5, 0.5)``, so
+       the points lie in ``[-0.5, (num_cells-1)*cell_size + 0.5) * scale`` and have no
+       minimum spacing; distinct cells are best effort (8 redraws). ``grid_cells``
+       derives the built-in grid from the ``min_point_distance`` config knob (in
+       ``(0, 0.5]``) on the host. ``scale`` is a float or an ``[E]`` array; ``size``
+       an optional ``[E]`` per-env multiplier applied after it
+       (:ref:`generator-size-convention`).
+   * - ``angle_sort(ctx, src, stride, keys, out, *, count, out_stride=None)``
+     - The first ``count[e]`` points of each env, sorted by angle around their centroid
+       (ascending ``atan2(x - cx, y - cy)``), NaN after them. This is the order
+       ``order.ccw`` (``gate_ordering="ccw"``) produces; in a y-up frame it runs
+       clockwise (``turning_number`` of the result is about ``-2*pi``).
+   * - ``closed_catmull_rom(ctx, src, stride, per_seg, out, *, count=None,
+       endpoint=False)``
+     - ``per_seg`` samples per segment of the closed Catmull-Rom spline through each
+       env's controls; with ``count``, segments past ``count[e]`` are NaN.
+   * - ``closed_polyline(ctx, src, stride, per_seg, out, *, count=None, endpoint=False,
+       active=None)``
+     - The straight closed polyline through the controls, in the same layout. With
+       ``active``, only envs with ``active[e] > 0`` are written: the fallback for envs
+       whose smooth curve self-crossed.
+   * - ``arc_resample(ctx, src, stride, num, scratch, out, count_out, *, active=None)``
+     - ``stride`` points in, ``num`` out per env, evenly spaced by arc length along the
+       closed loop. NaN points are dropped first, so a NaN-padded dense curve resamples
+       cleanly; an env with fewer than two real points gets a NaN row and
+       ``count_out[e] = 0``. With ``active``, every other env's row is left as it was.
+   * - ``resample_uniform(ctx, src, stride, scratch, out, *, count)``
+     - Count-aware evenly-spaced resample: ``count[e]`` points in and out, NaN after
+       them.
+   * - ``resample_constant_spacing(ctx, src, stride, spacing, out_stride, scratch, out,
+       count_out, truncated_out)``
+     - Points every ``spacing`` along each closed loop, up to ``out_stride``, with a
+       per-env count and truncation flag.
+   * - ``self_intersections(ctx, src, stride, out, *, count)``
+     - Proper self-crossings of each closed polygon (``0`` for a simple loop).
+   * - ``turning_number(ctx, src, stride, out, *, count)``,
+       ``thickness(ctx, src, stride, band, out, *, count)``
+     - Total signed turning (``+2*pi`` for a simple counter-clockwise loop) and the
+       thickness (curvature and self-distance bound) of each closed polygon.
+       ``thickness`` excludes vertex pairs within ``band[e]`` points of each other; the
+       built-in validity check uses ``band = max(1, round(2 * half_width / l0))`` for a
+       mean segment length ``l0``.
+   * - ``normalize_extent(ctx, src, stride, target_extent, *, count=None,
+       size=None)``
+     - Centres each env's bounding box and scales it so the longest side is
+       ``target_extent`` (times ``size[e]`` with an ``[E]`` ``size``), in place; with
+       ``count``, only the real points count and the slots after them are written NaN
+       (``count`` and ``size`` together raise ``ValueError``).
+   * - ``fill(ctx, arr, value)``, ``any_set(ctx, mask, flag_out)``,
+       ``all_set(ctx, mask, flag_out)``
+     - A stream-explicit fill, and device-side "is any / every ``mask[e]`` set" flags
+       (:ref:`stage-bounded`).
+   * - ``check_array(name, arr, shape, dtype, device)``
+     - The host-side validator the ops use, for your own wrappers.
+
+Device functions for your own kernels are in ``track_gen.ops.funcs``: ``ccw``,
+``cross2``, ``nan0``, ``safe_normalize2``, ``catmull_rom``, ``segments_cross`` and
+``hash32``. They are the functions the built-in kernels call: the same operations in the
+same order. On CPU a kernel built from them reproduces the built-in arithmetic bit for
+bit. On CUDA, Warp contracts multiply-adds into FMAs by default (the module option
+``fuse_fp``, default ``True``; ``wp.set_module_options({"fuse_fp": ...})``), and which
+pairs it contracts depends on the code around the inlined call, so a differently
+structured kernel can differ in the last bit. ``track_gen.ops.constants.TARGET_EXTENT``
+is the size the ``polar``, ``voronoi`` and ``checkpoint`` generators normalise to.
+
+Scratch
+~~~~~~~
+
+The resample ops take an ``ops.ArcScratch``, which holds the four buffers they work in.
+Allocate it once with ``ops.ArcScratch.alloc(E, stride, device)`` for ``stride`` input
+points per env, or wrap buffers you already own (slices of ``b.scratch`` buffers
+included) with ``ops.ArcScratch(real, seg, s, count_real)``. ``resample_uniform`` and
+``resample_constant_spacing`` use only ``seg`` and ``s``: ``alloc(..., compact=False)``
+leaves the other two ``None``. The remaining scratch arguments (``keys`` of
+``angle_sort``, ``used`` of ``sample_grid_points``) are plain arrays of at least the
+stated length.
+
+A generator from ops
+~~~~~~~~~~~~~~~~~~~~
+
+This generator follows the ``hull`` recipe without its midpoint displacement: sampled
+points sorted into a star-shaped polygon, a smooth spline through them, a straight
+fallback for the envs whose spline crosses itself, and the built-ins' size. Each step is
+one op. It is written as a ``GeneratorSpec`` and reuses ``SALT`` and the imports of that
+quick start (in a Stage, the same calls go in ``enqueue`` and the buffers come from
+``b.scratch``):
+
+.. snippet: group=star requires=contributing/writing-a-generator#spec register=register_star
+
+.. code-block:: python
+
+   K, PER_SEG = 12, 16            # controls per env, dense samples per segment
+   M = K * PER_SEG                # dense points per env
+
+
+   def alloc_star_scratch(config):
+       E, dev = int(config.num_envs), str(config.device)
+       return SimpleNamespace(
+           count=wp.empty(E, dtype=wp.int32, device=dev),
+           used=wp.empty(E * K, dtype=wp.int32, device=dev),
+           points=wp.empty(E * K, dtype=wp.vec2f, device=dev),
+           keys=wp.empty(E * K, dtype=wp.float32, device=dev),
+           ctrl=wp.empty(E * K, dtype=wp.vec2f, device=dev),
+           dense=wp.empty(E * M, dtype=wp.vec2f, device=dev),
+           arc=ops.ArcScratch.alloc(E, M, dev),
+           arc_count=wp.empty(E, dtype=wp.int32, device=dev),
+           crossings=wp.empty(E, dtype=wp.int32, device=dev))
+
+
+   def generate_star(seeds_wp, config, out_centerline, out_valid_wp, scratch, *, ctx):
+       ctx = resolve(ctx, out_centerline.device)
+       N = int(config.num_points)
+       sc = scratch
+       num_cells, cell = ops.grid_cells(0.1)
+       # 1. 6..K jittered grid points per env, sorted by angle into a star-shaped polygon.
+       ops.sample_counts(ctx, seeds_wp, SALT, 103, 6, K, sc.count)
+       ops.sample_grid_points(ctx, seeds_wp, SALT, 104, K, num_cells, cell, 1.0,
+                              sc.used, sc.points)
+       ops.angle_sort(ctx, sc.points, K, sc.keys, sc.ctrl, count=sc.count)  # NaN past count
+       # 2. Closed Catmull-Rom spline through the first count[e] controls (NaN past them).
+       ops.closed_catmull_rom(ctx, sc.ctrl, K, PER_SEG, sc.dense, count=sc.count)
+       # 3. Drop the NaN samples; N points evenly spaced by arc length.
+       ops.arc_resample(ctx, sc.dense, M, N, sc.arc, out_centerline, sc.arc_count)
+       # 4. Envs whose spline crosses itself fall back to the straight polygon.
+       ops.self_intersections(ctx, out_centerline, N, sc.crossings, count=sc.arc_count)
+       ops.closed_polyline(ctx, sc.ctrl, K, PER_SEG, sc.dense, count=sc.count,
+                           active=sc.crossings)
+       ops.arc_resample(ctx, sc.dense, M, N, sc.arc, out_centerline, sc.arc_count,
+                        active=sc.crossings)
+       # 5. The built-ins' size, then the stage flag.
+       ops.normalize_extent(ctx, out_centerline, N,
+                            ops.constants.TARGET_EXTENT * float(config.scale))
+       ops.fill(ctx, out_valid_wp, 1)
+
+
+   def register_star(reg):
+       reg.add(GeneratorSpec(name="acme.star", alloc_scratch=alloc_star_scratch,
+                             generate=generate_star))
+
+.. snippet: after
+
+   from track_gen import TrackGenerator
+   from track_gen.pipeline import presets
+
+   _gen = TrackGenerator(presets.track(num_envs=8, device="cpu", generator="acme.star"))
+   assert _gen.generate().valid.numpy().any()
+
+Step 4 rewrites only the rows of the envs that crossed: ``arc_resample(..., active=...)``
+leaves every other row bit for bit and writes ``count_out[e] = 0`` for it. Use the first
+call's ``count_out`` (as ``self_intersections`` does here) before the second call
+overwrites it.
+
+.. _ops-rng-keying:
+
+RNG keying and the built-in salts
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Built-ins always initialize random streams with :mod:`track_gen.ops.rng`:
+``init(seed, salt)`` for one state per env, or ``init_at(seed, salt, index)``
+for an indexed family of states. Both mix the effective seed with the salt before
+calling Warp's RNG. See :ref:`reference-ops` for the frozen formulas and host twins.
+
+Each built-in salt is ``hash32_host(fnv1a_32("<kind>.<name>/<stream>"))``, with
+FNV-1a over the UTF-8 bytes. The following names are fixed and independent of the
+Stage ID, including when a built-in occurs more than once in a pipeline. Gate
+generators reuse the matching track generator's names.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 51 19 30
+
+   * - Stream namespace
+     - uint32 salt
+     - Initialization
+   * - ``generator.bezier/corner_count``
+     - ``0xb739affb``
+     - ``init_at(..., 0)``
+   * - ``generator.bezier/corners``
+     - ``0xc2c74e45``
+     - ``init_at(..., 0)``
+   * - ``generator.hull/point_count``
+     - ``0x55e558eb``
+     - ``init_at(..., 0)``
+   * - ``generator.hull/points``
+     - ``0xc60040a4``
+     - ``init_at(..., 0)``
+   * - ``generator.hull/displacement``
+     - ``0x8c818de1``
+     - ``init``
+   * - ``generator.polar/controls``
+     - ``0x23dab0d9``
+     - ``init``
+   * - ``generator.voronoi/sites``
+     - ``0x877be6df``
+     - ``init``
+   * - ``generator.voronoi/anchors``
+     - ``0xc9f3730a``
+     - ``init``
+   * - ``generator.checkpoint/rings``
+     - ``0x7357f137``
+     - ``init_at(..., k)``; candidate ``k``
+   * - ``generator.repulsive/obstacles``
+     - ``0x15710913``
+     - ``init``
+   * - ``generator.repulsive/growth``
+     - ``0xcd2aa706``
+     - ``init``
+   * - ``order.random_pairs/pairs``
+     - ``0x977a7d68``
+     - ``init_at(..., p)``; pair ``p``
+   * - ``elevation.uniform/z``
+     - ``0x7d59d787``
+     - ``init_at(..., i)``; knot/gate ``i``
+   * - ``elevation.random_walk/z``
+     - ``0x9717c554``
+     - ``init``
+   * - ``elevation.noise/z``
+     - ``0xd8aea614``
+     - ``init_at(..., k)``; harmonic ``k``
+
+``randomize.uniform`` uses hashed keying with its Stage ID's ``b.salt``.
+The other built-in stages draw no random numbers.
+
+Public ``sample_counts`` and ``sample_grid_points`` use
+``init_at(seeds[e], salt, offset)``. A plugin can use ``b.salt`` as the uint32 salt
+and pick an int32 index for each stream. All public samplers use this hashed
+initialization for independent seed/salt/index streams.
+
+Gate generators
+---------------
+
+Gate generators have their own page: :ref:`writing-a-gate-generator`. It covers the
+anchors ``Stage`` (``kind="gate_generator"``, ``output="anchors"``), its contract, the
+ordering stages and provided attributes.
+
+The ``GeneratorSpec`` contract
+------------------------------
+
+The ``GeneratorSpec`` contract (its fields, ``alloc_scratch``, ``generate``, the stream
+rule of the required ``ctx``, ``capturable=False``, its static ``params=`` class) is on
+:ref:`plugin-abis`, with its storage, capture and stream requirements, and
+the reusable operations in ``track_gen.ops``.
+
+Testing your generator
+----------------------
+
+``track_gen.testing.check_generator("acme.wobble")`` runs every contract check of this
+page on CPU, and on CUDA when a device is present: see :ref:`testing-a-plugin`, and
+:ref:`plugin-own-tests` for tests of your generator's own properties. Run your plugin's
+CI with ``TRACK_GEN_PLUGINS=strict`` (:ref:`plugin-quarantine`).
+
+The built-in generators
+-----------------------
+
+The built-in track generators are ``bezier``, ``checkpoint``, ``hull``, ``polar``,
+``repulsive`` and ``voronoi``, plus ``external``, which draws nothing: it ingests the
+centerlines you load (:ref:`ingesting-centerlines`). Call
+``track_gen.plugin.registry.available("generator")`` for the authoritative list,
+installed plugins included (``available("gate_generator")`` for gate generators), and
+:ref:`generators-overview` for what each one draws. Each built-in track generator is a
+``Stage`` class (``STATIC``; ``repulsive``: ``BOUNDED``) and each built-in gate
+generator an anchors ``Stage``, with a Params class whose fields are the flat
+``TrackGenConfig`` / ``GateGenConfig`` knobs it reads, under the same names: its shape
+knobs are dynamic, the rest static (the :ref:`configuration reference
+<builtin-generator-params>` lists them). ``registry.get("generator", "polar")`` is that
+class: its parameters are ``.Params``. ``external`` is a
+``STATIC`` ``Stage`` with its own ``ExternalParams`` (no flat field).
+
+The Voronoi method is implemented as a fixed-budget site-field / graph-cycle generator
+rather than exact Voronoi ridge walking; exact Delaunay/Voronoi construction remains an
+offline diagnostic until it can satisfy the same fixed-shape Warp contract. The
+checkpoint method is the bounded, recordable version of the Gymnasium CarRacing
+checkpoint-steering family: fixed-N steering, additive heading-ramp closure, best-of-K
+selection, and optional clip fallback. The repulsive method is a self-repulsive
+curve-growth generator (see :doc:`/generators/repulsive`); it is two orders of magnitude
+slower than the other five, and stays recordable by running a fixed iteration schedule in which
+each env stops changing once it converges: its growth loop is a ``ctx.bounded_loop``
+whose windows the generator's own graph skips once every env has converged.
+
+Adding a built-in generator
+---------------------------
+
+A generator shipped inside TrackGen follows the same contract. It lives in
+``track_gen/_src/warp_generate_<name>.py`` (gate variants, anchors Stages, in
+``warp_generate_<name>_gates.py``), defines the same ``register(reg)`` function, and is
+listed once in ``track_gen/_src/builtin_plugins.py``, the only shared registration
+touch-point. Built-in names are undotted. Built-ins use ``track_gen.ops`` for every shared
+step (see :ref:`generator-ops`), like a plugin, and never import ``warp_pipeline``. A
+built-in gate generator that shares a track generator's sampling imports that module's
+public names (``CORNER_SALT``, ``sample_polar_controls_per_env``, ...), never its
+underscore kernels or constants. ``tests/test_ops.py`` checks both rules on the source,
+together with the short allow-list of private ``track_gen.ops`` launchers the
+built-ins use. A new built-in RNG stream defines a fixed
+``<kind>.<name>/<stream>`` namespace, derives its salt with the formula in the
+:ref:`table of built-in salts <ops-rng-keying>`, checks for a salt collision and adds
+its row there. The
+built-ins' Params classes live in ``track_gen/_src/builtin_params.py``: each keeps the
+flat config field names, holds the generator's rules in ``validate()`` (with ``lo``/``hi``
+on a static field only where a rule rejects the same bound), and is listed in the
+:ref:`configuration reference <builtin-generator-params>`.
+
+A new built-in generator is a ``Stage`` (``kind="generator"``, ``output="centerline"``),
+like the shipped ones. Its knobs follow one rule: a ``float`` knob that only kernels read
+(no host arithmetic before the launch other than the conversion to ``float32`` or an
+exact clamp), that sizes no buffer and fixes no launch, loop count or Python branch, and
+that shapes the output (not a rigid offset, a solver constant or a path-tracer internal)
+is ``dynamic``, with declared ``lo`` / ``hi``; everything else is static. A dynamic knob
+is read in the kernel:
+
+- load each env's value once into a local at the top of the thread, before any loop,
+  named as the scalar it replaces, so the arithmetic that follows is unchanged;
+- clamp it to the declared bounds with **comparisons**, ``x = wp.where(x < lo, lo, x)``
+  then ``wp.where(x > hi, hi, x)``, with the bounds as ``wp.constant``\ s built from the
+  field declaration: a NaN and every in-range value (signed zeros included) pass bit for
+  bit. Do not use ``wp.min`` / ``wp.max``: on CUDA they lower to ``fminf`` / ``fmaxf``,
+  whose result for ``(-0.0, +0.0)`` is unspecified;
+- leave an unbounded side unclamped.
+
+A sampling helper shared with a gate generator takes per-env arrays, such as
+``sample_polar_controls_per_env``, ``sample_checkpoint_rings_per_env`` or
+``select_voronoi_anchors_per_env``, and clamps them to the declared bounds.
+The built-in Params set a private flag that makes each dynamic name of the static view
+(what ``build`` receives) a sentinel: any host read (``float(view.rad)``,
+``getattr(view, "rad", 0.4)`` followed by arithmetic) raises ``TypeError``, and passing
+it as a kernel argument fails the launch (Warp's ``RuntimeError``, chained from that
+``TypeError``), so a knob routed through the host by mistake fails instead of baking the
+default. Run ``check_generator`` on it: its ``params.per_env`` check sets every dynamic
+field per env and compares each env with a scalar run.
+
+A new built-in that applies ``scale`` also declares ``size`` (``_size_field()`` in
+``builtin_params.py``, the last field) and applies it where it applies ``scale``: through
+``ops.sample_grid_points(..., size=)`` / ``ops.normalize_extent(..., size=)``, or in its
+own kernel by the FMA rule of :ref:`generator-size-convention`, with a CPU test on the
+generated CUDA source of the sized twin. Its Params return a nominal longest raw
+perimeter at size 1 from the private ``_nominal_perimeter(scale, drawn)`` hook (the
+measured longest loop at the default shape knobs, scaled by the knobs that lengthen it,
+or an exact bound; ``None`` where a knob it does not model differs from its default;
+``drawn`` maps each randomized field to its randomizer's ``hi``), which the planner's
+truncation warning reads. A dynamic ``int32`` knob (a count that sizes no buffer, like
+``min_num_points``) is copied by the ``int32`` copy and clamped at use with comparisons;
+a bound that depends on a static field (``min_num_points <= max_num_points``) comes from
+the private ``_instance_bounds()`` hook, so ``set`` refuses a scalar past it and
+``StageParams.bounds`` reports it.
+
+.. _how-a-generator-is-judged:
+
+How a generator is judged
+-------------------------
+
+Run ``benchmarks/compare_generators.py`` to characterise a new generator against the
+existing ones (see the :doc:`Benchmarks page </generators/benchmarks>` for baseline
+numbers and the comparison methodology).
+
+Generators are characterised, never gated: a method that scores worse on yield but better
+on speed or style stays selectable. The contract is gated: every built-in passes
+``track_gen.testing``'s conformance checks in TrackGen's CI, and a plugin should pass them
+in its own (see :ref:`testing-a-plugin`).

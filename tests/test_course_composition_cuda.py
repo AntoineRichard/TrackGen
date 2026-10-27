@@ -1148,6 +1148,7 @@ class _TableAtAttach(tools.Component):
         n = int(lay.num_envs) * self.K
         self.result = _toys.Value(wp.zeros(n, dtype=wp.float32, device=lay.device))
         cc.ctx.launch(_fill_table_k, n, [self.result.value])
+        self.attach_stream = cc.ctx.stream
         self.attached_at = time.perf_counter()
 
 
@@ -1207,10 +1208,9 @@ def test_the_cold_attach_phase_runs_on_warps_current_stream():
     inside the call): every component result and runtime state written at attach, the
     table, and the step outputs of one step at the same agent positions equal the same
     course built on the current stream, bitwise (the attach phase ran on the stream where
-    the allocations happen, after ``s``'s work, and ``s`` waited for it). Non-vacuity:
-    the table's attach ran while the long kernel was still running, and a control
-    attached through a context on ``s`` races (its table is zeroed by the late memset)
-    where the mempool is enabled."""
+    the allocations happen, after ``s``'s work, and ``s`` waited for it). The attached context is checked explicitly, including on integrated GPUs where
+    the optional negative control may complete without racing. The table's attach
+    must run while the long kernel is still running."""
     _load_test_kernels()
     target = 0.3
     n = _spin_iterations(target)
@@ -1234,6 +1234,9 @@ def test_the_cold_attach_phase_runs_on_warps_current_stream():
     assert window < 0.5 * target, \
         f"attach ran {window:.3f} s after the long kernel was enqueued: no race window"
     expected = _expected_table()
+    current = wp.get_stream(DEV).cuda_stream
+    assert toy_s.attach_stream.cuda_stream == current
+    assert toy_c.attach_stream.cuda_stream == current
     _assert_bytes(toy_c.result.value, expected, "the table, built on the current stream")
     _assert_bytes(toy_s.result.value, expected, "the table, built with stream=s")
     _assert_state(_attach_state(course_s), _attach_state(course_c), "attach state")
@@ -1260,12 +1263,9 @@ def test_the_cold_attach_phase_runs_on_warps_current_stream():
     raced = _host(toy.result.value).tobytes() != expected.tobytes()
     print(f"\n[attach race control] mempool {wp.is_mempool_enabled(DEV)}: an attach on "
           f"another stream {'raced' if raced else 'did not race'}")
-    if wp.is_mempool_enabled(DEV) and not raced:
-        # The control cannot produce the race on this GPU (e.g. an integrated-memory
-        # device that completes the late fill first): the comparison above proves nothing
-        # here, so report it instead of failing on the platform.
-        pytest.skip("the race control did not race on this GPU: the attach-stream check "
-                    "above is vacuous here")
+    # The explicit context checks prove the stream choice even on integrated GPUs,
+    # where independent streams can finish in an order that hides the control race.
+    assert toy.attach_stream.cuda_stream == s.cuda_stream
 
 
 def test_a_course_on_another_stream_waits_for_the_producers_stream(monkeypatch):

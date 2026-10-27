@@ -76,7 +76,7 @@ def _kappa_split():
 # ---------------------------------------------------------------------------------------
 
 def test_the_track_arrays_are_the_final_channel_versions():
-    g = _gen(_spec())
+    g = _gen(_spec(on_invalid="keep"))
     p, t = g.program, g._track
     for field, ch in (("outer", "track.outer"), ("center", "track.center"),
                       ("arclen", "cl.arclen2"), ("length", "cl.length2"),
@@ -134,7 +134,8 @@ def _perturb(program, stage_id: str, channel: str):
     return calls
 
 
-@pytest.mark.parametrize("kw", [{}, dict(checks=("default", KMAX)),
+@pytest.mark.parametrize("kw", [dict(on_invalid="keep"),
+                                dict(checks=("default", KMAX), on_invalid="keep"),
                                 dict(on_invalid="poison"),
                                 dict(elevation=("noise", {"z_max": 0.3,
                                                           "z_noise_amplitude": 0.2}))])
@@ -158,7 +159,8 @@ def test_a_masked_regeneration_never_writes_an_unmasked_env(kw):
 
 
 def test_an_all_zero_mask_writes_nothing():
-    for kw in ({}, dict(on_invalid="poison", checks=("default", KMAX))):
+    for kw in (dict(on_invalid="keep"),
+               dict(on_invalid="poison", checks=("default", KMAX))):
         g = _gen(_spec(**kw))
         poison_all(g._track)                       # sentinels the stages never produce
         before = _host(g._track)
@@ -206,7 +208,7 @@ def _split(g):
 
 
 def test_poison_is_keep_with_the_invalid_envs_poisoned():
-    keep = _gen(_spec(checks=("default", KMAX)))
+    keep = _gen(_spec(checks=("default", KMAX), on_invalid="keep"))
     poison = _gen(_spec(checks=("default", KMAX), on_invalid="poison"))
     assert poison.program.on_invalid == "poison" and keep.program.on_invalid == "keep"
     a, b = _host(_split(keep)), _host(_split(poison))
@@ -221,7 +223,7 @@ def test_poison_is_keep_with_the_invalid_envs_poisoned():
 
 def test_poison_of_truncated_envs():
     kw = dict(n_max=64, spacing=0.06)
-    keep, poison = _gen(_spec(**kw)), _gen(_spec(on_invalid="poison", **kw))
+    keep, poison = _gen(_spec(on_invalid="keep", **kw)), _gen(_spec(on_invalid="poison", **kw))
     a, b = _host(keep._track), _host(poison._track)
     assert a["truncated"].any()
     np.testing.assert_array_equal((a["fail_mask"] >> 7) & 1, a["truncated"])
@@ -282,26 +284,22 @@ def test_the_utilities_take_their_degenerate_paths_on_a_poisoned_env():
 # out=, on_invalid validation, launch counts
 # ---------------------------------------------------------------------------------------
 
-def test_build_into_an_out_track_with_and_without_fail_mask():
+def test_build_into_a_complete_out_track_binds_fail_mask():
     spec = _spec()
     ref = build(spec, seeds=5).result
     out = warp_pipeline._inflate_warp_alloc(TrackGenConfig(device=DEV, num_envs=E))[0]
-    assert out.fail_mask is None
     p = build(spec, seeds=5, out=out)
-    assert p.result is out and out.fail_mask is None
-    assert p.tap("valid.fail").shape == (E,)                 # a work buffer
+    assert p.result is out and p.tap("valid.fail") is out.fail_mask
     assert dict(out.fail_bits) == dict(p.fail_bits)
-    for f in FIELDS[:-1]:
+    for f in FIELDS:
         assert getattr(out, f).numpy().tobytes() == getattr(ref, f).numpy().tobytes(), f
-    out2 = warp_pipeline._inflate_warp_alloc(TrackGenConfig(device=DEV, num_envs=E))[0]
-    out2.fail_mask = wp.zeros(E, dtype=wp.int32, device=DEV)
-    p2 = build(spec, seeds=5, out=out2)
-    assert p2.tap("valid.fail") is out2.fail_mask
-    assert out2.fail_mask.numpy().tobytes() == ref.fail_mask.numpy().tobytes()
-    out2.fail_mask = wp.zeros(E, dtype=wp.float32, device=DEV)
-    with pytest.raises(ValueError, match=r"out\.fail_mask: expected a contiguous \[4\] "
-                                         r"int32"):
-        build(spec, out=out2)
+    corrupted = warp_pipeline._inflate_warp_alloc(TrackGenConfig(device=DEV, num_envs=E))[0]
+    corrupted.fail_mask = None
+    with pytest.raises(ValueError, match=r"out\.fail_mask is None"):
+        build(spec, out=corrupted)
+    corrupted.fail_mask = wp.zeros(E, dtype=wp.float32, device=DEV)
+    with pytest.raises(ValueError, match=r"out\.fail_mask: expected a contiguous \[4\] int32"):
+        build(spec, out=corrupted)
 
 
 def test_on_invalid_is_validated():
@@ -312,7 +310,7 @@ def test_on_invalid_is_validated():
         build(bad)
     with pytest.raises(ValueError, match="on_invalid must be 'keep' or 'poison'"):
         _spec(on_invalid="drop")
-    assert BatchSpec(E, DEV, 384).on_invalid == "keep"
+    assert BatchSpec(E, DEV, 384).on_invalid == "poison"
 
 
 def _kernels(trace) -> list:
@@ -326,7 +324,7 @@ def test_launch_counts():
     # (deliberate, tests/_pr13d_delta.py): + min_num_points (int32, first) and size
     # (last): 154 -> 156; masked 159, the hold at 6; poison 157; checked 159.
     ctx = LaunchContext.for_call(DEV)
-    default = _gen(_spec())
+    default = _gen(_spec(on_invalid="keep"))
     with trace_launches() as plain:
         default.program.enqueue(ctx)
     assert len(plain) == 156                                    # 0.2.0.dev2's 152 + 4
@@ -346,7 +344,7 @@ def test_launch_counts():
     with trace_launches() as t:
         poison.program.enqueue(ctx)
     assert len(t) == 157 and _kernels(t)[-2] == "_commit_k"
-    checked = _gen(_spec(checks=("default", KMAX)))
+    checked = _gen(_spec(checks=("default", KMAX), on_invalid="keep"))
     with trace_launches() as t:
         checked.program.enqueue(ctx)
     # + the kappa_max latch, the check, the commit (valid only: one thread per env)

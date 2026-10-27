@@ -30,42 +30,16 @@ from ..exec.context import LaunchContext, resolve as _resolve_ctx
 # The shared primitives live in the public track_gen.ops; the legacy wrappers below keep
 # their names/signatures and delegate to the ops' private launchers. The device
 # functions/kernels are re-imported under their historical names so _validity_k resolves
-# them and legacy plugins can keep using _pipe._ccw / _pipe._fill_i32_k / _pipe._thickness_k.
+# them and legacy plugins can keep using _pipe._ccw / _pipe._count_fill / _pipe._thickness_k.
 from ..ops import resample as _ops_resample
 from ..ops.check import check_array as _check_array
-from ..ops.fill import _fill_f32_k, _fill_i32_k  # noqa: F401
-from ..ops.funcs import ccw as _ccw, nan0 as _nan0  # noqa: F401
-from ..ops.geometry import (  # noqa: F401
-    _self_intersections_by_i_k,
-    _self_intersections_func,
-    _self_intersections_launch,
-    _thickness_func,
-    _thickness_k,
-    _turning_func,
-    _turning_k,
-    _turning_launch,
-)
-from ..ops.resample import (  # noqa: F401
-    ArcScratch as _ArcScratch,
-    _arc_lookup_k,
-    _arc_lookup_selected_k,
-    _arc_scan_k,
-    _arc_scan_selected_k,
-    _cs_lookup_k,
-    _cs_scan_k,
-    _resample_lookup_k,
-    _resample_scan_k,
-)
-
+from ..ops.fill import _fill_f32_k as _width_fill, _fill_i32_k as _count_fill
+from ..ops import geometry as _geometry_ops
 # _init/_sync are the shared runtime helpers. Wrappers call ctx.sync() after their
 # launches; it is a debug-only no-op unless TRACKGEN_DEBUG_SYNC=1 (see runtime._sync), so
 # every wrapper is host-sync-free and safe to record into a caller's CUDA graph. The names
-# stay importable from here because generator plugins call _pipe._init() / _pipe._sync().
-from .runtime import _init, _sync  # noqa: F401
-
-# Deprecated: no longer read or written by the library (wrappers do not host-sync, so
-# there is nothing to suppress during capture). Kept defined for out-of-tree importers.
-_CAPTURING = False
+# stay importable from here because generator plugins call _pipe._initialize() / _pipe._sync().
+from .runtime import _init as _initialize
 
 
 @wp.kernel
@@ -239,7 +213,7 @@ def _validity_k(
         return
 
     # --- turning (over cnt real points only) ---
-    turn = _turning_func(center, base, cnt)
+    turn = _geometry_ops._turning_func(center, base, cnt)
     turn_ok = int(0)
     if wp.abs(wp.abs(turn) - 2.0 * wp.pi) <= turning_tol:
         turn_ok = int(1)
@@ -261,7 +235,7 @@ def _validity_k(
     band = _separation_band(peri / float(cnt), 2.0 * half_width)
 
     # --- thickness gate (over cnt real points only) ---
-    th = _thickness_func(center, base, cnt, band)
+    th = _geometry_ops._thickness_func(center, base, cnt, band)
     th_ok = int(0)
     if th >= (1.0 - relax_tol) * half_width:
         th_ok = int(1)
@@ -269,7 +243,7 @@ def _validity_k(
     # --- border self-intersection gate (skipped when has_border == 0; cnt real pts) ---
     border_ok = int(1)
     if has_border == 1:
-        cross = _self_intersections_func(outer, base, cnt) + _self_intersections_func(inner, base, cnt)
+        cross = _geometry_ops._self_intersections_func(outer, base, cnt) + _geometry_ops._self_intersections_func(inner, base, cnt)
         if cross != 0:
             border_ok = int(0)
 
@@ -373,255 +347,8 @@ def _winding_k(
     out[e] = wp.where(area2 > 0.0, 1.0, wp.where(area2 < 0.0, -1.0, 0.0))
 
 
-def self_intersections_inplace(poly_wp, count_wp, out_wp, n_max,
-                               ctx: "LaunchContext | None" = None):
-    """In-place: writes [E] int32 crossing counts into out_wp. Zero alloc.
-    poly_wp: [E*n_max] vec2f; count_wp: [E] int32; out_wp: [E] int32.
-
-    Args:
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    _init()
-    dev = str(out_wp.device)
-    ctx = _resolve_ctx(ctx, dev)
-    _self_intersections_launch(ctx, poly_wp, count_wp, n_max, out_wp)
-    ctx.sync()
-
-
-def _arc_resample_inplace(points_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp, out_wp, dev,
-                          ctx: "LaunchContext | None" = None):
-    """In-place NaN-aware arc-length resample. All args are wp.arrays. Zero alloc.
-
-    points_wp: [E*M] vec2f input; real_wp: [E*M] vec2f scratch; seg_wp: [E*M] float32 scratch;
-    s_wp: [E*(M+1)] float32 scratch; count_r_wp: [E] int32 scratch; count_out_wp: [E] int32 output;
-    out_wp: [E*num] vec2f output; dev: warp device string.
-    ctx: optional track_gen.exec.LaunchContext; default resolves the
-        device's stream (see track_gen.exec).
-    """
-    ctx = _resolve_ctx(ctx, dev)
-    _ops_resample._arc_resample_launch(
-        ctx, points_wp, M, num, _ArcScratch(real_wp, seg_wp, s_wp, count_r_wp),
-        out_wp, count_out_wp, E=points_wp.shape[0] // M)
-
-
-def arc_length_resample_inplace(
-    points_wp: "wp.array",
-    M: int,
-    num: int,
-    real_wp: "wp.array",
-    seg_wp: "wp.array",
-    s_wp: "wp.array",
-    count_r_wp: "wp.array",
-    count_out_wp: "wp.array",
-    out_wp: "wp.array",
-    dev: str,
-    ctx: "LaunchContext | None" = None,
-) -> None:
-    """Public in-place NaN-aware arc-length resample. All args are wp.arrays. Zero alloc.
-
-    Identical to _arc_resample_inplace (which remains for internal use); this public name
-    allows tests + the standalone generate path to call it without using the private alias.
-
-    points_wp:   [E*M] vec2f input (may contain NaN).
-    real_wp:     [E*M] vec2f scratch (compacted real points).
-    seg_wp:      [E*M] float32 scratch (per-segment lengths).
-    s_wp:        [E*(M+1)] float32 scratch (cumulative arc length).
-    count_r_wp:  [E] int32 scratch (real-point count per env).
-    count_out_wp:[E] int32 output (R>=2 -> num, else 0).
-    out_wp:      [E*num] vec2f output.
-    dev:         Warp device string.
-    ctx: optional track_gen.exec.LaunchContext; default resolves the
-        device's stream (see track_gen.exec).
-    """
-    _init()
-    ctx = _resolve_ctx(ctx, dev)
-    _arc_resample_inplace(points_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp, out_wp, dev,
-                          ctx=ctx)
-    ctx.sync()
-
-
-def _arc_resample_selected_inplace(
-    points_wp, active_wp, M, num, real_wp, seg_wp, s_wp, count_r_wp, count_out_wp, out_wp, dev,
-    ctx: "LaunchContext | None" = None,
-):
-    """Selected NaN-aware arc-length resample (launches only). Zero alloc.
-
-    Args:
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    ctx = _resolve_ctx(ctx, dev)
-    _ops_resample._arc_resample_launch(
-        ctx, points_wp, M, num, _ArcScratch(real_wp, seg_wp, s_wp, count_r_wp),
-        out_wp, count_out_wp, E=points_wp.shape[0] // M, active=active_wp)
-
-
-def arc_length_resample_selected_inplace(
-    points_wp: "wp.array",
-    active_wp: "wp.array",
-    M: int,
-    num: int,
-    real_wp: "wp.array",
-    seg_wp: "wp.array",
-    s_wp: "wp.array",
-    count_r_wp: "wp.array",
-    count_out_wp: "wp.array",
-    out_wp: "wp.array",
-    dev: str,
-    ctx: "LaunchContext | None" = None,
-) -> None:
-    """Selected NaN-aware arc-length resample. Inactive envs leave output untouched.
-
-    Args:
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-    """
-    _init()
-    ctx = _resolve_ctx(ctx, dev)
-    _arc_resample_selected_inplace(
-        points_wp, active_wp, M, num, real_wp, seg_wp, s_wp,
-        count_r_wp, count_out_wp, out_wp, dev, ctx=ctx,
-    )
-    ctx.sync()
-
-
-def turning_number_inplace(
-    center_wp: "wp.array",
-    n_max: int,
-    count_wp: "wp.array",
-    out_wp: "wp.array",
-    ctx: "LaunchContext | None" = None,
-) -> None:
-    """In-place signed total turning of each closed polygon. Zero alloc.
-
-    center_wp: [E*n_max] vec2f flat input centerline (NaN-padded beyond count[e]).
-    n_max:     int stride per env in the flat array.
-    count_wp:  [E] int32 real point count per env.
-    out_wp:    [E] float32 output (signed turning in radians per env).
-    ctx: optional track_gen.exec.LaunchContext; default resolves the
-        device's stream (see track_gen.exec).
-
-    Pure Warp (cpu+cuda); matches geometry.turning_number to allclose(atol=1e-4).
-    """
-    _init()
-    ctx = _resolve_ctx(ctx, str(out_wp.device))
-    _turning_launch(ctx, center_wp, count_wp, n_max, out_wp)
-    ctx.sync()
-
-
-def _run_pipeline(
-    config,
-    seed_buf_wp: wp.array,
-    out: "Track",
-    scratch: "_Scratch",
-    generator_spec=None,
-    ctx: "LaunchContext | None" = None,
-) -> "Track":
-    """Execute the owned pure-Warp pipeline into pre-allocated buffers. Zero alloc.
-
-    Composes: generate_centerline_warp -> resample_constant_spacing -> band/L0 ->
-    xpbd_solve_inplace -> inflate_warp. All buffers are pre-allocated in scratch/out.
-    Safe to call inside a wp.ScopedCapture region (no host syncs, no allocations).
-
-    PR9 composition, kept as the byte-identity reference (``tests/test_pipeline_parity``)
-    and for out-of-tree callers: ``TrackGenerator`` runs a :class:`track_gen.pipeline.
-    Program` of the same stages instead. Removed once the parity tests carry a frozen
-    copy (roadmap 1.0).
-
-    Every stage runs on ``ctx``'s stream. A generator whose spec sets ``accepts_ctx``
-    gets ``ctx=ctx``; a legacy generator runs inside ``ctx.scope()`` so the
-    ``warp_pipeline`` helpers it calls inherit the stream (its own direct
-    ``wp.launch`` calls still use Warp's current stream).
-
-    Args:
-        config:       TrackGenConfig.
-        seed_buf_wp:  [E] int32 wp.array — per-env base seeds.
-        out:          Pre-allocated Track (wp.array fields) — written in-place.
-        scratch:      Pre-allocated _Scratch — all intermediates written in-place.
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-
-    Returns:
-        out (the same Track instance).
-    """
-    ctx = _resolve_ctx(ctx, str(config.device))
-    if generator_spec is None:
-        generator_spec = getattr(scratch, "generator_spec", None)
-    if generator_spec is None:
-        generator_spec = _registered_generator_spec(config.generator)
-    _reject_stage_class(generator_spec)
-
-    n_max = int(config.N_max)
-    gen = scratch.gen        # generator-private scratch
-    relax = scratch.relax    # RelaxScratch — band/L0 + XPBD buffers
-    if out.truncated is None:
-        # Without the flag buffer a truncated track would pass validity (fail open).
-        raise ValueError("_run_pipeline requires out.truncated; allocate out via "
-                         "_inflate_warp_alloc")
-
-    # 1. Generate centerline in-place into the orchestrator-owned output buffers.
-    generate = generator_spec.generate
-    if getattr(generator_spec, "accepts_ctx", False):
-        generate(seed_buf_wp, config,
-                 out_centerline=scratch.gen_centerline,
-                 out_valid_wp=scratch.gen_valid,
-                 scratch=gen, ctx=ctx)
-    else:
-        # Legacy plugin: no ctx= keyword. Make ctx ambient so the _pipe helpers it
-        # calls with ctx=None resolve to this call's stream.
-        with ctx.scope():
-            generate(seed_buf_wp, config,
-                     out_centerline=scratch.gen_centerline,
-                     out_valid_wp=scratch.gen_valid,
-                     scratch=gen)
-
-    # 2. Constant-spacing resample (gen centerline -> bridge buffers).
-    resample_constant_spacing(
-        scratch.gen_centerline, float(config.spacing), n_max,
-        out_wp=scratch.cs_center, count_wp=scratch.count,
-        seg_wp=scratch.cs_seg, s_wp=scratch.cs_s, truncated_wp=out.truncated,
-        ctx=ctx,
-    )
-
-    # 3-4. Relaxation (band/L0 setup + XPBD solve) in-place, then choose its input to
-    # inflate. relax_enable=False is an identity pass-through (matches the oracle's
-    # `if not relax_enable: return center`): skip the relax band/L0 + solve and inflate
-    # the constant-spacing centerline directly. The branch is resolved at capture time,
-    # so the captured graph is fixed and allocation-free either way.
-    if config.relax_enable:
-        # 3. Relaxation setup: band / L0 (the relax module owns its own setup).
-        warp_relax.band_l0_inplace(
-            scratch.cs_center, n_max, relax.band, relax.L0,
-            scratch.count, config, ctx=ctx,
-        )
-
-        # 4. XPBD relaxation in-place.
-        warp_relax.xpbd_solve_inplace(
-            scratch.cs_center, relax.relaxed, relax.xpbd_db,
-            relax.band, relax.L0, scratch.count, n_max, config,
-            sep_cache_idx_wp=relax.sep_cache_idx,
-            sep_cache_count_wp=relax.sep_cache_count,
-            sep_cache_overflow_wp=relax.sep_cache_overflow,
-            cheb_prev_wp=relax.cheb_prev,
-            ctx=ctx,
-        )
-        relax_out = relax.relaxed
-    else:
-        relax_out = scratch.cs_center
-
-    # 5. Inflate (resample_uniform + frame + offset + validity) in-place. inflate_warp
-    # reads scratch.inflate (kappa/w/area_a/area_b/z + staging) and the bridge buffers
-    # (cs_seg/cs_s/count) off the composite scratch.
-    return inflate_warp(
-        relax_out, config, out=out, valid=scratch.gen_valid,
-        count=scratch.count, scratch=scratch, seeds=seed_buf_wp,
-        truncated=out.truncated, ctx=ctx,
-    )
-
-
 def _check_hw_out(hw_out, out_outer) -> None:
-    """``hw_out`` (the offset's optional ``Track.half_width`` output) is ``None`` or a
+    """The offset's optional ``hw_out`` argument is ``None`` or a
     float32 array of ``out_outer``'s length on its device: the kernel writes
     ``hw_out[t]`` for every ``t < len(out_outer)`` when it is non-empty."""
     if hw_out is not None:
@@ -641,7 +368,7 @@ def offset(center, Nrm, half_width, out_outer, out_inner, area_a, area_b, count,
     Args:
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
-        hw_out: optional [E*n_max] float32 (``Track.half_width``, roadmap PR13a):
+        hw_out: optional [E*n_max] float32 (``Track.half_width``):
             ``half_width`` on real points, NaN padding. ``None`` (default): nothing is
             stored and nothing allocated (a null array is passed to the kernel).
 
@@ -649,7 +376,7 @@ def offset(center, Nrm, half_width, out_outer, out_inner, area_a, area_b, count,
         ValueError: ``hw_out`` is not ``None`` and not a float32 array of
             ``out_outer``'s length on its device (host-side, before any launch).
     """
-    _init()
+    _initialize()
     ctx = _resolve_ctx(ctx, str(out_outer.device))
     E = count.shape[0]
     flat = out_outer.shape[0]
@@ -684,7 +411,7 @@ def frame_curvature(
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    _init()
+    _initialize()
     ctx = _resolve_ctx(ctx, str(out_T.device))
     E = count_wp.shape[0]
     flat = out_T.shape[0]
@@ -694,7 +421,7 @@ def frame_curvature(
     ctx.sync()
 
 
-def resample_uniform(
+def _resample_uniform(
     center_wp: "wp.array",
     out_wp: "wp.array",
     n: int,
@@ -728,7 +455,7 @@ def resample_uniform(
     PARITY INVARIANT: count=full((E,), N) reproduces the former fixed-N behaviour
     bit-exactly.  Pure Warp (cpu+cuda), zero compute outside of Warp kernels.
     """
-    _init()
+    _initialize()
     ctx = _resolve_ctx(ctx, device)
     E = count_wp.shape[0]
     n_max = n
@@ -743,87 +470,6 @@ def resample_uniform(
                                            out_wp)
 
 
-def resample_constant_spacing(
-    center: "wp.array",
-    spacing: float,
-    n_max: int,
-    out_wp: "wp.array | None" = None,
-    count_wp: "wp.array | None" = None,
-    seg_wp: "wp.array | None" = None,
-    s_wp: "wp.array | None" = None,
-    truncated_wp: "wp.array | None" = None,
-    ctx: "LaunchContext | None" = None,
-) -> "tuple[wp.array, wp.array] | None":
-    """Arc-length resample each fully-real closed loop to constant ``spacing``, padded to
-    ``n_max`` with NaN.  Matches ``geometry.arc_length_resample(points, spacing=spacing,
-    n_max=n_max)``. Pure Warp (cpu+cuda).
-
-    ``center`` must be a ``wp.array [E*N] vec2f`` flat.
-
-    In-place mode (``out_wp`` and ``count_wp`` provided):
-        ``out_wp``       — [E*n_max] wp.vec2f written in-place (center output).
-        ``count_wp``     — [E] wp.int32 written in-place (real point count per env).
-        ``seg_wp``       — [E*N] wp.float32 scan scratch.
-        ``s_wp``         — [E*(N+1)] wp.float32 scan scratch.
-        ``truncated_wp`` — [E] wp.int32 written in-place (1 where the env was truncated).
-        Returns ``None`` (caller reads out_wp / count_wp / truncated_wp directly). With
-        all five buffers provided this path is zero-alloc, does no host readback, and is
-        safe inside a CUDA graph capture region; scratch it is not given is allocated.
-
-    Allocating-mode (``out_wp`` or ``count_wp`` omitted -> allocated internally):
-        Returns ``(out_wp, count_wp)`` — both freshly-allocated wp.arrays. This
-        branch allocates and reads ``truncated`` back to the host; do not use inside a
-        CUDA graph capture region.
-
-    ``count[e]`` is capped at ``n_max`` (required for fixed-buffer sizing). An env whose
-    true point count exceeds ``n_max`` is flagged ``truncated[e] = 1`` on device; the
-    pipeline's validity gate then fails it. Allocating mode additionally emits a
-    ``RuntimeWarning`` (a host readback); in-place mode never reads back. Choose
-    ``N_max >= max(perimeter) / spacing + 1`` across all envs to avoid truncation.
-
-    ``ctx``: optional track_gen.exec.LaunchContext; default resolves the device's stream
-    (see track_gen.exec)."""
-    _init()
-    if count_wp is not None:
-        E = count_wp.shape[0]
-    elif out_wp is not None:
-        E = out_wp.shape[0] // n_max
-    else:
-        raise ValueError(
-            "resample_constant_spacing: need count_wp or out_wp to infer E from wp.array input")
-    N = center.shape[0] // E
-    dev = str(center.device)
-    ctx = _resolve_ctx(ctx, dev)
-
-    _allocating = out_wp is None or count_wp is None
-    if out_wp is None:
-        out_wp = wp.empty(E * n_max, dtype=wp.vec2f, device=dev)
-    if count_wp is None:
-        count_wp = wp.empty(E, dtype=wp.int32, device=dev)
-    if seg_wp is None:
-        seg_wp = wp.empty(E * N, dtype=wp.float32, device=dev)
-    if s_wp is None:
-        s_wp = wp.empty(E * (N + 1), dtype=wp.float32, device=dev)
-    if truncated_wp is None:
-        truncated_wp = wp.empty(E, dtype=wp.int32, device=dev)
-
-    _ops_resample._constant_spacing_launch(ctx, center, N, spacing, n_max, seg_wp, s_wp,
-                                           out_wp, count_wp, truncated_wp)
-    ctx.sync()
-
-    if _allocating:
-        # Convenience path only (it allocates, so it is never on a capture path): warn
-        # on host. The in-place path relies on the device-side truncated flag instead.
-        import warnings
-        if bool(truncated_wp.numpy().any()):
-            warnings.warn(
-                f"constant_spacing: a track needed more than N_max={n_max} points "
-                f"(spacing={spacing}); it was truncated — increase N_max to avoid "
-                f"truncation.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-        return out_wp, count_wp
 
 
 def validity_inplace(
@@ -862,7 +508,7 @@ def validity_inplace(
         out_valid:    [E] int32 wp.array to write into (e.g. out.valid).
         config:       TrackGenConfig (uses half_width, turning_tol, w_floor, relax_tol,
                       z_valid_grade).
-        truncated_wp: [E] int32 N_max truncation flags from resample_constant_spacing;
+        truncated_wp: [E] int32 N_max truncation flags from _resample_constant_spacing;
                       a flagged env is invalid. None -> no env is treated as truncated
                       (a zero buffer is allocated).
         ctx: optional track_gen.exec.LaunchContext; default resolves the
@@ -871,9 +517,9 @@ def validity_inplace(
                       ``track_gen.pipeline.BUILTIN_FAIL_BITS``; ``out_valid[e] == 1`` iff
                       ``fail_wp[e] == 0``). None -> a buffer is allocated (and dropped)
                       on every call: pass one to stay allocation-free (e.g. inside a
-                      capture); ``inflate_warp`` passes ``InflateScratch.fail``.
+                      capture); ``_inflate_warp`` passes ``InflateScratch.fail``.
     """
-    _init()
+    _initialize()
     ctx = _resolve_ctx(ctx, str(out_valid.device))
     E = count_wp.shape[0]
     if truncated_wp is None:
@@ -914,7 +560,7 @@ def _arclength(
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    _init()
+    _initialize()
     ctx = _resolve_ctx(ctx, str(out_arclen.device))
     E = count_wp.shape[0]
     flat = out_arclen.shape[0]
@@ -941,7 +587,7 @@ def _winding(
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
     """
-    _init()
+    _initialize()
     ctx = _resolve_ctx(ctx, str(out_winding.device))
     E = count_wp.shape[0]
     n_max = center_wp.shape[0] // E
@@ -953,8 +599,8 @@ def _winding(
 class RelaxScratch:
     """Pre-allocated relaxation buffers (band/L0 setup + XPBD solve; warp_relax stage).
 
-    relaxed:  [E*N_max] vec2f — xpbd_solve output / resample_uniform input on the generate
-              path (written by xpbd_solve, read-then-overwritten by resample_uniform which
+    relaxed:  [E*N_max] vec2f — xpbd_solve output / _resample_uniform input on the generate
+              path (written by xpbd_solve, read-then-overwritten by _resample_uniform which
               writes directly into out.center).
     band:     [E] int32 — band_l0_inplace output (excluded-neighbour half-window).
     L0:       [E] float32 — band_l0_inplace output (rest segment length per env).
@@ -1000,22 +646,22 @@ class InflateScratch:
     out2/ctr2/inn2/tan2/nrm2: [E*N_max] vec2f staging buffers the 2D pipeline
                    kernels write; the final lift kernel copies them into the
                    public vec3f Track buffers with z = 0. None only on legacy
-                   constructions that never reach inflate_warp.
+                   constructions that never reach _inflate_warp.
     z:             [E*N_max] float32 per-point altitude scratch for the 2.5D
                    elevation stage (written by warp_zprofile.apply_z_profile on
                    the non-flat path; zero-filled at alloc so the flat path and
                    the grade-validity check read zeros). None on legacy
-                   constructions that never reach inflate_warp.
+                   constructions that never reach _inflate_warp.
     knot_cum/knot_count/knot_z: knot-stage scratch for the knot-based elevation
                    profiles ("uniform"/"random_walk"), from
                    warp_zprofile.alloc_knot_scratch: knot_cum/knot_z are
                    [E*z_control_points] float32 (knot arc positions and knot
                    altitudes), knot_count is [E] int32. None on the flat/noise
                    paths and on legacy constructions that never reach
-                   inflate_warp.
+                   _inflate_warp.
     fail:          [E] int32 per-env fail bitmask the validity gate writes
                    (``validity_inplace(fail_wp=)``). Allocated here (``[E]``, on
-                   ``area_a``'s device) when not given, so ``inflate_warp`` never
+                   ``area_a``'s device) when not given, so ``_inflate_warp`` never
                    allocates it per call.
     hw_out:        [E*N_max] float32 ``Track.half_width`` the offset writes (roadmap
                    PR13a: half_width on real points, NaN padding). ``None`` (the
@@ -1024,7 +670,7 @@ class InflateScratch:
 
     __slots__ = ("area_a", "area_b", "kappa", "w",
                  "out2", "ctr2", "inn2", "tan2", "nrm2", "z",
-                 "knot_cum", "knot_count", "knot_z", "fail", "hw_out")
+                 "knot_cum", "knot_count", "knot_z", "z_dyn", "fail", "hw_out")
 
     def __init__(
         self,
@@ -1057,6 +703,7 @@ class InflateScratch:
         self.knot_cum = knot_cum
         self.knot_count = knot_count
         self.knot_z = knot_z
+        self.z_dyn = None
         if fail is None and isinstance(area_a, wp.array):
             fail = wp.empty(area_a.shape[0], dtype=wp.int32, device=area_a.device)
         self.fail = fail
@@ -1069,7 +716,7 @@ class _Scratch:
     The PR9 composition's scratch (:func:`_inflate_warp_alloc`). ``TrackGenerator._scratch``
     is a ``_Scratch`` VIEW whose attributes alias its pipeline Program's channel versions
     and stage scratch (``track_gen.pipeline.legacy._scratch_view``), so the names below
-    keep their meaning and :func:`_run_pipeline` still runs on it. The buffers are
+    keep their meaning and the frozen PR9 composition in ``tests/_reference_generators`` still runs on it. The buffers are
     grouped by lifetime/concern so each stage receives only the group it owns:
 
     .generator_spec — GeneratorSpec resolved when this scratch was allocated.
@@ -1081,14 +728,14 @@ class _Scratch:
     Plus the BRIDGE buffers that span stages (the resample output threaded gen -> relax ->
     inflate), held directly on the holder:
     gen_centerline: [E*num_points] vec2f — generation output centerline (orchestrator-owned;
-                    written by the generator, read by resample_constant_spacing).
+                    written by the generator, read by _resample_constant_spacing).
     gen_valid:      [E] int32 — generation validity output (orchestrator-owned; written by
-                    the generator, read by inflate_warp).
+                    the generator, read by _inflate_warp).
     cs_center: [E*N_max] vec2f — constant-spacing resampled centerline output.
-    cs_seg:    [E*N_max] float32 — scan scratch shared by resample_constant_spacing and
-               resample_uniform (sequential stages, safe to alias).
+    cs_seg:    [E*N_max] float32 — scan scratch shared by _resample_constant_spacing and
+               _resample_uniform (sequential stages, safe to alias).
     cs_s:      [E*(N_max+1)] float32 — cumulative arc-length scratch (same sharing).
-    count:     [E] int32 — real-point-count output of resample_constant_spacing; also
+    count:     [E] int32 — real-point-count output of _resample_constant_spacing; also
                threaded through relax -> inflate as Track.count.
 
     Sub-group buffers are reached only through their group (``scratch.relax.relaxed``,
@@ -1131,11 +778,16 @@ class _Scratch:
 def _fill_knot_scratch(stag, config, num_envs, device) -> None:
     """Attach knot-stage scratch to ``stag`` when the profile is knot-based.
 
-    Construction-time only (config-static branch): the knot buffers must exist
-    before capture so the stage-4b dispatch stays allocation-free. A no-op for
-    the "flat"/"noise" profiles, which never touch the knot stage.
+    Construction-time preparation: allocate the dynamic profile arrays once, and
+    knot buffers only for knot-based profiles. Existing storage is retained.
     """
-    if str(getattr(config, "z_profile", "flat")) in ("uniform", "random_walk"):
+    if stag.z_dyn is None:
+        stag.z_dyn = {
+            name: wp.full(num_envs, float(getattr(config, name)), dtype=wp.float32, device=device)
+            for name in warp_zprofile._DYNAMIC.get(config.z_profile, ())
+        }
+    if (str(getattr(config, "z_profile", "flat")) in ("uniform", "random_walk")
+            and stag.knot_cum is None):
         stag.knot_cum, stag.knot_count, stag.knot_z = \
             warp_zprofile.alloc_knot_scratch(
                 num_envs, int(config.z_control_points), device)
@@ -1143,49 +795,11 @@ def _fill_knot_scratch(stag, config, num_envs, device) -> None:
 
 # The legacy GeneratorSpecs of the built-in track generators (roadmap PR13c): built
 # lazily over their frozen public functions, for the PR9 reference composition only.
-_LEGACY_SPECS: dict = {}
-_LEGACY_FUNCTIONS = {
-    "bezier": ("warp_generate", "bezier_alloc_scratch", "generate_centerline_warp"),
-    "hull": ("warp_generate_hull", "hull_alloc_scratch", "generate_hull_warp"),
-    "polar": ("warp_generate_polar", "polar_alloc_scratch", "generate_polar_warp"),
-    "voronoi": ("warp_generate_voronoi", "voronoi_alloc_scratch", "generate_voronoi_warp"),
-    "checkpoint": ("warp_generate_checkpoint", "checkpoint_alloc_scratch",
-                   "generate_checkpoint_warp"),
-}
-
-
-def _legacy_generator_spec(name: str):
-    """The pre-PR13c ``GeneratorSpec`` of built-in track generator ``name`` (its frozen
-    public ``*_alloc_scratch`` / ``generate_*_warp``: host scalars, the scalar kernels),
-    or ``None``. The registered generators are Stages since roadmap PR13c; this private
-    table serves the PR9 reference composition (``_inflate_warp_alloc`` /
-    ``_run_pipeline`` with ``generator_spec=None``). Removed with the legacy wrappers
-    (roadmap PR16)."""
-    spec = _LEGACY_SPECS.get(name)
-    if spec is None and name in _LEGACY_FUNCTIONS:
-        import importlib  # noqa: PLC0415
-
-        from .generator_registry import GeneratorSpec  # noqa: PLC0415
-
-        module, alloc, generate = _LEGACY_FUNCTIONS[name]
-        mod = importlib.import_module(f"{__package__}.{module}")
-        spec = GeneratorSpec(name=name, alloc_scratch=getattr(mod, alloc),
-                             generate=getattr(mod, generate), accepts_ctx=True)
-        _LEGACY_SPECS[name] = spec
-    return spec
-
-
-def _registered_generator_spec(name: str):
-    """``registry.get("generator", name)``; a built-in track generator's Stage class
-    resolves to its legacy spec (:func:`_legacy_generator_spec`)."""
+def _registered_generator_spec(config):
+    """Resolve the current generator binding for the private reference composition."""
+    from .generator_binding import bind_generator
     from ..plugin import registry
-    from ..plugin.stage import _is_stage
-
-    spec = registry.get("generator", name)
-    if _is_stage(spec) and str(getattr(spec, "__module__", "")).startswith(
-            f"{__package__}.warp_generate"):
-        spec = _legacy_generator_spec(name) or spec
-    return spec
+    return bind_generator("generator", config, registry=registry).pipeline_spec
 
 
 def _reject_stage_class(generator_spec) -> None:
@@ -1230,9 +844,9 @@ def _inflate_warp_alloc(config, generator_spec=None, *, seed=None):
     Returns:
         (Track, _Scratch) — both with all arrays on config.device.
     """
-    from .types import Track  # local import: keep warp_pipeline free of oracle modules
+    from .types import Layout, Track  # local import: no oracle dependencies
 
-    _init()
+    _initialize()
     E = int(config.num_envs)
     n_max = int(config.N_max)
     dev = str(config.device)
@@ -1251,11 +865,13 @@ def _inflate_warp_alloc(config, generator_spec=None, *, seed=None):
         truncated=wp.zeros(E, dtype=wp.int32, device=dev),
         # Written by TrackGenerator after every generation (= the env's seed epoch).
         generation=wp.zeros(E, dtype=wp.int32, device=dev),
+        fail_mask=wp.zeros(E, dtype=wp.int32, device=dev),
+        layout=Layout(E, n_max, dev),
         # The offset's Track.half_width (InflateScratch.hw_out, roadmap PR13a).
         half_width=wp.empty(flat, dtype=wp.float32, device=dev),
     )
     if generator_spec is None:
-        generator_spec = _registered_generator_spec(config.generator)
+        generator_spec = _registered_generator_spec(config)
     _reject_stage_class(generator_spec)
     from .generator_binding import _StageGenerator
     if isinstance(generator_spec, _StageGenerator):
@@ -1311,7 +927,7 @@ def _inflate_warp_alloc(config, generator_spec=None, *, seed=None):
         # Zero-filled: the flat path never writes z (grade check reads zeros).
         z=wp.zeros(flat, dtype=wp.float32, device=dev),
         # The validity gate's per-env fail bitmask (every env written each call).
-        fail=wp.zeros(E, dtype=wp.int32, device=dev),
+        fail=track.fail_mask,
         hw_out=track.half_width,
     )
     _fill_knot_scratch(inflate, config, E, dev)
@@ -1417,7 +1033,7 @@ def _track_frames3_k(
     length[e] = acc + wp.length(center[base] - center[base + m - 1])
 
 
-def inflate_warp(center, config, out=None,
+def _inflate_warp(center, config, out=None,
                  valid: "wp.array | None" = None,
                  count: "wp.array | None" = None,
                  scratch: "_Scratch | None" = None,
@@ -1426,7 +1042,7 @@ def inflate_warp(center, config, out=None,
                  ctx: "LaunchContext | None" = None):
     """Pure-Warp inflation: resample -> frame -> offset -> z-profile -> validity -> lift.
 
-    The tail of the PR9 composition (see :func:`_run_pipeline`); the
+    The tail of the frozen PR9 composition in ``tests/_reference_generators``; the
     ``track_gen.pipeline`` built-in stages wrap the same calls one stage each.
 
     Writes results into out's wp.array Track buffers (or allocates a fresh Track).
@@ -1464,7 +1080,7 @@ def inflate_warp(center, config, out=None,
         seeds:    [E] int32 wp.array per-env base seeds for the z profiler. Required
                   when config.z_profile != "flat"; ignored on the flat path.
         truncated: [E] int32 wp.array N_max truncation flags from
-                  resample_constant_spacing; flagged envs fail validity. None -> no env
+                  _resample_constant_spacing; flagged envs fail validity. None -> no env
                   is treated as truncated (a zero buffer is allocated).
         ctx: optional track_gen.exec.LaunchContext; default resolves the
             device's stream (see track_gen.exec).
@@ -1476,9 +1092,9 @@ def inflate_warp(center, config, out=None,
         ValueError: if config.z_profile != "flat" and seeds is None (the standalone
             inflate path is flat-only unless seeds are provided).
     """
-    from .types import Track  # local import: keep warp_pipeline free of oracle modules
+    from .types import Layout, Track  # local import: no oracle dependencies
 
-    _init()
+    _initialize()
 
     # A non-flat elevation profile needs per-env seeds to drive the profiler; the
     # standalone inflate path (seeds omitted) supports only the flat profile.
@@ -1521,10 +1137,16 @@ def inflate_warp(center, config, out=None,
             valid=wp.empty(E, dtype=wp.int32, device=dev),
             count=wp.empty(E, dtype=wp.int32, device=dev),
             winding=wp.empty(E, dtype=wp.float32, device=dev),
+            truncated=(truncated if truncated is not None else
+                       wp.zeros(E, dtype=wp.int32, device=dev)),
+            generation=wp.zeros(E, dtype=wp.int32, device=dev),
+            fail_mask=wp.zeros(E, dtype=wp.int32, device=dev),
+            half_width=wp.empty(flat, dtype=wp.float32, device=dev),
+            layout=Layout(E, n_max, dev),
         )
         if scratch is None:
             # Standalone path: only the inflate group is needed (no gen/relax buffers);
-            # cs_seg/cs_s left None so inflate_warp allocates its own resample scan scratch.
+            # cs_seg/cs_s left None so _inflate_warp allocates its own resample scan scratch.
             scratch = _Scratch(
                 inflate=InflateScratch(
                     area_a=wp.zeros(E, dtype=wp.float32, device=dev),
@@ -1545,13 +1167,19 @@ def inflate_warp(center, config, out=None,
     else:
         # Owned path: the caller MUST pass pre-allocated scratch.
         assert scratch is not None, (
-            "inflate_warp(out=...) requires a pre-allocated scratch=_Scratch(...) "
+            "_inflate_warp(out=...) requires a pre-allocated scratch=_Scratch(...) "
             "(zero-allocation contract); pass scratch alongside out."
         )
 
     # The 2D pipeline kernels write the vec2f staging buffers; the lift at the
     # end copies them into the public vec3f Track arrays with z = 0.
     stag = scratch.inflate
+    stag.fail = out.fail_mask
+    stag.hw_out = out.half_width
+    if truncated is None:
+        ctx.fill(out.truncated, 0)
+    elif truncated is not out.truncated:
+        ctx.copy(out.truncated, truncated)
     if stag.ctr2 is None:
         stag.out2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
         stag.ctr2 = wp.empty(flat, dtype=wp.vec2f, device=dev)
@@ -1561,7 +1189,8 @@ def inflate_warp(center, config, out=None,
     if stag.z is None:
         stag.z = wp.empty(flat, dtype=wp.float32, device=dev)
         ctx.fill(stag.z, 0.0)
-    if stag.knot_cum is None:
+    if stag.z_dyn is None or (_z_profile in ("uniform", "random_walk")
+                              and stag.knot_cum is None):
         _fill_knot_scratch(stag, config, E, dev)
 
     # --- Allocate resample scan scratch (seg/s) from _Scratch or standalone ---
@@ -1579,30 +1208,30 @@ def inflate_warp(center, config, out=None,
 
         # Build a full count wp.array (== N for all envs).
         cnt_wp = wp.empty(E, dtype=wp.int32, device=dev)
-        ctx.launch(_fill_i32_k, E, [cnt_wp, N])
+        ctx.launch(_count_fill, E, [cnt_wp, N])
 
-        # 1. resample_uniform: writes into the vec2f center staging buffer.
-        resample_uniform(center, stag.ctr2, N, cnt_wp,
+        # 1. _resample_uniform: writes into the vec2f center staging buffer.
+        _resample_uniform(center, stag.ctr2, N, cnt_wp,
                          seg_wp=rs_seg_wp, s_wp=rs_s_wp, device=dev, ctx=ctx)
         ctx.sync()
 
         # Per-point half-width kernel-filled into the inflate group's w.
-        ctx.launch(_fill_f32_k, flat, [stag.w, hw])
+        ctx.launch(_width_fill, flat, [stag.w, hw])
 
         # Track.count == N for all envs.
-        ctx.launch(_fill_i32_k, E, [out.count, N])
+        ctx.launch(_count_fill, E, [out.count, N])
 
     else:
         # --- Constant-spacing path: variable count per env, NaN-padded output ---
         cnt_wp = count  # wp.int32 array
 
-        # 1. resample_uniform: writes into the vec2f center staging buffer.
-        resample_uniform(center, stag.ctr2, n_max, cnt_wp,
+        # 1. _resample_uniform: writes into the vec2f center staging buffer.
+        _resample_uniform(center, stag.ctr2, n_max, cnt_wp,
                          seg_wp=rs_seg_wp, s_wp=rs_s_wp, device=dev, ctx=ctx)
         ctx.sync()
 
         # Per-point half-width kernel-filled into the inflate group's w.
-        ctx.launch(_fill_f32_k, flat, [stag.w, hw])
+        ctx.launch(_width_fill, flat, [stag.w, hw])
 
         # Track.count == per-env real point count.
         ctx.copy(out.count, cnt_wp)
@@ -1634,12 +1263,12 @@ def inflate_warp(center, config, out=None,
     # already (its harmonics band-limit it), so it stays per-point.
     _is_flat = _z_profile == "flat"
     if _z_profile in ("uniform", "random_walk"):
-        warp_zprofile.apply_z_profile_knots(
+        warp_zprofile._apply_z_profile_knots(
             config, seeds, cnt_wp, n_max, out.arclen, out.length,
-            stag.knot_cum, stag.knot_count, stag.knot_z, stag.z, ctx=ctx)
+            stag.knot_cum, stag.knot_count, stag.knot_z, stag.z, ctx, stag.z_dyn)
     elif not _is_flat:
-        warp_zprofile.apply_z_profile(
-            config, seeds, cnt_wp, n_max, out.arclen, out.length, stag.z, ctx=ctx)
+        warp_zprofile._apply_z_profile(
+            config, seeds, cnt_wp, n_max, out.arclen, out.length, stag.z, ctx, stag.z_dyn)
 
     # 5. per-track validity gate (in-place: writes directly into out.valid).
     if valid is not None:
@@ -1647,7 +1276,7 @@ def inflate_warp(center, config, out=None,
     else:
         # Standalone / test path: allocate a small all-ones temp.
         gv_wp = wp.empty(E, dtype=wp.int32, device=dev)
-        ctx.launch(_fill_i32_k, E, [gv_wp, 1])
+        ctx.launch(_count_fill, E, [gv_wp, 1])
 
     # Border self_intersections is optional (config.validity_border_check, default off).
     _bc = getattr(config, "validity_border_check", False)
@@ -1658,7 +1287,7 @@ def inflate_warp(center, config, out=None,
     # grade branch is a no-op and validity is byte-identical to the legacy path.
     validity_inplace(stag.ctr2, stag.w, cnt_wp, gv_wp,
                      stag.out2, stag.inn2, has_border, n_max, stag.z,
-                     out.valid, config, truncated_wp=truncated, ctx=ctx,
+                     out.valid, config, truncated_wp=out.truncated, ctx=ctx,
                      fail_wp=stag.fail)
 
     # 6. Lift the vec2f staging buffers into the public vec3f Track arrays.
@@ -1692,22 +1321,3 @@ def inflate_warp(center, config, out=None,
 # the orchestrator and the test suite while the import is deferred past module load (which
 # avoids any module-load import cycle regardless of which module is imported first).
 # GenScratch (bezier's private scratch) moved to warp_generate; the old name here warns.
-def __getattr__(name):
-    if name == "GenScratch":
-        import warnings
-        from . import warp_generate
-        warnings.warn(
-            "track_gen._src.warp_pipeline.GenScratch moved to "
-            "track_gen._src.warp_generate.GenScratch; the warp_pipeline name is "
-            "deprecated and will be removed in 1.0",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return warp_generate.GenScratch
-    if not name.startswith("__"):
-        from . import warp_generate
-        try:
-            return getattr(warp_generate, name)
-        except AttributeError:
-            pass
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -1,0 +1,16 @@
+{
+  "theme": "light",
+  "render_geometry": {
+    "utilities-overview.png": "ec9c311113767da400e3686534249376e6a247ff8223c7cfb33f4bbc0afcac50",
+    "boundary-props.png": "bf2249e635d4ab31b81198286a64e00a9ea3452d9cd3ccf6aa34d3180d44134a",
+    "checkpoints-overview.png": "17f31e59784420efb9651ddb6753b604f81010b244ee9177b915bdd5f7918281",
+    "progress-tracking.png": "681a1e6192b459ea39684ceb4280831872385b832e27c63efb00dd533b727b00"
+  },
+  "assets": [
+    "utilities-overview.png",
+    "boundary-props.png",
+    "checkpoints-overview.png",
+    "progress-tracking.png"
+  ],
+  "published_only": true
+}

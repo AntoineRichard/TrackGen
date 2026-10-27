@@ -36,7 +36,7 @@ generator can be assembled from the same documented pieces instead of private
 Device functions for your own kernels live in :mod:`track_gen.ops.funcs`; shared
 numeric conventions in :mod:`track_gen.ops.constants`.
 """
-from . import constants, funcs
+from . import constants, funcs, rng
 from .check import check_array
 from .curves import closed_catmull_rom, closed_polyline
 from .fill import fill
@@ -67,6 +67,7 @@ __all__ = [
     "resample_channels",
     "resample_constant_spacing",
     "resample_uniform",
+    "rng",
     "sample_counts",
     "sample_grid_points",
     "self_intersections",

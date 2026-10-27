@@ -53,33 +53,9 @@ caller's recording          once                per caller replay
 Buffer contents persist across replays; host scalars and Python state freeze
 at record time.
 
-Legacy-ABI plugins (no ``accepts_ctx``) launch on Warp's CURRENT stream,
-which is shared by every thread. A producer containing one therefore:
-
-- captures its (default-key) self-graph on that stream, under the process-wide
-  ``runtime._CAPTURE_LOCK``, and runs any other key eagerly;
-- outside a capture, runs its legacy code on that stream when the call
-  resolved another one, ordered after and before the resolved stream with
-  events (so the plugin's launches and the library's stages stay ordered),
-  holding ``runtime._CAPTURE_LOCK`` for as long as that eager code runs;
-- is recorded into a caller's capture only when the capture stream IS Warp's
-  current stream.
-
-A legacy ``capturable=False`` generator is a HOST segment: it runs eagerly (under the
-lock), and the rest of its pipeline replays from a self-graph captured on a private
-stream, outside the lock.
-
-While a legacy producer may still self-capture on Warp's current stream, every
-other producer whose call resolves to that same stream takes the lock too and
-decides its mode under it (otherwise it could see the legacy capture as "the
-caller's capture" and record itself into it). A segmented call re-evaluates that rule
-before each part (graph launch or ctx-aware HOST part), so a legacy producer that
-became pending mid-call is serialized against. Calls on any other stream stay
-lock-free.
 """
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import threading
 import warnings
@@ -88,10 +64,9 @@ from typing import Callable
 
 import warp as wp
 
-from .._src import runtime as _runtime
 from . import _compat
 from .context import LaunchContext, _force_lowering, _torch_capturing
-from .errors import CaptureError, LegacyPluginStreamError, NotCapturableError
+from .errors import CaptureError, NotCapturableError
 
 __all__ = ["GraphRunner", "ensure_not_capturing"]
 
@@ -102,18 +77,12 @@ _POLICIES = ("auto", "eager")
 # caller passing a fresh mask array per call cannot grow the cache without bound.
 MAX_KEYED_GRAPHS = 16
 
-# Capturable legacy-plugin runners on CUDA that have not captured their
-# self-graph yet: each may still open a capture on Warp's shared current stream.
-_PENDING_LEGACY: "weakref.WeakSet[GraphRunner]" = weakref.WeakSet()
-
-
 @dataclasses.dataclass(frozen=True)
 class _BodyPart:
     """One part of a segmented body (a ``Program`` segment)."""
 
     enqueue: Callable
     host: bool = False          # run eagerly on every call (a HOST segment)
-    legacy: bool = False        # holds legacy-ABI code (launches on Warp's current stream)
 
 
 class _SegmentedBody(tuple):
@@ -128,17 +97,6 @@ class _SegmentedBody(tuple):
     def __call__(self, ctx) -> None:
         for part in self:
             part.enqueue(ctx)
-
-
-def _legacy_capture_pending(alias: str) -> bool:
-    """Whether a legacy runner on device ``alias`` may still self-capture on
-    Warp's current stream (conservatively ``True`` on a concurrent update)."""
-    if not _PENDING_LEGACY:
-        return False
-    try:
-        return any(r._device.alias == alias for r in list(_PENDING_LEGACY))
-    except RuntimeError:  # set changed size during iteration
-        return True
 
 
 def _is_current(stream, dev) -> bool:
@@ -203,12 +161,6 @@ class GraphRunner:
             ``False`` runs eagerly outside a capture and raises
             :class:`~track_gen.exec.NotCapturableError` (before any launch)
             inside one.
-        legacy_stream: the body contains a legacy-ABI plugin (no
-            ``accepts_ctx``) whose own launches go to Warp's CURRENT stream
-            (see the module docstring for what that changes).
-            Recording into a caller's capture requires the capture stream to
-            be that current stream
-            (:class:`~track_gen.exec.LegacyPluginStreamError` otherwise).
         default_stream: stream used when a call passes none and no ambient
             context applies (see :func:`~track_gen.exec.resolve_stream`).
         owner: object anchored on a caller's Warp graph when the body is
@@ -224,24 +176,17 @@ class GraphRunner:
     two threads is a race on its output buffers (use one producer per
     concurrent caller). Different producers are independent: each self-graph
     is captured on the producer's own private stream, so no process-wide lock
-    is taken (legacy-plugin producers, and calls on Warp's current stream
-    while one of them may still self-capture, excepted).
+    is taken.
     """
 
-    def __init__(self, device, *, capturable: bool, legacy_stream: bool = False,
+    def __init__(self, device, *, capturable: bool,
                  default_stream: "wp.Stream | None" = None, owner=None,
-                 name: str = "", _host_ids=(), _legacy_capture=None) -> None:
+                 name: str = "", _host_ids=()) -> None:
         dev = wp.get_device(device)
         _check_default_stream(dev, default_stream)
         self._device = dev
         self._capturable = bool(capturable)
-        self._legacy_stream = bool(legacy_stream)
-        # The HOST stage ids (messages); whether the runner self-captures legacy code on
-        # Warp's current stream (a capturable legacy producer; a Program: a legacy
-        # generator outside a HOST segment).
         self._host_ids = tuple(str(sid) for sid in _host_ids)
-        self._legacy_capture = (self._legacy_stream and self._capturable) \
-            if _legacy_capture is None else bool(_legacy_capture)
         self._default_stream = default_stream if dev.is_cuda else None
         self._name = str(name)
         if owner is None:
@@ -260,8 +205,6 @@ class GraphRunner:
         self._capture_stream: "wp.Stream | None" = None
         self._prepared = False
         self._lock = threading.RLock()
-        if self._legacy_capture and dev.is_cuda:
-            _PENDING_LEGACY.add(self)
 
     # -- state ------------------------------------------------------------------
     @property
@@ -303,12 +246,6 @@ class GraphRunner:
         return self._capturable
 
     @property
-    def legacy_stream(self) -> bool:
-        """Whether the body holds a legacy-ABI plugin that launches on Warp's current
-        stream (the constructor's ``legacy_stream``)."""
-        return self._legacy_stream
-
-    @property
     def default_stream(self) -> "wp.Stream | None":
         """The stream used when a call passes none and no ambient context applies
         (``None`` on CPU, or when the constructor got none)."""
@@ -335,46 +272,6 @@ class GraphRunner:
         return ensure_not_capturing(self._device, default_stream=self._default_stream,
                                     label=self._name)
 
-    def serial(self, ctx: LaunchContext):
-        """The lock a call on ``ctx`` must hold while it decides its mode and
-        runs (a context manager; a no-op for most calls).
-
-        ``runtime._CAPTURE_LOCK`` (reentrant) for a producer that self-captures
-        legacy-plugin code on Warp's current stream (CUDA), and for any call
-        resolving to that stream (or of a legacy producer) while a legacy producer
-        on the device may still self-capture there. Callers that issue their own
-        launches ahead of :meth:`run` (e.g. a reseed) hold it around both. An eager
-        run of legacy code holds the lock on its own (see the module docstring).
-        """
-        dev = self._device
-        if not dev.is_cuda:
-            return contextlib.nullcontext()
-        if self._legacy_capture:
-            return _runtime._CAPTURE_LOCK
-        if _legacy_capture_pending(dev.alias) and \
-                (self._legacy_stream or _is_current(ctx.stream, dev)):
-            return _runtime._CAPTURE_LOCK
-        return contextlib.nullcontext()
-
-    def _legacy_eager(self, legacy: "bool | None" = None):
-        """The lock around an EAGER run of legacy-plugin code (it launches on Warp's
-        shared current stream for its whole duration): ``runtime._CAPTURE_LOCK`` on
-        CUDA, a no-op otherwise."""
-        legacy = self._legacy_stream if legacy is None else legacy
-        if legacy and self._device.is_cuda:
-            return _runtime._CAPTURE_LOCK
-        return contextlib.nullcontext()
-
-    def _part_serial(self, ctx: LaunchContext):
-        """The lock one part of a segmented call (a graph launch, or a ctx-aware HOST
-        part run eagerly) takes on Warp's current stream while a legacy producer may
-        still self-capture there (re-evaluated per part)."""
-        dev = self._device
-        if dev.is_cuda and _legacy_capture_pending(dev.alias) and \
-                _is_current(ctx.stream, dev):
-            return _runtime._CAPTURE_LOCK
-        return contextlib.nullcontext()
-
     # -- execution --------------------------------------------------------------
     def prepare(self, enqueue) -> None:
         """Run ``enqueue`` once, for real, outside any capture, and block until
@@ -400,16 +297,13 @@ class GraphRunner:
                 capturing, or torch is capturing in the calling thread.
         """
         ctx = self.context()
-        with self.serial(ctx):
-            ensure_not_capturing(self._device, default_stream=self._default_stream,
-                                 label=self._name)
-            if ctx.stream is not None and self._eager_context(ctx) is ctx:
-                current = wp.get_stream(self._device)
-                if not _is_current(ctx.stream, self._device):
-                    ctx.stream.wait_stream(current)
-            with _force_lowering("unroll"), self._legacy_eager():
-                self._run_eager(enqueue, ctx)
-            self._sync(ctx)
+        ensure_not_capturing(self._device, default_stream=self._default_stream,
+                             label=self._name)
+        if ctx.stream is not None and not _is_current(ctx.stream, self._device):
+            ctx.stream.wait_stream(wp.get_stream(self._device))
+        with _force_lowering("unroll"):
+            self._run_eager(enqueue, ctx)
+        self._sync(ctx)
         self._prepared = True
 
     def run(self, enqueue, *, stream=None, policy: str = "auto",
@@ -443,9 +337,7 @@ class GraphRunner:
                 ``None`` (default) is the producer's default body
                 (:attr:`graph`). A non-``None`` key requires :meth:`prepare` to
                 have run (a keyed body may not be idempotent, so it is never
-                used as a warm-up pass). Ignored when recording or eager. A
-                legacy-plugin producer runs non-``None`` keys eagerly (it
-                self-captures on Warp's shared current stream, once). At most
+                used as a warm-up pass). Ignored when recording or eager. At most
                 ``MAX_KEYED_GRAPHS`` (16) non-``None`` keys get a self-graph;
                 calls with a further new key run eagerly (with a one-time
                 ``RuntimeWarning``).
@@ -454,41 +346,29 @@ class GraphRunner:
             raise ValueError(f"policy must be one of {_POLICIES}, got {policy!r}")
         ctx = self.context(stream)
         segmented = isinstance(enqueue, _SegmentedBody)
-        with self.serial(ctx):
-            # Decided under the lock: a legacy self-capture on Warp's current stream
-            # must never be mistaken for the caller's capture. Every refusal (a caller's
-            # capture, a CPU graph capture) raises BEFORE any launch.
-            self.check_record(ctx)
-            if ctx.capturing:
-                # RECORD: the caller owns the graph.
-                with ctx.scope():
-                    enqueue(ctx)
-                owner = self._owner()
-                if owner is not None:
-                    _compat.anchor(ctx.stream, owner)
-                return ctx
-            if not self._device.is_cuda or policy == "eager" \
-                    or (not self._capturable and not segmented) \
-                    or (key is not None and self._legacy_capture):
-                # EAGER (a legacy producer self-graphs its default body only: another
-                # capture on Warp's shared current stream would reopen the window in
-                # which other calls on that stream must serialize, see serial()).
-                with self._legacy_eager():
-                    self._run_eager(enqueue, ctx)
-            elif segmented:
-                self._run_segmented(enqueue, ctx, key)
+        self.check_record(ctx)
+        if ctx.capturing:
+            with ctx.scope():
+                enqueue(ctx)
+            owner = self._owner()
+            if owner is not None:
+                _compat.anchor(ctx.stream, owner)
+            return ctx
+        if not self._device.is_cuda or policy == "eager" \
+                or (not self._capturable and not segmented):
+            self._run_eager(enqueue, ctx)
+        elif segmented:
+            self._run_segmented(enqueue, ctx, key)
+        else:
+            graph = self._graphs.get(key)
+            if graph is None and key is not None and self._keyed_full():
+                self._run_eager(enqueue, ctx)
             else:
-                # SELF-GRAPH: capture once (private stream), replay on the caller's stream.
-                g = self._graphs.get(key)
-                if g is None and key is not None and self._keyed_full():
-                    with self._legacy_eager():
-                        self._run_eager(enqueue, ctx)
-                else:
-                    if g is None:
-                        g = self._capture(enqueue, key)
-                    wp.capture_launch(g, stream=ctx.stream)
-            if sync:
-                self._sync(ctx)
+                if graph is None:
+                    graph = self._capture(enqueue, key)
+                wp.capture_launch(graph, stream=ctx.stream)
+        if sync:
+            self._sync(ctx)
         return ctx
 
     def _run_segmented(self, body: "_SegmentedBody", ctx: LaunchContext, key) -> None:
@@ -496,21 +376,15 @@ class GraphRunner:
         eagerly and replay the others' graphs, in order, on ``ctx.stream``."""
         graphs = self._seg_graphs.get(key)
         if graphs is None and key is not None and self._keyed_full():
-            with self._legacy_eager():
-                self._run_eager(body, ctx)
+            self._run_eager(body, ctx)
             return
         if graphs is None:
             graphs = self._capture_parts(body, key)
-        for part, g in zip(body, graphs):
-            # The lock is re-evaluated per part: a legacy producer may have become
-            # pending (it self-captures Warp's current stream) since serial() decided.
+        for part, graph in zip(body, graphs):
             if part.host:
-                lock = self._legacy_eager(True) if part.legacy else self._part_serial(ctx)
-                with lock:
-                    self._run_eager(part.enqueue, ctx, legacy=part.legacy)
+                self._run_eager(part.enqueue, ctx)
             else:
-                with self._part_serial(ctx):
-                    wp.capture_launch(g, stream=ctx.stream)
+                wp.capture_launch(graph, stream=ctx.stream)
 
     def check_record(self, ctx: LaunchContext) -> None:
         """Raise where :meth:`run` would refuse ``ctx`` before any launch: ``ctx`` is
@@ -522,8 +396,6 @@ class GraphRunner:
         Raises:
             NotCapturableError: the producer is not capturable (it names its HOST
                 stages).
-            LegacyPluginStreamError: a legacy-plugin producer and the capture
-                stream is not Warp's current stream.
         """
         if not self._capturable and _compat.cpu_capture_active(self._device):
             # A CPU graph capture records every CPU launch without executing it: a
@@ -533,8 +405,6 @@ class GraphRunner:
             return
         if not self._capturable:
             raise NotCapturableError(self._name, stage_ids=self._host_ids)
-        if self._legacy_stream and not _is_current(ctx.stream, self._device):
-            raise LegacyPluginStreamError(self._name)
 
     # -- internals --------------------------------------------------------------
     def _label(self) -> str:
@@ -567,46 +437,10 @@ class GraphRunner:
             return
         _compat.stream_synchronize(ctx.stream)
 
-    def _eager_context(self, ctx: LaunchContext, legacy: "bool | None" = None) -> \
-            LaunchContext:
-        """The context an eager body actually runs on: ``ctx``, or Warp's current
-        stream for a legacy plugin whose call resolved another stream (its own
-        launches go to the current stream, so the whole body must)."""
-        legacy = self._legacy_stream if legacy is None else legacy
-        if not legacy or ctx.stream is None or \
-                _is_current(ctx.stream, self._device):
-            return ctx
-        current = wp.get_stream(self._device)
-        if current.is_capturing:
-            raise LegacyPluginStreamError(
-                self._name,
-                detail="Here the call resolved a stream that is not capturing while "
-                       "Warp's current stream is: the plugin's own launches would be "
-                       "recorded into that capture.")
-        return LaunchContext(self._device, current)
-
-    def _run_eager(self, enqueue, ctx: LaunchContext, legacy: "bool | None" = None) -> None:
-        """Run the body for real on ``ctx`` (or on Warp's current stream for a
-        legacy plugin, ordered after and before ``ctx.stream`` with events)."""
-        run_ctx = self._eager_context(ctx, legacy)
-        if run_ctx is ctx:
-            with ctx.scope():
-                enqueue(ctx)
-            return
-        current = run_ctx.stream
-        current.wait_stream(ctx.stream)
-        with run_ctx.scope():
-            enqueue(run_ctx)
-        ctx.stream.wait_stream(current)
-
-    def _capture_serial(self, legacy: "bool | None" = None):
-        """Lock held for a self-capture: the process-wide one for legacy plugins
-        (they record Warp's shared current stream), none otherwise (private
-        stream)."""
-        legacy = self._legacy_stream if legacy is None else legacy
-        if legacy and self._device.is_cuda:
-            return _runtime._CAPTURE_LOCK
-        return contextlib.nullcontext()
+    def _run_eager(self, enqueue, ctx: LaunchContext) -> None:
+        """Run the body on the resolved launch context."""
+        with ctx.scope():
+            enqueue(ctx)
 
     def _capture(self, enqueue, key=None) -> "wp.Graph":
         """Capture the self-graph of ``key`` once (thread-safe; retried once on
@@ -617,7 +451,7 @@ class GraphRunner:
                     f"{self._label()}: prepare() must run (with the default body) before "
                     f"a self-graph is captured for key {key!r}")
             self.prepare(enqueue)
-        with self._capture_serial(), self._lock:
+        with self._lock:
             cached = self._graphs.get(key)
             if cached is not None:
                 return cached
@@ -632,7 +466,6 @@ class GraphRunner:
                 # ScopedCapture; one retry, then the error propagates.
                 graph = self._capture_once(enqueue)
             self._graphs[key] = graph
-            _PENDING_LEGACY.discard(self)
             return graph
 
     def _capture_parts(self, body: "_SegmentedBody", key=None) -> tuple:
@@ -644,8 +477,7 @@ class GraphRunner:
                     f"{self._label()}: prepare() must run (with the default body) before "
                     f"a self-graph is captured for key {key!r}")
             self.prepare(body)
-        legacy = any(p.legacy and not p.host for p in body)
-        with self._capture_serial(legacy), self._lock:
+        with self._lock:
             cached = self._seg_graphs.get(key)
             if cached is not None:
                 return cached
@@ -655,33 +487,26 @@ class GraphRunner:
                     graphs.append(None)
                     continue
                 try:
-                    g = self._capture_once(part.enqueue, legacy=part.legacy)
+                    g = self._capture_once(part.enqueue)
                 except CaptureError:
                     raise
                 except RuntimeError:
                     # See _capture: one retry of a capture invalidated by another thread.
-                    g = self._capture_once(part.enqueue, legacy=part.legacy)
+                    g = self._capture_once(part.enqueue)
                 graphs.append(g)
             graphs = tuple(graphs)
             self._seg_graphs[key] = graphs
-            _PENDING_LEGACY.discard(self)
             return graphs
 
-    def _capture_once(self, enqueue, legacy: "bool | None" = None) -> "wp.Graph":
+    def _capture_once(self, enqueue) -> "wp.Graph":
         dev = self._device
-        legacy = self._legacy_stream if legacy is None else legacy
-        if legacy:
-            # Legacy plugins launch on Warp's current stream: record that stream.
-            s = wp.get_stream(dev)
-        else:
-            s = self._capture_stream
-            if s is None:
-                s = self._capture_stream = wp.Stream(dev)
+        s = self._capture_stream
+        if s is None:
+            s = self._capture_stream = wp.Stream(dev)
         ctx = LaunchContext(dev, s)
         with wp.ScopedCapture(device=dev, stream=s, force_module_load=False) as cap, \
                 ctx.scope():
-            # This capture is Warp's own (never torch's, even when a legacy producer
-            # records Warp's current stream and that is torch's current stream): allow
+            # This capture is Warp's own (never torch's): allow
             # conditional nodes explicitly, so ctx.skip_unless / bounded_loop windows do
             # not fall back to the torch-capture heuristic (unconditional() still wins).
             key = _compat.registered_stream(s)

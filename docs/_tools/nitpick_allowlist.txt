@@ -5,7 +5,7 @@
 # nitpicky build of the tree (every entry comes from autodoc output: docstrings,
 # signatures, show-inheritance bases); third-party targets are ignored by pattern in
 # conf.py instead. Owner in Phase 1: the reference writer, who may only REMOVE entries
-# (fix the docstring or document the target). The list goes to zero by 1.0.
+# (fix the docstring or document the target). Resolve each target before removing its entry.
 #
 # Regenerate (only to shrink it): build with this file emptied of entries, then keep the
 # "reference target not found" pairs of the build's output that still apply.

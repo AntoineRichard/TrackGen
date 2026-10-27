@@ -20,7 +20,7 @@ pytest.importorskip("warp")
 from tests._oracle import geometry  # noqa: E402
 from tests._oracle.generators import BezierCenterlineGenerator  # noqa: E402
 from tests._warp_compare import gates  # noqa: E402
-from track_gen._src.types import TrackGenConfig  # noqa: E402
+from tests._oracle.config import OracleConfig as TrackGenConfig
 
 from tests.conftest import DEVS  # noqa: E402
 
@@ -69,9 +69,7 @@ def _oracle_accept(gen, pruned, dense, config):
 
 @pytest.mark.parametrize("dev", DEVS)
 def test_gates_matches_oracle(dev):
-    config = TrackGenConfig()
-    config.device = dev          # oracle Bernstein basis -> right device for _assemble_centerline
-    config.max_num_points = P
+    config = TrackGenConfig(device=dev, max_num_points=P)
 
     corners, count = _corner_sets()
     corners = corners.to(dev)

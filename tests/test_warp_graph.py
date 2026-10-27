@@ -17,6 +17,8 @@ Track fields are wp.array; test reads are wrapped with to_t() from _warp_compare
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 import torch
 
@@ -28,7 +30,6 @@ pytestmark = [
 import warp as wp  # noqa: E402
 from tests._warp_compare import to_t  # noqa: E402
 from track_gen._src.types import TrackGenConfig  # noqa: E402
-from track_gen._src import warp_pipeline as wpp  # noqa: E402
 from track_gen.plugin import registry  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen._src.rng_utils import PerEnvSeededRNG  # noqa: E402
@@ -40,7 +41,7 @@ from track_gen._src.types import Track  # noqa: E402
 # generator is capturable (repulsive since its freeze became absorbing). describe() reads
 # the flag of a GeneratorSpec and of a Stage generator alike.
 _ALL_GENERATORS = [
-    n for n in registry.available("generator") if registry.describe("generator", n).capturable
+    n for n in registry.available("generator") if n != "external" and registry.describe("generator", n).capturable
 ]
 
 # Per-generator config overrides: core fields stay flat, generator knobs go through
@@ -57,9 +58,8 @@ def _cfg(E: int, relax_iters: int = 20, generator: str = "bezier") -> TrackGenCo
     # Modest iters keep the test fast; the capture mechanism is independent of count.
     # constant_spacing is the only supported mode; N_max large enough for every env.
     return TrackGenConfig(
-        num_envs=E, device="cuda:0", output_mode="constant_spacing",
-        spacing=0.6, N_max=256,
-        relax_solver="xpbd", smooth_finish=False,
+        num_envs=E, device="cuda:0", spacing=0.6, N_max=256,
+        relax_solver="xpbd",
         relax_iters=relax_iters,
         generator=generator, **_GEN_OVERRIDES.get(generator, {}),
     )
@@ -190,9 +190,8 @@ def test_autocapture_replay_matches_eager_with_cached_separation():
     """Cached XPBD separation keeps graph replay equivalent to eager execution."""
     E = 16
     cfg = _cfg(E, relax_iters=9)
-    cfg.relax_sep_every = 3
-    cfg.relax_sep_cache_slots = 8
-    cfg.relax_sep_cache_skin = 0.0
+    cfg = replace(cfg, relax_sep_every=3, relax_sep_cache_slots=8,
+                  relax_sep_cache_skin=0.0)
     rng = _make_rng(E, seed=126)
     gen = TrackGenerator(cfg, rng)
 
@@ -207,7 +206,7 @@ def test_autocapture_replay_matches_eager_with_cached_separation():
 
 
 def test_eager_path_unaffected():
-    """generate() on cuda returns full-size buffers; the deprecated flag stays unset."""
+    """generate() on cuda returns full-size buffers."""
     E = 16
     cfg = _cfg(E)
     rng = _make_rng(E, seed=7)
@@ -217,7 +216,6 @@ def test_eager_path_unaffected():
     center_t = wp.to_torch(t.center)
     assert center_t.shape[0] == E * cfg.N_max, \
         f"center flat size mismatch: {center_t.shape[0]} != {E * cfg.N_max}"
-    assert wpp._CAPTURING is False
 
 
 def test_captured_graph_reads_live_seed_buffer():

@@ -147,12 +147,6 @@ def test_selection_errors():
         _gates(checks="gate_default")
     with pytest.raises(ValueError, match="expected a StageRef of kind 'order'"):
         _gates(order=StageRef("elevation", "flat"))
-    with pytest.raises(ValueError, match="order=: gate generator 'toy.ring' is a legacy "
-                                         "GateGeneratorSpec that orders its own gates"):
-        from tests._plugin_toys import TOY_RING
-
-        registry.add(TOY_RING)
-        _gates(generator="toy.ring", order="raw")
 
 
 def _ref(spec, sid):
@@ -172,7 +166,6 @@ def test_a_provider_drops_the_stages_it_provides():
     assert _ref(spec, "order").name == "raw"
     posed = _gates(generator=gt.HELIX_POSED)
     assert _ref(posed, "gate_frames").name == "posed"
-    assert _ref(posed, "validity").params["check_crossing"] == "always"
     with pytest.raises(ValueError, match=r"presets.gates\(elevation='noise'\): gate "
                                          r"generator 'acme.helix' provides its own "
                                          r"altitudes \(z\); leave elevation at its default"):
@@ -347,12 +340,6 @@ def test_parameter_agreement():
     spec = _gates().replace("gate_frames", StageRef("gate_frames", "default",
                                                     params={"gate_width": 0.05}))
     build(spec, seeds=1)
-    # ... while two explicit, different widths still disagree.
-    spec = spec.replace("validity", StageRef("validity", "gate_default",
-                                             params={"gate_width": 0.1}))
-    with pytest.raises(PlanError, match=r"the stages disagree on gate_width: \{'gate_frames':"
-                                        r" 0.05, 'validity': 0.1\} \(one value per pipeline"):
-        build(spec, seeds=1)
     spec = _gates().replace("validity", StageRef("validity", "gate_default",
                                                  params={"gate_radius": 0.03}))
     with pytest.raises(PlanError, match=r"the stages disagree on gate_radius: "
@@ -366,7 +353,6 @@ def test_posed_frames_need_no_check_crossing_always():
     ``"width"`` builds and checks its crossings: the same bytes as ``"always"`` (what
     the preset sets)."""
     always = _gates(generator=gt.HELIX_POSED)
-    assert dict(_ref(always, "validity").params)["check_crossing"] == "always"
     width = always.replace("validity", StageRef("validity", "gate_default"))
     a = GateGenerator(always, _rng())
     w = GateGenerator(width, _rng())
@@ -593,7 +579,7 @@ def test_the_facade_config_is_always_a_gate_config():
     assert sf._config.generator == gt.SUPERFORMULA and sf._config.gate_ordering == "raw"
     assert type(sf._generator_config).__name__ == "TrackGenConfig"
     assert legacy_gen._config.gate_ordering == "raw"
-    assert "order" not in legacy_gen.program.spec.ids
+    assert "order" in legacy_gen.program.spec.ids
 
 
 def test_a_legacy_generator_in_a_spec_keeps_its_capacity_checks():
@@ -620,7 +606,7 @@ def test_a_legacy_generator_in_a_spec_keeps_its_capacity_checks():
 def _legacy_spec():
     return PipelineSpec(BatchSpec(E, DEV, 384, max_gates=8), (
         StageRef("gate_generator", "toy.ring", id="generator"),
-        StageRef("gate_relax", "spheres"), StageRef("elevation", "flat"),
+        StageRef("order", "raw"), StageRef("gate_relax", "spheres"), StageRef("elevation", "flat"),
         StageRef("lift", "gates"), StageRef("tangents", "central"),
         StageRef("gate_frames", "default"), StageRef("validity", "gate_default")))
 
@@ -647,30 +633,21 @@ def test_validity_params_in_checks_keep_the_preset_arguments():
     spec = _gates(min_gates=6, gate_radius=0.03, gate_width=0.05,
                   checks=(("gate_default", {"z_valid_grade": 0.5}),))
     assert dict(_ref(spec, "validity").params) == {
-        "min_gates": 6, "gate_radius": 0.03, "gate_width": 0.05, "z_valid_grade": 0.5}
+        "min_gates": 6, "gate_radius": 0.03, "z_valid_grade": 0.5}
     assert _resolved(spec) == _resolved(_gates(min_gates=6, gate_radius=0.03,
                                                gate_width=0.05, z_valid_grade=0.5))
-    # the check's own min_gates wins; a posed generator gets check_crossing="always"
+    # The check's min_gates wins; posed generators use the same validity parameters.
     assert _ref(_gates(checks=(("gate_default", {"min_gates": 8}),)),
                 "validity").params["min_gates"] == 8
     posed = _gates(generator=gt.HELIX_POSED, checks=(("gate_default", None),))
-    assert _ref(posed, "validity").params["check_crossing"] == "always"
-    for field, v in (("gate_radius", 0.05), ("gate_width", 0.1)):
+    assert set(_ref(posed, "validity").params) == {"min_gates", "gate_radius", "z_valid_grade"}
+    for field, v in (("gate_radius", 0.05),):
         with pytest.raises(ValueError, match=rf"checks: validity.gate_default sets "
                                              rf"{field}={v!r} but {field}="):
             _gates(checks=(("gate_default", {field: v}),))
     with pytest.raises(ValueError, match=r"validity.gate_default sets gate_radius=0.05"):
         _gates(checks=(StageRef("validity", "gate_default",
                                 params=sp.GateValidityParams(gate_radius=0.05)),))
-    # A half_size provider: a gate_width in the check is the provider error (passing it
-    # to presets.gates would be refused too), not "pass gate_width=... to presets.gates".
-    for params in ({"gate_width": 0.1}, sp.GateValidityParams(gate_width=0.1)):
-        with pytest.raises(ValueError, match=r"checks: gate generator 'acme.helix_posed' "
-                                             r"provides per-gate half_size; "
-                                             r"validity.gate_default's gate_width must "
-                                             r"stay 0, got 0.1$"):
-            _gates(generator=gt.HELIX_POSED,
-                   checks=(StageRef("validity", "gate_default", params=params),))
     with pytest.raises(ValueError, match=r"validity.gate_default sets gate_radius=0.05 .*"
                                          r"pass gate_radius=0.05 to presets.gates"):
         _gates(generator=gt.HELIX_POSED, checks=(("gate_default", {"gate_radius": 0.05}),))

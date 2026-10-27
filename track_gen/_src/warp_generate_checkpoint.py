@@ -14,9 +14,10 @@ grammar/hull ports did:
    target index when within ``lookahead_frac*R`` (a per-step int-counter increment — capturable,
    no host branch).
 3. ``close_heading_ramp`` (the default closure): per-edge heading, wrapped increments, ADD a
-   constant drift ``(2*pi - net_turn)/N`` so the net turn is exactly 2*pi (turning number 1,
-   no inner loops) WITHOUT rescaling local curvature; rebuild headings, gap-distribute the
-   displacement (subtract the mean edge), cumsum to positions, recenter.
+   constant drift ``(2*pi - net_turn)/N`` targeting a full heading turn without rescaling
+   local curvature; rebuild headings, subtract the mean edge to distribute the closure
+   gap, cumsum to positions and recenter. Final turning and self-intersection validity
+   remain separate checks; closure does not guarantee a simple loop.
 4. best-of-K: generate K decorrelated candidates per env, keep the fewest-self-intersection one
    (deterministic argmin, ties -> lowest k). Replaces the reject-retry.
 5. OPT-IN single-crossing clip (``config.checkpoint_clip_fallback``, default off, like the
@@ -24,136 +25,46 @@ grammar/hull ports did:
    keep the longer sub-loop arc, arc-resample back to N. A capture-time Python branch.
 
 Hard invariants (shared with the rest of ``track_gen/_src``): Warp-native + torch-free, ZERO
-per-call allocation (all buffers come from ``checkpoint_alloc_scratch``), CUDA-graph-capturable
+per-call allocation (all buffers come from the StageBuilder), CUDA-graph-capturable
 (fixed bounds over C / N / K, no host sync, no per-env Python branching — K>1/K==1 and the clip
 are capture-time Python branches), deterministic in (seed, config) including best-of-K selection.
 
 Convention (shared with ``warp_pipeline``): one thread per output element; flat arrays
 ``[E*N]`` of ``wp.vec2f`` and ``[E]`` per-env scalars; env index ``e = tid // N``.
 
-The best-of-K crossing count, the clip's arc resample, the extent normalisation and the
-fills are the public ``track_gen.ops`` primitives; the checkpoint draw is exposed as
-:func:`sample_checkpoint_rings` (shared with the checkpoint gate generator).
-
-Roadmap PR13c: the registered ``"checkpoint"`` generator is the :class:`Checkpoint`
-Stage, whose radius / angle jitter / turn rate are dynamic (per-env arrays,
-:func:`sample_checkpoint_rings_per_env` and :func:`_steer_dyn_k`, clamped to the
-declared bounds at use; the steering gain and lookahead stay static);
-``generate_checkpoint_warp`` / ``checkpoint_alloc_scratch`` /
-``sample_checkpoint_rings`` keep their signatures and the scalar kernels on the same
-private core, :func:`_enqueue_checkpoint`.
+The best-of-K crossing count, clip arc resample, extent normalisation and fills are
+public ``track_gen.ops`` primitives. The checkpoint draw uses
+:func:`sample_checkpoint_rings_per_env`, shared with the checkpoint gate generator.
+The :class:`Checkpoint` Stage reads dynamic radius, angle jitter and turn-rate arrays;
+the steering gain and lookahead remain static.
 """
 from __future__ import annotations
 
 import warp as wp
 
+from ..ops import rng as _rng
+
 from .. import ops
-from ..exec.context import LaunchContext, resolve as _resolve_ctx
+from ..exec.context import LaunchContext
 from ..ops import funcs
 from ..ops.constants import TARGET_EXTENT
 from ..plugin.stage import CaptureClass, Stage
 from .builtin_params import CheckpointParams, _declared_bounds
-from .builtin_stage import (DeprecatedParamsAlias, check_dyn, check_no_size,
-                            default_alloc, run_view)
+from .builtin_stage import check_dyn, default_alloc, run_view
 from .runtime import _init
 
-# Legacy private name (value only): the loop is normalised to config.scale * TARGET_EXTENT
-# (the same extent as polar / bezier, so half_width / spacing / relax see comparable
-# coordinates across generators).
-_BEZIER_EXTENT = TARGET_EXTENT
 
-# Independent RNG salt for checkpoint sampling. Distinct from polar (7919), bezier (9781, 6151),
-# and hull (7919, 5119, 3083) so this generator draws a different checkpoint set.
-_CHECKPOINT_SALT = 4099
-# Per-candidate offset salt: candidate k of env e uses rand_init(seeds[e]*_CHECKPOINT_SALT +
-# k*_CAND_SALT + 1). A large odd multiplier decorrelates the K candidates (the best-of-K trick).
-_CAND_SALT = 2741
+# Fixed generator.checkpoint/rings namespace; candidate k is its indexed stream.
+_CHECKPOINT_SALT = 0x7357F137
+# Candidate k receives its own indexed stream within the fixed rings namespace.
 
 #: Base ring radius. The loop is normalized after closure, so this only sets a stable
 #: pre-scale.
 BASE_RADIUS = 1.0
-_BASE_RADIUS = BASE_RADIUS  # legacy private name (value only)
 
 
-@wp.kernel
-def _sample_checkpoints_k(
-    seeds: wp.array(dtype=wp.int32),
-    K: int,
-    C: int,
-    radius_min_frac: float,
-    angle_jitter: float,
-    base_radius: float,
-    checkpoints: wp.array(dtype=wp.vec2f),
-):
-    # One thread per (env e, candidate k) slot. Builds C checkpoints monotone in angle:
-    # angle c = 2*pi*c/C + jitter (jitter in +/- angle_jitter * slot, slot = 2*pi/C),
-    # radius ~ U(radius_min_frac*R, R), R = base_radius. Stride per slot is C.
-    slot_id = wp.tid()
-    e = slot_id // K
-    k = slot_id % K
-    state = wp.rand_init(seeds[e] * _CHECKPOINT_SALT + k * _CAND_SALT + 1)
-    b = slot_id * C
-    two_pi = 2.0 * wp.pi
-    slot = two_pi / float(C)
-    rmin = radius_min_frac * base_radius
-
-    for c in range(C):
-        jitter = (2.0 * wp.randf(state) - 1.0) * angle_jitter * slot
-        ang = float(c) * slot + jitter
-        r = rmin + wp.randf(state) * (base_radius - rmin)
-        checkpoints[b + c] = wp.vec2f(r * wp.cos(ang), r * wp.sin(ang))
 
 
-@wp.kernel
-def _steer_k(
-    checkpoints: wp.array(dtype=wp.vec2f),
-    K: int,
-    C: int,
-    N: int,
-    turn_rate: float,
-    steer_gain: float,
-    lookahead: float,
-    path: wp.array(dtype=wp.vec2f),
-):
-    # One thread per (env, candidate) slot. Walks a fixed N-step bounded-turn path that chases
-    # the C checkpoints once around, writing the OPEN path into path[slot*N .. slot*N+N).
-    #
-    # Step length dl = ring_perimeter / N (a reduction over the C checkpoints) pins the walk to
-    # ~one lap. Start at checkpoint 0 heading toward 1; each step: bearing to the current target,
-    # err = wrap(bearing - theta), dtheta = clamp(steer_gain*err, +/- turn_rate), theta += dtheta,
-    # advance position by dl*(cos,sin). The target index advances when within lookahead*R of it
-    # (a per-step int-counter increment — capturable, no data-dependent host branch).
-    slot_id = wp.tid()
-    cb = slot_id * C
-    pb = slot_id * N
-    two_pi = 2.0 * wp.pi
-
-    # Ring perimeter (closed C-gon over the checkpoints) -> dl. Fixed reduction over C.
-    perim = float(0.0)
-    for c in range(C):
-        d = checkpoints[cb + (c + 1) % C] - checkpoints[cb + c]
-        perim += wp.length(d)
-    dl = perim / float(N)
-
-    # Start at checkpoint 0, heading toward checkpoint 1 (deterministic, capturable).
-    p = checkpoints[cb + 0]
-    d01 = checkpoints[cb + 1] - checkpoints[cb + 0]
-    theta = wp.atan2(d01[1], d01[0])
-    tgt = int(1)  # index of current target checkpoint
-
-    for i in range(N):
-        path[pb + i] = p
-        # Advance target if close enough (chase the NEXT checkpoint). Wrap the ring.
-        target = checkpoints[cb + (tgt % C)]
-        if wp.length(target - p) < lookahead:
-            tgt = tgt + 1
-            target = checkpoints[cb + (tgt % C)]
-        # Proportional bounded steering toward the target bearing.
-        bearing = wp.atan2(target[1] - p[1], target[0] - p[0])
-        err = wp.atan2(wp.sin(bearing - theta), wp.cos(bearing - theta))  # wrap to (-pi, pi]
-        dtheta = wp.clamp(steer_gain * err, -turn_rate, turn_rate)
-        theta = theta + dtheta
-        p = p + dl * wp.vec2f(wp.cos(theta), wp.sin(theta))
 
 
 # The declared bounds of CheckpointParams' dynamic knobs (the twins' clamps, float32;
@@ -194,7 +105,7 @@ def _sample_checkpoints_dyn_k(
     angle_jitter = aj_e[e]
     angle_jitter = wp.where(angle_jitter < _AJ_LO, _AJ_LO, angle_jitter)
     angle_jitter = wp.where(angle_jitter > _AJ_HI, _AJ_HI, angle_jitter)
-    state = wp.rand_init(seeds[e] * _CHECKPOINT_SALT + k * _CAND_SALT + 1)
+    state = _rng.init_at(seeds[e], wp.uint32(_CHECKPOINT_SALT), k)
     b = slot_id * C
     two_pi = 2.0 * wp.pi
     slot = two_pi / float(C)
@@ -554,34 +465,17 @@ class CheckpointScratch:
         self.arc_co = arc_co
 
 
-def sample_checkpoint_rings(ctx: "LaunchContext", seeds: wp.array, K: int, C: int,
-                            radius_min_frac: float, angle_jitter: float, out: wp.array, *,
-                            base_radius: float = BASE_RADIUS) -> None:
-    """Draw ``K`` candidate rings of ``C`` checkpoints per env into ``out``.
-
-    Slot ``e*K + k`` (env ``e``, candidate ``k``) gets ``C`` checkpoints monotone in
-    angle: checkpoint ``c`` at angle ``2*pi*c/C`` plus a jitter of up to
-    ``angle_jitter`` of the slot ``2*pi/C``, radius uniform in
-    ``[radius_min_frac*base_radius, base_radius)``, from
-    ``wp.rand_init(seeds[e] * 4099 + k * 2741 + 1)``. ``out`` is ``[E*K*C]`` ``vec2f``.
-    One launch (``seeds.shape[0] * K`` threads); no allocation, no host sync, no
-    validation.
-    """
-    K = int(K)
-    ctx.launch(_sample_checkpoints_k, seeds.shape[0] * K,
-               [seeds, K, int(C), float(radius_min_frac), float(angle_jitter),
-                float(base_radius), out])
 
 
 def sample_checkpoint_rings_per_env(ctx: "LaunchContext", seeds: wp.array, K: int, C: int,
                                     radius_min_frac: wp.array, angle_jitter: wp.array,
                                     out: wp.array, *,
                                     base_radius: float = BASE_RADIUS) -> None:
-    """:func:`sample_checkpoint_rings` with per-env knobs (roadmap PR13c): ``[E]``
+    """the scalar control draw with per-env knobs: ``[E]``
     ``float32`` arrays, every candidate ring of env ``e`` drawn with
     ``radius_min_frac[e]`` / ``angle_jitter[e]``, each clamped at use to the checkpoint
     generator's declared bounds (``[0, 1]``, compared in float32; a NaN passes). With
-    every value inside its bounds, env ``e`` equals :func:`sample_checkpoint_rings` at
+    every value inside its bounds, env ``e`` equals the scalar control draw at
     the scalars. One launch (``seeds.shape[0] * K`` threads); no allocation, no host
     sync.
     """
@@ -595,16 +489,10 @@ _DYNAMIC = ("checkpoint_radius_min_frac", "checkpoint_angle_jitter", "checkpoint
             "size")
 
 
-def checkpoint_alloc_scratch(config):
-    """Allocate the checkpoint generator's PRIVATE working scratch (one alloc per generator).
-
-    Sized by K = config.checkpoint_best_of_k. The clip buffers are allocated only when
-    config.checkpoint_clip_fallback is True (the clip is a capture-time Python branch)."""
-    return _alloc_checkpoint_scratch(config)
 
 
 def _alloc_checkpoint_scratch(config, alloc=None):
-    """:func:`checkpoint_alloc_scratch` with every buffer from ``alloc(name, dtype, n)``
+    """the private scratch allocator with every buffer from ``alloc(name, dtype, n)``
     (named after its :class:`CheckpointScratch` slot; default ``wp.empty`` on
     ``config.device``). The Stage passes its ``StageBuilder.scratch``."""
     _init()
@@ -644,46 +532,11 @@ def _alloc_checkpoint_scratch(config, alloc=None):
     )
 
 
-def generate_checkpoint_warp(seeds_wp: wp.array, config,
-                             out_centerline: wp.array, out_valid_wp: wp.array,
-                             scratch, ctx: "LaunchContext | None" = None) -> None:
-    """Checkpoint-steering centerline generation — in-place owned path.
-
-    Pure-Warp: sample checkpoints -> steer (fixed-N) -> close_heading_ramp -> best-of-K select
-    -> (opt-in) single-crossing clip -> normalize -> write the chosen centerline into
-    out_centerline. Marks all envs valid (the generation gate is always True; inflate does the
-    real validity gate, as for bezier/polar/hull).
-
-    The legacy entry point (frozen signature; the knobs of ``config`` as host scalars):
-    the registered ``"checkpoint"`` generator is the :class:`Checkpoint` Stage on the same
-    private core (roadmap PR13c).
-
-    Args:
-        seeds_wp:       [E] int32 wp.array per-env base seeds.
-        config:         TrackGenConfig.
-        out_centerline: [E*num_points] vec2f wp.array — written in-place with the centerline.
-        out_valid_wp:   [E] int32 wp.array — filled with 1 (all valid at generation stage).
-        scratch:        a CheckpointScratch from checkpoint_alloc_scratch.
-        ctx: optional track_gen.exec.LaunchContext; default resolves the
-            device's stream (see track_gen.exec).
-
-    K > 1 / K == 1 and clip_fallback are capture-time Python branches (no per-env host control
-    flow), so the captured graph stays fixed and allocation-free.
-    """
-    _init()
-    check_no_size(config, "generate_checkpoint_warp")
-    ctx = _resolve_ctx(ctx, str(out_centerline.device))
-    assert scratch is not None, "generate_checkpoint_warp requires scratch"
-    _enqueue_checkpoint(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx, None)
 
 
 def _enqueue_checkpoint(seeds_wp, config, out_centerline, out_valid_wp, scratch, ctx,
                         dyn) -> None:
-    """The checkpoint generator's launches on ``ctx``: ``dyn=None`` (the legacy path:
-    ``config``'s knobs, :func:`sample_checkpoint_rings` and :func:`_steer_k`) or the
-    radius / angle jitter / turn rate / ``size`` ``[E]`` arrays (the Stage:
-    :func:`sample_checkpoint_rings_per_env`, :func:`_steer_dyn_k` and the normalization
-    to ``scale * TARGET_EXTENT * size[e]``, roadmap PR13d)."""
+    """Enqueue the generator with resolved per-environment parameter arrays."""
     check_dyn(dyn, _DYNAMIC, "checkpoint")
     E = int(config.num_envs)
     N = int(config.num_points)
@@ -695,26 +548,12 @@ def _enqueue_checkpoint(seeds_wp, config, out_centerline, out_valid_wp, scratch,
     lookahead = float(config.checkpoint_lookahead_frac) * BASE_RADIUS
     target_extent = float(config.scale) * TARGET_EXTENT
 
-    if dyn is None:
-        radius_min_frac = float(config.checkpoint_radius_min_frac)
-        angle_jitter = float(config.checkpoint_angle_jitter)
-        turn_rate = float(config.checkpoint_turn_rate)
-
-        # 1. Sample C checkpoints per (env, candidate) slot.
-        sample_checkpoint_rings(ctx, seeds_wp, K, C, radius_min_frac, angle_jitter,
-                                scratch.checkpoints)
-
-        # 2. Steer the fixed-N bounded-turn open path per slot.
-        ctx.launch(_steer_k, EK,
-                   [scratch.checkpoints, K, C, N, turn_rate, steer_gain, lookahead,
-                    scratch.path])
-    else:
-        sample_checkpoint_rings_per_env(ctx, seeds_wp, K, C,
-                                        dyn["checkpoint_radius_min_frac"],
-                                        dyn["checkpoint_angle_jitter"], scratch.checkpoints)
-        ctx.launch(_steer_dyn_k, EK,
-                   [scratch.checkpoints, K, C, N, dyn["checkpoint_turn_rate"], steer_gain,
-                    lookahead, scratch.path])
+    sample_checkpoint_rings_per_env(ctx, seeds_wp, K, C,
+                                    dyn["checkpoint_radius_min_frac"],
+                                    dyn["checkpoint_angle_jitter"], scratch.checkpoints)
+    ctx.launch(_steer_dyn_k, EK,
+               [scratch.checkpoints, K, C, N, dyn["checkpoint_turn_rate"], steer_gain,
+                lookahead, scratch.path])
 
     # 3. Close each candidate to turning-number-1 (additive heading ramp + displacement close).
     ctx.launch(_close_heading_ramp_k, EK, [scratch.path, N, scratch.cand])
@@ -745,10 +584,7 @@ def _enqueue_checkpoint(seeds_wp, config, out_centerline, out_valid_wp, scratch,
         )
 
     # 6. Normalize the selected centerline's bbox extent to match the bezier baseline.
-    if dyn is None:
-        ops.normalize_extent(ctx, out_centerline, N, target_extent)
-    else:   # roadmap PR13d: the per-env size multiplies the target extent
-        ops.normalize_extent(ctx, out_centerline, N, target_extent, size=dyn["size"])
+    ops.normalize_extent(ctx, out_centerline, N, target_extent, size=dyn["size"])
 
     # 7. Mark all envs valid (gen gate is always True; inflate does the real gate).
     ops.fill(ctx, out_valid_wp, 1)
@@ -758,7 +594,7 @@ def _enqueue_checkpoint(seeds_wp, config, out_centerline, out_valid_wp, scratch,
 
 class Checkpoint(Stage):
     """``"checkpoint"``: the checkpoint-steering track generator
-    (:func:`generate_checkpoint_warp`) as a ``kind="generator"`` Stage (roadmap PR13c).
+     as a ``kind="generator"`` Stage.
     ``checkpoint_radius_min_frac`` / ``checkpoint_angle_jitter`` / ``checkpoint_turn_rate``
     are dynamic: per-env arrays read by :func:`sample_checkpoint_rings_per_env` and
     :func:`_steer_dyn_k`, clamped to ``[0, 1]`` / ``[0, 1]`` / ``[0, pi]`` at use."""
@@ -769,8 +605,6 @@ class Checkpoint(Stage):
     capture = CaptureClass.STATIC
     Params = CheckpointParams
     writes = {"xy": "raw.xy", "valid": "gen.valid"}
-    #: Deprecated (0.2.0.dev4's ``GeneratorSpec.params``): use ``Params``.
-    params = DeprecatedParamsAlias()
 
     def build(self, b, p):
         cfg = run_view(p, b)

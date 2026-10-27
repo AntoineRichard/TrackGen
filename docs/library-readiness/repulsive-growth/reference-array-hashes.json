@@ -1,0 +1,446 @@
+{
+  "runtime_revision": "a42759a3f999a8668a200cddc3f04e0508478dd1",
+  "docs_revision": "4aec44a8f30d7ef998bb37ce6cb86e6ad2d12bd2",
+  "platform": "Darwin-arm64",
+  "warp": "1.18.0",
+  "note": "Historical source arrays before metric conversion. Hash equality is per device/platform, not cross-device.",
+  "source_file_sha256": {
+    "track_gen/_src/warp_generate_repulsive.py": "f87c497dbd86aedfdd4f8987f2feda546f78fb02ca165d274fadb866d0b41570",
+    "track_gen/_src/warp_pipeline.py": "bd563a7c722513d0ddc7615dedda7ccef42b90932976785f53c0754c3b6cb75f",
+    "track_gen/stages/track.py": "1b45fe2c6dcfc255ca19f01be9c2e79738757f796fe4df89a895aae6dd1c71f7",
+    "track_gen/_src/builtin_params.py": "7c92a53b643c7874c9c4b04bea2c0a6a96cdbfa7dac76af8acf66daf44445b95"
+  },
+  "cases": {
+    "baseline": {
+      "seed": 7,
+      "overrides": {},
+      "source_arrays": {
+        "raw": {
+          "dtype": "<f4",
+          "shape": [
+            256,
+            2
+          ],
+          "sha256_bytes": "1f9ee92f93a51c873fdd760e2d9612f524a0ed5b6900cb2e43265cb2b80af235"
+        },
+        "center": {
+          "dtype": "<f4",
+          "shape": [
+            204,
+            2
+          ],
+          "sha256_bytes": "52b92b844e1dead204ec6ccd386de2c26f61f08923804e2d965a4dbc32be33ba"
+        },
+        "inner": {
+          "dtype": "<f4",
+          "shape": [
+            204,
+            2
+          ],
+          "sha256_bytes": "85b0facdd8a2d22c87bd1a9a58c09cc6db6761efe879d58033e116a9c29b1b97"
+        },
+        "outer": {
+          "dtype": "<f4",
+          "shape": [
+            204,
+            2
+          ],
+          "sha256_bytes": "58439e9c129321eb9e98b055611a10d692d4da5681856c2a962c1e1ce99f6220"
+        },
+        "obs": {
+          "dtype": "<f4",
+          "shape": [
+            240,
+            2
+          ],
+          "sha256_bytes": "fca53f3bacd454fb22ac2d12a4c80ebcc8391c66f9f8f0b34122ccc20021506e"
+        }
+      }
+    },
+    "tau02": {
+      "seed": 7,
+      "overrides": {
+        "repulsive_tau": 0.2
+      },
+      "source_arrays": {
+        "raw": {
+          "dtype": "<f4",
+          "shape": [
+            256,
+            2
+          ],
+          "sha256_bytes": "c6f3ec55f40e45ccb6069a2efc8542d70553f3295f0d242ddc116277032e145e"
+        },
+        "center": {
+          "dtype": "<f4",
+          "shape": [
+            209,
+            2
+          ],
+          "sha256_bytes": "8e681fd9d0cb7a2b4abdd14a11574870eddb708e3bc71ffb657c84c249cf54f9"
+        },
+        "inner": {
+          "dtype": "<f4",
+          "shape": [
+            209,
+            2
+          ],
+          "sha256_bytes": "085c8ea9875f13ce42c92027e29c6597cd2dd36c168ccf0e7224fb4b56cfe7e5"
+        },
+        "outer": {
+          "dtype": "<f4",
+          "shape": [
+            209,
+            2
+          ],
+          "sha256_bytes": "08dac2e111bbd68270786ba41767ba3349d6e12d572088007de71c82afa1df30"
+        },
+        "obs": {
+          "dtype": "<f4",
+          "shape": [
+            240,
+            2
+          ],
+          "sha256_bytes": "fca53f3bacd454fb22ac2d12a4c80ebcc8391c66f9f8f0b34122ccc20021506e"
+        }
+      }
+    },
+    "tau01": {
+      "seed": 7,
+      "overrides": {
+        "repulsive_tau": 0.1
+      },
+      "source_arrays": {
+        "raw": {
+          "dtype": "<f4",
+          "shape": [
+            256,
+            2
+          ],
+          "sha256_bytes": "cbc27b7a325bd2d4ff06461cf7be81d00c9ebda0ed10772a28ffc9322736deea"
+        },
+        "center": {
+          "dtype": "<f4",
+          "shape": [
+            209,
+            2
+          ],
+          "sha256_bytes": "3e9d7a5c787cd40471b5e91146fd80fc8deb111cddbdc822f746c07d1a75a535"
+        },
+        "inner": {
+          "dtype": "<f4",
+          "shape": [
+            209,
+            2
+          ],
+          "sha256_bytes": "1bf55302c41c47a125f86eb3c6e8e4955470e69e8f3eb0083db0be213b89be75"
+        },
+        "outer": {
+          "dtype": "<f4",
+          "shape": [
+            209,
+            2
+          ],
+          "sha256_bytes": "0c31834a1cb374528a7184589ff896e0e4991ffeff83c073e3dc200faa82d2b5"
+        },
+        "obs": {
+          "dtype": "<f4",
+          "shape": [
+            240,
+            2
+          ],
+          "sha256_bytes": "fca53f3bacd454fb22ac2d12a4c80ebcc8391c66f9f8f0b34122ccc20021506e"
+        }
+      }
+    },
+    "keep_obstacles": {
+      "seed": 7,
+      "overrides": {
+        "repulsive_deactivate_obstacles": false
+      },
+      "source_arrays": {
+        "raw": {
+          "dtype": "<f4",
+          "shape": [
+            256,
+            2
+          ],
+          "sha256_bytes": "e32113221484677d0c41690bfb1b294c729bc6dacd5771eb00f10f9609292f96"
+        },
+        "center": {
+          "dtype": "<f4",
+          "shape": [
+            206,
+            2
+          ],
+          "sha256_bytes": "971c3e2bfd22758938e0fe06e9f16de0ee5a3c2dac9f4df39819715a4674afdb"
+        },
+        "inner": {
+          "dtype": "<f4",
+          "shape": [
+            206,
+            2
+          ],
+          "sha256_bytes": "1704e6adfedda38eba689e51ebcf62efc18bdaf68ffe57066d8159eede2c30dc"
+        },
+        "outer": {
+          "dtype": "<f4",
+          "shape": [
+            206,
+            2
+          ],
+          "sha256_bytes": "796875cc4a48db28708578b04ee98bcf3dd9683e0ac495c619dc31dbd6d38eda"
+        },
+        "obs": {
+          "dtype": "<f4",
+          "shape": [
+            240,
+            2
+          ],
+          "sha256_bytes": "fca53f3bacd454fb22ac2d12a4c80ebcc8391c66f9f8f0b34122ccc20021506e"
+        }
+      }
+    },
+    "strict_stall": {
+      "seed": 7,
+      "overrides": {
+        "repulsive_stall_area_tol": 0.001,
+        "repulsive_settle_iters": 200
+      },
+      "source_arrays": {
+        "raw": {
+          "dtype": "<f4",
+          "shape": [
+            256,
+            2
+          ],
+          "sha256_bytes": "9b16c242f80191b1fd8e010489d63bc2118c21b4f270b13ee5e564bd73e49295"
+        },
+        "center": {
+          "dtype": "<f4",
+          "shape": [
+            204,
+            2
+          ],
+          "sha256_bytes": "7324293b6ce2ed86ed0ad860aa84af890c41208cc212dbcbf232fdc2d635a858"
+        },
+        "inner": {
+          "dtype": "<f4",
+          "shape": [
+            204,
+            2
+          ],
+          "sha256_bytes": "2d8dd326065f397a1515eab476150bdcc7968838bac4f47e91bcd159a68fefd1"
+        },
+        "outer": {
+          "dtype": "<f4",
+          "shape": [
+            204,
+            2
+          ],
+          "sha256_bytes": "06f07b0e0dfd0b61430f9e285f6383f857497d9cad856f4e43f5a435c0673f5c"
+        },
+        "obs": {
+          "dtype": "<f4",
+          "shape": [
+            240,
+            2
+          ],
+          "sha256_bytes": "fca53f3bacd454fb22ac2d12a4c80ebcc8391c66f9f8f0b34122ccc20021506e"
+        }
+      }
+    },
+    "tau01_slow_keep": {
+      "seed": 7,
+      "overrides": {
+        "repulsive_tau": 0.1,
+        "repulsive_ratchet_rate": 0.003,
+        "repulsive_deactivate_obstacles": false
+      },
+      "source_arrays": {
+        "raw": {
+          "dtype": "<f4",
+          "shape": [
+            256,
+            2
+          ],
+          "sha256_bytes": "ba24a00de1ff0d46a1e8915cc8c7f6ab3dcb0a4a08067dea3fe5400ba4560072"
+        },
+        "center": {
+          "dtype": "<f4",
+          "shape": [
+            208,
+            2
+          ],
+          "sha256_bytes": "9854bf285b51784301c03b87846bf999150d47b23cb62ac9c908eed21d4bca4e"
+        },
+        "inner": {
+          "dtype": "<f4",
+          "shape": [
+            208,
+            2
+          ],
+          "sha256_bytes": "55cf76924d86092ec8699782826102d799407a47587a21c941d1f3d096064b13"
+        },
+        "outer": {
+          "dtype": "<f4",
+          "shape": [
+            208,
+            2
+          ],
+          "sha256_bytes": "7f72846000c652beb120592cb673cb0e1695b520277ec2aaf094d98ff3de2539"
+        },
+        "obs": {
+          "dtype": "<f4",
+          "shape": [
+            240,
+            2
+          ],
+          "sha256_bytes": "fca53f3bacd454fb22ac2d12a4c80ebcc8391c66f9f8f0b34122ccc20021506e"
+        }
+      }
+    },
+    "seed23": {
+      "seed": 23,
+      "overrides": {},
+      "source_arrays": {
+        "raw": {
+          "dtype": "<f4",
+          "shape": [
+            256,
+            2
+          ],
+          "sha256_bytes": "e234c922f82607c8041b88c2e6d6786f52a419674855432e01650f35b91bf9ac"
+        },
+        "center": {
+          "dtype": "<f4",
+          "shape": [
+            210,
+            2
+          ],
+          "sha256_bytes": "3e132c30141e6bd0139c80b5f8830345f6e673e273611e1e8a17a120af82e16e"
+        },
+        "inner": {
+          "dtype": "<f4",
+          "shape": [
+            210,
+            2
+          ],
+          "sha256_bytes": "10726b924a59f3c59399d090ff63490005adb9ffba16441c3e8ee62c0f1a1abe"
+        },
+        "outer": {
+          "dtype": "<f4",
+          "shape": [
+            210,
+            2
+          ],
+          "sha256_bytes": "729e7f6c95a7eb82bce2fcaa15d0550efb6de616861952f09469bc7113d78fe5"
+        },
+        "obs": {
+          "dtype": "<f4",
+          "shape": [
+            240,
+            2
+          ],
+          "sha256_bytes": "72e9ef50925626615f5d28862297a5b2e727e4b55a3ae97a01dd70539141bd32"
+        }
+      }
+    },
+    "seed41": {
+      "seed": 41,
+      "overrides": {},
+      "source_arrays": {
+        "raw": {
+          "dtype": "<f4",
+          "shape": [
+            256,
+            2
+          ],
+          "sha256_bytes": "6d686341d9c7a4b3f08e7d5fe6d799ecf93a24f35a539449cdd6edc4eaefd146"
+        },
+        "center": {
+          "dtype": "<f4",
+          "shape": [
+            231,
+            2
+          ],
+          "sha256_bytes": "b005264755f15e6cb6fdb060e2773e17cd77bf84bdbf2e451ffc7e9c36f175f0"
+        },
+        "inner": {
+          "dtype": "<f4",
+          "shape": [
+            231,
+            2
+          ],
+          "sha256_bytes": "a6098089ede4ffdd719e6db9cbf9f7e8ce0e2236d8f244acde21db69ed4ebf6f"
+        },
+        "outer": {
+          "dtype": "<f4",
+          "shape": [
+            231,
+            2
+          ],
+          "sha256_bytes": "45d45e4c2976473e28b911abc9b8c541dc06c66294d193f81df05531430dfde0"
+        },
+        "obs": {
+          "dtype": "<f4",
+          "shape": [
+            240,
+            2
+          ],
+          "sha256_bytes": "7abc14cf335414818daf71e08a275ea2ce21eb7823e4a83113ca1d0cd0215575"
+        }
+      }
+    },
+    "scale2": {
+      "seed": 7,
+      "overrides": {
+        "scale": 2.0
+      },
+      "source_arrays": {
+        "raw": {
+          "dtype": "<f4",
+          "shape": [
+            256,
+            2
+          ],
+          "sha256_bytes": "99d7b14c003418cf8f534ef749fc5fd97f85c591ead0da03555db92086aaa008"
+        },
+        "center": {
+          "dtype": "<f4",
+          "shape": [
+            384,
+            2
+          ],
+          "sha256_bytes": "a5da47a792ac6e81bdfc3652bb582bb77e99c0add0c734a6158e22008dfd7ea4"
+        },
+        "inner": {
+          "dtype": "<f4",
+          "shape": [
+            384,
+            2
+          ],
+          "sha256_bytes": "1d8c6c1ebeb38fb9d0aaaab253cb992235b2940b6164262ef465b46368133e80"
+        },
+        "outer": {
+          "dtype": "<f4",
+          "shape": [
+            384,
+            2
+          ],
+          "sha256_bytes": "9c70e7324950d355c4cab4cfc738c49bf66a3825691c3b36b4ac4b90e1e1b201"
+        },
+        "obs": {
+          "dtype": "<f4",
+          "shape": [
+            240,
+            2
+          ],
+          "sha256_bytes": "2f6cef646fdfbc6de713e260a2701ca33557853a6414d0a50277d93c26b93a04"
+        }
+      }
+    }
+  },
+  "python": "3.12.14",
+  "numpy": "2.5.4"
+}

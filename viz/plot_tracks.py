@@ -143,7 +143,7 @@ def draw_track(ax, track: Track, e: int) -> None:
 
 def render(images=10, rows=9, cols=9, track_width_m=1.0, box_m=20.0, num_points=256,
            device="cuda", seed=0, dpi=150, cell_in=1.8,
-           output_mode="constant_spacing", spacing=0.30, n_max=384):
+           spacing=0.30, n_max=384):
     """Generate images*rows*cols tracks at metric scale and save ``images`` grid PNGs.
 
     Physical units (1 coordinate unit = 1 m): the track width is ``track_width_m`` (so
@@ -161,21 +161,22 @@ def render(images=10, rows=9, cols=9, track_width_m=1.0, box_m=20.0, num_points=
     per_image = rows * cols
     E = images * per_image
     config = TrackGenConfig(num_envs=E, num_points=num_points, half_width=half_width,
-                            scale=scale, output_mode=output_mode, spacing=spacing,
-                            N_max=n_max, device=device)
+                            scale=scale, spacing=spacing,
+                            N_max=n_max, device=device, on_invalid="keep")
     rng = make_rng(E, seed=seed, device=device)
     track = TrackGenerator(config, rng).generate(E)
 
     # Convert valid to torch for slicing/summation (wp.array has no .float()/.sum()).
     valid_t = wp.to_torch(track.valid).bool() if not isinstance(track.valid, torch.Tensor) else track.valid.bool()
-    mode_note = f"constant_spacing(spacing={spacing} m, N_max={n_max})" if output_mode == "constant_spacing" else "fixed"
+    mode_note = f"constant_spacing(spacing={spacing} m, N_max={n_max})"
     print(f"generated {E} tracks on {device}: width {track_width_m} m, box <= {box_m} m "
           f"(half_width={half_width} m, scale={scale:.2f}, {mode_note}); "
           f"valid yield {valid_t.float().mean().item():.3f}")
 
     paths = []
     for img in range(images):
-        fig, axes = plt.subplots(rows, cols, figsize=(cols * cell_in, rows * cell_in))
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * cell_in, rows * cell_in),
+                                  squeeze=False)
         base = img * per_image
         for k, ax in enumerate(axes.flat):
             draw_track(ax, track, base + k)
@@ -204,11 +205,10 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--dpi", type=int, default=150)
     ap.add_argument("--cpu", action="store_true")
-    ap.add_argument("--output_mode", default="constant_spacing", choices=["constant_spacing"])
     ap.add_argument("--spacing", type=float, default=0.30, help="constant_spacing arc step (m)")
     ap.add_argument("--n_max", type=int, default=384, help="constant_spacing max points/track")
     a = ap.parse_args()
     render(images=a.images, rows=a.rows, cols=a.cols, track_width_m=a.track_width_m,
            box_m=a.box_m, num_points=a.num_points, seed=a.seed, dpi=a.dpi,
            device="cpu" if a.cpu else "cuda",
-           output_mode=a.output_mode, spacing=a.spacing, n_max=a.n_max)
+           spacing=a.spacing, n_max=a.n_max)

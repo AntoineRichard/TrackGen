@@ -24,8 +24,50 @@ that carry the same names. This page lists:
 - how ``generator_params`` resolves (:ref:`generator-params-config`);
 - each built-in generator's Params, with defaults and rules
   (:ref:`builtin-generator-params`);
-- when the generator-specific rules are checked (:ref:`generator-params-validation`);
-- the deprecated fields (:ref:`deprecated-config-fields`).
+- when the generator-specific rules are checked (:ref:`generator-params-validation`).
+
+Find a setting by its effect
+----------------------------
+
+Start with the picture that matches your goal, then use the exact defaults/types below.
+Every distance uses the same coordinate units as your geometry.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 43 33
+
+   * - Goal
+     - Main settings
+     - Visual explanation
+   * - Change the route family and its details
+     - ``generator``, family-specific ``generator_params``
+     - :ref:`generators-overview`
+   * - Resize a road or its storage
+     - ``size``, ``scale``, ``half_width``, ``spacing``, ``num_points``, ``n_max``
+     - :ref:`course-controls`
+   * - Repair spacing, bends and close approaches
+     - XPBD iteration, correction, margin, cache, acceleration and smoothing fields
+     - :ref:`relax-knobs`, :ref:`geometry-validity`
+   * - Shape altitude
+     - ``z_profile``, altitude bounds, steps, harmonics and control points
+     - :ref:`course-elevation`
+   * - Place and frame gates
+     - source/stations, count/capacity, ordering, radius, width and alignment
+     - :doc:`/tutorials/gate-sequences`, :doc:`/gates-3d`
+   * - Change live values or their distributions
+     - ``gen.params``, ``randomize``, bounds, seeds/epochs and regeneration masks
+     - :ref:`curricula`, :ref:`generating-seeds`
+   * - Read, retain or own the buffers
+     - batch/device/layout, ``on_invalid``, ``out``, views/copies and streams
+     - :ref:`results`, :ref:`result-contracts`
+   * - Trade collision query cost against approximation
+     - backend, SDF resolution/extent, footprint/obstacle dimensions
+     - :ref:`collision-backends`
+
+Static settings shape storage or execution and require a rebuild. Dynamic fields are
+per-environment arrays; the config supplies their initial values. The generator tables
+mark this distinction, and :ref:`reference-pipeline` lists shared stage Params including
+channel-based width and station spacing.
 
 .. _config-classes:
 
@@ -37,6 +79,19 @@ Config classes
 
 .. autoclass:: track_gen.GateGenConfig
    :no-members:
+
+Both configs are frozen dataclasses. Build a replacement with ``dataclasses.replace``
+instead of assigning fields, and make dataclass subclasses frozen too.
+
+``TrackGenConfig.spacing`` retains ``None`` for automatic spacing. Read
+``cfg.resolved_spacing`` for the numeric step: it computes ``0.6 * half_width``
+on each access, or returns the explicit spacing. Replacing ``half_width`` alone
+updates automatic spacing; explicit spacing remains fixed. Config-to-spec
+conversion stores the concrete numeric step in the resample stage Params.
+
+``on_invalid`` defaults to ``"poison"`` on both configs; ``"keep"`` explicitly
+retains invalid geometry for diagnostics. Config-to-spec conversion preserves
+this policy. A missing policy in a saved ``/2`` spec defaults to ``"poison"``.
 
 .. _gate-width-config:
 
@@ -57,12 +112,11 @@ Two ``GateGenConfig`` fields size a gate, and they are easy to confuse:
   separation: the solve pushes centers to at least ``2 * gate_radius`` apart, and the
   ``spacing`` check rejects an env whose gates stay closer. It does not size the bar.
 
-In a pipeline spec each value lives in the stages that use it (``gate_frames`` and
-``validity.gate_default`` for ``gate_width``; ``gate_relax.spheres`` and
-``validity.gate_default`` for ``gate_radius``), and the planner requires them to agree
-(for ``gate_width``, the initial values: ``gate_frames.default``'s is a dynamic per-env
-field, and ``validity.gate_default``'s copy is inert: that stage checks crossings per
-env from the bars themselves). A generator that provides its own
+In a pipeline spec the bar width lives on ``gate_frames.default`` as a dynamic
+per-env field. ``validity.gate_default`` checks crossings from the bars themselves;
+it accepts no separate ``gate_width`` or ``check_crossing`` setting. Gate radius
+lives on ``gate_relax.spheres`` and ``validity.gate_default``, and the planner
+requires those radius values to agree. A generator that provides its own
 ``half_size`` refuses a non-zero ``gate_width`` (``ValueError``); its bar widths come from
 the generator (:ref:`pipeline-provides`).
 
@@ -76,8 +130,11 @@ value of the generator's per-env :term:`size`, a :term:`dynamic field`: a multip
 the plan view applied after ``scale`` (a dynamic ``float32`` field in ``[0.1, 10]``, the
 bounds ``track_gen.ops.constants.SIZE_BOUNDS``). The course gets ``size`` times larger while
 the road width, the spacing, the gate radius and bar width and the altitudes stay
-absolute. It is not the batch size (:term:`num_envs`). For ``bezier`` / ``hull`` at
-``scale = 1`` it equals ``scale``. Per-env
+absolute. Repulsive also uses ``size`` to reserve this absolute road width in
+unscaled growth coordinates; its raw layout and shape can change with size
+(:ref:`repulsive-dynamic`). Array writes use its effective clamp in ``[0.1, 10]``
+for both geometry and barrier checks; NaN remains invalid. It is not the batch
+size (:term:`num_envs`). For ``bezier`` / ``hull`` at ``scale = 1`` it equals ``scale``. Per-env
 values come from ``randomize=`` or a curriculum (:ref:`tuning-size`); the flat field is
 the only construction-time route for ``Course``.
 
@@ -108,9 +165,8 @@ the only construction-time route for ``Course``.
 - A ``size`` other than ``1.0`` that no stage can apply raises ``ValueError`` (rather
   than being ignored): ``legacy.to_pipeline_spec`` / ``to_gate_pipeline_spec`` for a
   generator whose Params declare no ``size`` (``external``: "external ingests your
-  geometry as given: scale centerline.xy in your graph"; a plugin generator; a legacy
-  ``GeneratorSpec``; a legacy ``GateGeneratorSpec``, which has no normalize stage), the
-  presets for ``external``, and the frozen legacy module functions (``generate_*_warp``).
+  geometry as given: scale centerline.xy in your graph"; a plugin generator; a
+  ``GeneratorSpec``), and the presets for ``external``.
 
 A larger :term:`course` needs more resampled points: size ``n_max`` (:term:`N_max`) and
 ``num_points`` for the largest size, and ``Course``'s checkpoint capacity for it
@@ -155,7 +211,7 @@ the pipeline with :ref:`presets.track <pipeline-presets>` (``relax=("acme.taubin
 stages have no flat field: use the preset (``width=...``, ``checks=(...)``).
 
 The names are resolved when the generator is constructed, in the order
-``relax_solver``, ``smooth_finish``, ``z_profile``, after the generator and its
+``relax_solver``, then ``z_profile``, after the generator and its
 ``generator_params``:
 
 .. list-table::
@@ -230,7 +286,7 @@ conformance kit. That is ``"ccw"`` for the five built-ins and ``"raw"`` for such
 provider, so ``GateGenConfig(generator="acme.helix")``
 needs no ``gate_ordering``. The name is resolved when ``GateGenerator`` (hence
 ``Course``) is constructed, by ``legacy.to_gate_pipeline_spec``; the generator's run
-config holds it (a legacy ``GateGeneratorSpec`` never reads ``None``), while
+config holds it, while
 ``GateGenerator.config`` reports the config as passed.
 
 As for tracks, the config only requires non-empty strings, and ``GateGenerator`` (hence
@@ -260,9 +316,7 @@ As for tracks, the config only requires non-empty strings, and ``GateGenerator``
      - That plugin's ``PluginLoadError``.
 
 ``GateGenConfig(gate_ordering="spiral")`` and ``GateGenConfig(z_profile="bogus")``
-therefore construct. A legacy ``GateGeneratorSpec`` orders its own gates:
-``gate_ordering`` must be in its ``supported_orderings`` (``None``: ``"ccw"`` when it
-supports it, else the first of them, sorted).
+therefore construct; their names are resolved when the generator is built.
 
 .. _gate-capacity-config:
 
@@ -274,7 +328,7 @@ Three numbers bound the gates of an env:
 - ``GateGenConfig.max_gates`` (``BatchSpec.max_gates``) is the ``GateSequence`` row
   stride: the slots per env, NaN past ``count[e]``.
 - The generator's **capacity** is the most anchors it emits per env (a gate generator
-  Stage's ``capacity()["gates"]``, a legacy spec's ``max_gates(config)``): 13 for
+  Stage's ``capacity()["gates"]``): 13 for
   ``bezier`` and ``hull`` at the default ``max_num_points``, ``polar_num_knots`` for
   ``polar``, ``checkpoint_count`` for ``checkpoint``, ``voronoi_control_points`` for
   ``voronoi``. A Stage also declares the fewest it emits (``capacity()["min_gates"]``).
@@ -351,11 +405,8 @@ before the stations, the default for ``"xyz"``). ``GateGenConfig`` has no such f
 its gate generators place their own gates. See :ref:`pipeline-stations-xyz`.
 
 A pipeline spec saved with ``to_dict()`` carries ``"format": "track_gen.pipeline/2"``.
-``PipelineSpec.from_dict`` still reads the ``/1`` dicts of earlier releases (gate specs
-included), migrating them (the
-``half_width`` keys of ``relax.xpbd``, ``offset.default`` and ``validity.default``
-removed, the width stage moved before ``relax``) with one ``DeprecationWarning``; see
-:ref:`pipeline-spec-format`.
+``PipelineSpec.from_dict`` accepts the current ``/2`` format and rejects other format
+identifiers. :ref:`pipeline-spec-format` describes serialization and validation.
 
 .. _config-relax-auto:
 
@@ -517,17 +568,11 @@ the ``[E]`` array of the current draws (read it to log what each env was built w
 listed after its target; a stage other than the generator's randomizers before the
 generator (the generator stays the first stage that is not a randomizer, with id
 ``"generator"``); an unknown target stage or field; a target that is itself a
-randomizer; a static, ``int32`` or unknown field; two randomizers on one field; a
-``bezier`` knob that ``style_sampling`` draws (``rad`` with a ``rad_range``,
-``handle_clamp_frac`` with a ``handle_clamp_frac_range``: ``generator.rad is drawn by
-the generator's style_sampling (rad_range): set rad_range=None to randomize it``);
-randomizers
-on ``elevation.z_min`` and ``elevation.z_max`` that can cross. A ``rad`` randomizer
+randomizer; a static, ``int32`` or unknown field; two randomizers on one field;
+randomizers on ``elevation.z_min`` and ``elevation.z_max`` that can cross. A ``rad`` randomizer
 above the clamp and an inert elevation window emit a ``UserWarning`` (the exact rules:
 :ref:`tuning-per-env`), and so do a ``generator.size`` range whose ``hi`` would
-truncate at the pipeline's ``n_max`` (:ref:`tuning-size`) and a ``generator.size``
-randomizer combined with ``style_sampling``'s ``scale_range`` (two size draws that
-multiply). A ``randomize=`` key naming a stage the preset does not have
+truncate at the pipeline's ``n_max`` (:ref:`tuning-size`). A ``randomize=`` key naming a stage the preset does not have
 raises ``ValueError``
 (``randomize: key 'gnerator.amp' names stage 'gnerator', which this pipeline does not
 have; stages: [...]``).
@@ -608,13 +653,10 @@ Rules:
 
 The built-in Params classes have no public import path: pass a mapping, or reach a class
 through ``track_gen.plugin.registry.get(kind, name).Params`` (every built-in generator is
-a ``Stage`` class; the older spelling ``.params`` still works for ``bezier``, ``hull``,
-``polar``, ``voronoi`` and ``checkpoint`` but emits a ``DeprecationWarning`` and is
-removed in 1.0, :ref:`upgrading-plugins`) and its schema through
+a ``Stage`` class) and its schema through
 ``registry.describe(kind, name).params_schema``. Their field names are the flat ones,
 prefixes included (``polar_num_knots``, ``voronoi_control_points``, ``repulsive_*``), and
-they are the built-ins' permanent parameter names through 1.0: ``generator_params``
-mappings and YAML files written with them stay valid. ``generator``, ``num_envs``, ``device``,
+they are the parameter names used by ``generator_params`` mappings and YAML files. ``generator``, ``num_envs``, ``device``,
 ``num_points``, ``scale`` and every relaxation, inflation, spacing and Z field are core
 fields: they stay flat and belong to no Params class. A Stage generator receives ``scale``
 as ``StageBuilder.scale``, and ``num_points`` is its default raw point count.
@@ -665,8 +707,7 @@ outside ``[0, 0.85]`` and ``polar_angular_jitter`` outside ``[0, 0.45]``;
 ``voronoi_radial_variation`` above ``0.85`` (no effect beyond it);
 ``voronoi_angular_jitter`` above ``pi``; ``checkpoint_angle_jitter`` outside ``[0, 1]``;
 ``checkpoint_turn_rate`` outside ``[0, pi]``; a ``bool`` for any dynamic field; ``size``
-outside ``[0.1, 10]``. :ref:`upgrading-bounds` lists the values earlier releases
-accepted, and the bound to use instead.
+outside ``[0.1, 10]``. Use the bounds in the tables below.
 
 Track generators
 ~~~~~~~~~~~~~~~~
@@ -709,22 +750,6 @@ Track generators
      - ``0.4``
      - dynamic
      - ``>= 0``
-   * - ``style_sampling``
-     - ``False``
-     - static
-     - deprecated (``DeprecationWarning`` when the generator is built)
-   * - ``rad_range``
-     - ``None``
-     - static
-     - ``(lo, hi)`` or ``None``; deprecated
-   * - ``scale_range``
-     - ``None``
-     - static
-     - ``(lo, hi)`` or ``None``; deprecated
-   * - ``handle_clamp_frac_range``
-     - ``None``
-     - static
-     - ``(lo, hi)`` or ``None``; deprecated
    * - ``size``
      - ``1.0``
      - dynamic
@@ -872,8 +897,8 @@ sampler), plus:
      - dynamic
      - in ``[0.1, 10]``
 
-``RepulsiveParams`` (``generator="repulsive"``; ``size`` is its one dynamic field, a
-multiplier of its output, :ref:`repulsive-dynamic`):
+``RepulsiveParams`` (``generator="repulsive"``; ``size`` is its one dynamic field
+and participates in width reservation, :ref:`repulsive-dynamic`):
 
 .. list-table::
    :header-rows: 1
@@ -884,11 +909,11 @@ multiplier of its output, :ref:`repulsive-dynamic`):
      - Kind
      - Rule
    * - ``repulsive_grow_mult_min``
-     - ``4.5``
+     - ``2.0``
      - static
      - ``>= 1``
    * - ``repulsive_grow_mult_max``
-     - ``5.5``
+     - ``3.0``
      - static
      - ``> 1`` and ``>= repulsive_grow_mult_min``
    * - ``repulsive_domain_frac``
@@ -922,19 +947,15 @@ multiplier of its output, :ref:`repulsive-dynamic`):
    * - ``repulsive_alpha``
      - ``3.0``
      - static
-     - ``> 0``
+     - ``> 1``
    * - ``repulsive_beta``
      - ``6.0``
      - static
-     - ``> 0``
+     - ``alpha + 2 <= beta < 2 * alpha + 1``
    * - ``repulsive_tau``
      - ``0.4``
      - static
-     -
-   * - ``repulsive_w_len``
-     - ``30.0``
-     - static
-     -
+     - ``> 0``
    * - ``repulsive_stages``
      - ``(64, 128, 256)``
      - static
@@ -956,14 +977,17 @@ multiplier of its output, :ref:`repulsive-dynamic`):
      - ``0.05``
      - static
      -
-   * - ``repulsive_deactivate_obstacles``
-     - ``True``
-     - static
-     -
    * - ``size``
      - ``1.0``
      - dynamic
      - in ``[0.1, 10]``
+
+Disc and wall forces/barriers remain active through growth and settling.
+Large targets can be infeasible with permanent full-width clearance. Constant
+width supplies a planning reservation; the mandatory check certifies the actual
+finished band after the tail (:doc:`/generators/repulsive`). Dynamic size uses
+the same effective clamp in geometry, reservation and analytic barrier metadata;
+NaN size remains invalid (:ref:`repulsive-dynamic`).
 
 ``ExternalParams`` (``generator="external"``, the ingestion generator of
 :ref:`ingesting-centerlines`; ``track_gen.stages.external.ExternalParams``). It has no
@@ -1124,9 +1148,7 @@ three control points suffice; capacity ``voronoi_control_points``; every order e
      - dynamic
      - in ``[0, 1]``
 
-The ``GateGenConfig`` fields ``num_points_per_segment``, ``rad``, ``edgy``,
-``handle_clamp_frac`` and ``hull_displacement`` belong to no gate generator: they are
-inert, and ``generator_params`` cannot set them.
+Gate generator Params contain only the knobs that affect their anchors.
 
 .. _generator-params-validation:
 
@@ -1134,12 +1156,12 @@ When the rules are checked
 --------------------------
 
 Config construction checks the core fields only (for tracks ``num_envs``,
-``half_width``, the relaxation and smoothing knobs, ``output_mode``, spacing and the Z
+``half_width``, the relaxation knobs, spacing and the Z
 fields, with ``z_profile`` only required to be a non-empty string; for gates
 ``num_envs``, the gate counts, radius, width, solver iterations, alignment and the Z
 fields, with ``z_profile`` only required to be a non-empty string and ``gate_ordering``
 ``None`` or a non-empty string)
-and the type of ``generator_params``. The ``relax_solver``, ``gate_ordering`` and
+``on_invalid`` (``"poison"`` or ``"keep"``), and the type of ``generator_params``. The ``relax_solver``, ``gate_ordering`` and
 ``z_profile`` names are resolved by ``TrackGenerator`` and ``GateGenerator`` (see
 :ref:`flat-stage-shortcuts` and :ref:`gate-stage-shortcuts`). The
 generator-specific rules in the tables above run when the generator is constructed
@@ -1164,14 +1186,12 @@ checks. So:
   rules run in the order of its ``validate()``: for ``repulsive``, the
   ``repulsive_stages[-1] == num_points`` rule runs after the ``settle_iters``,
   ``resample_every`` and ``stall_window`` rules.
-- **Private helpers do not validate.** Calling ``spec.alloc_scratch(cfg)``,
-  ``warp_pipeline._inflate_warp_alloc`` or ``_run_pipeline`` directly skips the
-  generator-specific rules.
+- **Private helpers do not validate.** Use the generator facade to apply the
+  generator-specific rules before allocating scratch.
 - **The parameter explorer reports these errors when it generates** (``generate_batch``)
   rather than when it builds the config.
 
-Earlier releases ran every generator's rules at config construction: see
-:ref:`upgrading-flat-config`. The generator-specific rules are those in the tables: the
+The generator-specific rules are those in the tables: the
 point-family rules of ``bezier`` and ``hull`` (track and gate),
 ``num_points_per_segment >= 2`` for ``bezier``, ``hull``, ``polar`` and ``voronoi``, and
 every ``voronoi_*``, ``repulsive_*`` and ``checkpoint_*`` rule. The errors of the
@@ -1202,65 +1222,3 @@ parameter checks, all at generator construction unless noted:
      - ``ValueError``
    * - A ``generator_params`` that is not ``None``, a mapping or a dataclass instance
      - ``TypeError``, at config construction
-
-.. _deprecated-config-fields:
-
-Deprecated fields
------------------
-
-``TrackGenerator`` does not use the ``TrackGenConfig`` fields below (it only rejects
-``smooth_finish=True``); only the torch oracle in the tests, a benchmark or
-``track_gen._experimental.fourier`` read them. Setting any of them to a value other than
-its default (the default of the config's own class, for a subclass) emits one
-``DeprecationWarning`` at config construction, attributed to the code that constructs the
-config and naming every such field: ``TrackGenConfig fields [...] are deprecated and
-unused by TrackGenerator (oracle/experimental only; smooth_finish=True is rejected); they
-will be removed in 1.0``. Nothing is removed in 0.x, and the fields keep their defaults.
-
-.. list-table::
-   :header-rows: 1
-   :widths: 48 52
-
-   * - Fields
-     - Read only by
-   * - ``energy_steps``, ``energy_lr``, ``energy_w_sep``, ``energy_w_len``,
-       ``energy_w_bend``, ``energy_w_anchor``
-     - The torch oracle and ``benchmarks/benchmark_relaxation.py``
-   * - ``tp_iters``, ``tp_tau``, ``tp_alpha``, ``tp_beta``
-     - The torch oracle
-   * - ``smooth_finish``, ``smooth_finish_iters``, ``smooth_finish_tau``
-     - The torch oracle. ``TrackGenerator`` still raises ``ValueError`` for
-       ``smooth_finish=True``.
-   * - ``relax_chunk_size``, ``relax_use_warp``
-     - The torch oracle
-   * - ``max_regen_iters``
-     - The torch oracle's accept-first-valid loop
-   * - ``min_angle``
-     - The corner-angle kernel, launched only by the tests
-   * - ``num_harmonics``, ``decay_p``, ``amplitude``, ``num_centerline_samples``
-     - ``track_gen._experimental.fourier``
-   * - ``output_mode``
-     - Nothing. It accepts only ``"constant_spacing"`` (any other value raises
-       ``ValueError``), so it never warns: it is deprecated in this documentation only.
-
-The inert ``GateGenConfig`` fields listed above are not deprecated.
-
-**Deprecated, and still used:** ``style_sampling`` and its ``rad_range``, ``scale_range``
-and ``handle_clamp_frac_range`` (removed in 1.0). They keep working and keep their
-bytes, but building a ``bezier`` generator with ``style_sampling=True`` emits one
-``DeprecationWarning``, attributed to your code, whose text gives the migration: ``scale_range=(a, b)`` ->
-``randomize={"generator.size": (a / scale, b / scale)}``, ``rad_range`` ->
-``"generator.rad"``, ``handle_clamp_frac_range`` -> ``"generator.handle_clamp_frac"``,
-and for ``Course`` a preset over the randomized spec built with ``style_sampling=False``,
-``Course.track(legacy.to_pipeline_spec(cfg).with_randomize({"generator.size": (a / scale,
-b / scale)}), checkpoint_spacing=...)``, or per-env sizes written with
-``course.generator.params["generator"].set("size", arr)`` before ``regenerate``
-(:ref:`bezier-style-vs-randomize`, :ref:`upgrading-style-sampling`). Constructing the
-config does not warn.
-
-**Inert pipeline params:** ``validity.gate_default``'s ``gate_width`` and
-``check_crossing`` (the stage checks bar crossings per env from the bars themselves,
-:ref:`gate-width-per-env`). They are kept so existing specs and dicts load; a
-``gate_width`` set to a value other than its default ``0`` must still equal
-``gate_frames.default``'s initial value (at ``0`` it takes no part in the planner's
-agreement check). They are removed in 1.0.

@@ -3,8 +3,7 @@
 Runs the pure-Warp track pipeline (generation -> resample -> relax -> inflate, all
 NVIDIA Warp kernels) and returns a fully-populated :class:`~track_gen.results.Track`.
 The pipeline is a :class:`track_gen.pipeline.Program` built from
-``legacy.to_pipeline_spec(config)`` (roadmap PR10a): the ordered built-in stages,
-byte-identical to the 0.2.0.dev2 composition ``warp_pipeline._run_pipeline``. The public
+``legacy.to_pipeline_spec(config)`` from the ordered built-in stages. The public
 dataclasses ``TrackGenConfig`` and ``Track`` live in the dependency-free leaf module
 ``types.py``; this facade re-exports ``TrackGenerator`` as the package's top-level entry
 point.
@@ -99,8 +98,8 @@ class TrackGenerator:
     :func:`track_gen.pipeline.presets.track` with plugin relax / width / elevation /
     validity stages); :attr:`program` is the built pipeline.
 
-    ``relax_solver`` and ``z_profile`` name any registered relax / elevation stage;
-    ``smooth_finish=True`` is not supported (construction raises ``ValueError``).
+    ``relax_solver`` and ``z_profile`` select registered relax and elevation stages.
+    Post-solve smoothing is controlled by the XPBD relaxation parameters.
     """
 
     def __init__(self, config, rng=None, *, seeds=None,
@@ -132,9 +131,10 @@ class TrackGenerator:
                 :mod:`track_gen.exec`).
             out: optional caller-owned ``Track`` the pipeline writes INTO: the
                 generator's result IS ``out`` (stable caller pointers, so a
-                caller graph built over it keeps working). Every field is checked
-                against the pipeline's layout (``generation`` / ``fail_mask`` may be
-                ``None``, and ``half_width``). A view of a larger result
+                caller graph built over it keeps working). Every array and ``layout``
+                is required and checked against the pipeline's layout; none may be
+                ``None``. Use ``Track.alloc(Layout(...))`` for complete storage.
+                A view of a larger result
                 (``out=big.view(e0, e1)``) makes a mixed batch: several generators
                 writing disjoint env ranges of one ``Track`` (overlapping a live
                 generator's result raises ``PlanError``: release a generator
@@ -173,8 +173,7 @@ class TrackGenerator:
                 the generator's device).
             ValueError: if ``config.relax_solver`` is not a registered relax stage
                 (the oracle-only ``"energy"`` / ``"tp_sobolev"`` included), if
-                ``config.z_profile`` is not a registered elevation stage, or if
-                ``config.smooth_finish`` is ``True``.
+                ``config.z_profile`` is not a registered elevation stage.
             track_gen.pipeline.PlanError: an invalid ``PipelineSpec``.
             track_gen.exec.CaptureError: if the resolved stream or Warp's current
                 stream is capturing (construction allocates and runs a real warm-up
@@ -300,7 +299,9 @@ class TrackGenerator:
         ``generator_params`` normalised to its Params instance; for a generator built
         from a ``PipelineSpec``, that spec (immutable). ``TrackGenerator(gen.config,
         rng)`` builds an identical generator, with the construction-time (initial)
-        values of any DYNAMIC parameters. A later ``params[...].set(...)`` is not
+        values of any DYNAMIC parameters. A flat config retains ``spacing=None``
+        for automatic spacing; ``resolved_spacing`` is its numeric step.
+        A later ``params[...].set(...)`` is not
         reflected here: the current values are the live arrays,
         ``gen.params[stage_id][field]``.
 
@@ -555,8 +556,7 @@ class TrackGenerator:
             track_gen.exec.NotCapturableError: recording a pipeline with HOST stages
                 (a ``capturable=False`` generator) into a capture, or running it under
                 a CPU graph capture (raised before any launch, naming them).
-            track_gen.exec.LegacyPluginStreamError: recording a legacy plugin
-                generator on a stream that is not Warp's current stream.
+
         """
         self._check_num_or_ids(num_or_ids)
         body, key = self._body(advance, mask)

@@ -1,160 +1,147 @@
-Track relaxation — setup and constraints
-========================================
+Track relaxation constraints
+============================
 
-Relaxation is a PBD/XPBD-style position projection over the constant-spacing centerline
-beads. It does not allocate dense ``[E,N,N]`` tensors, does not run an optimizer, and
-does not store a per-constraint Lagrange-multiplier history. Instead, every fixed sweep
-reads one complete position buffer, computes local position corrections, and writes a
-second buffer (see :doc:`solver`). This page covers the per-:term:`env` **setup** and the three
-**corrections** each sweep applies, then the **gate coupling** that ties the separation
-target to the downstream validity gate.
+The solver balances three corrections: push nonlocal beads apart, retain near-uniform
+edge spacing, and round corners whose radius is too small. All corrections read the
+previous sweep's state; :doc:`solver` covers execution and acceleration.
 
-Setup
------
+.. figure:: ../assets/racing/geometry-constraints.svg
+   :alt: A sampled circle highlights the index neighbourhood excluded from
+         separation. A pair diagram distinguishes road half-width, solver radius
+         enlarged by margin, and the smaller validity acceptance threshold.
 
-Setup happens once, before the sweeps, in ``band_l0_inplace`` (kernel ``_band_l0_k``):
+   Left: actual circle samples, with the auto-derived index band highlighted about
+   bead 0. The band is measured in points, not Euclidean distance. Right: a schematic
+   at ``half_width=0.1`` showing the exact default target formulas; it is not a solver
+   snapshot.
 
-- :math:`L_0[e] = \text{perimeter}(\text{center}[e]) / \text{count}[e]`, the rest edge
-  length for the constant-spacing bead chain.
-- :math:`\text{band}[e] = \text{round}(2 \cdot \text{half\_width} / L_0[e])`, clamped to
-  a minimum of 1, unless ``config.relax_band`` overrides it. The band excludes immediate
-  geometric neighbours from the separation scan, so the road does not try to push apart
-  points that are adjacent along the same local segment. The identical
-  ``_separation_band`` ``@wp.func`` is shared with the pipeline's ``_validity_k``, so the
-  band definition lives in exactly one place.
-- :math:`\text{target} = 2 \cdot \text{half\_width} \cdot (1 + \text{relax\_margin})` is
-  the non-local separation distance — a slightly inflated road diameter (default
-  ``relax_margin`` = 0.15).
-- :math:`R_{\min} = \text{half\_width} \cdot (1 + \text{relax\_margin})` is the local
-  curvature-radius target used by the bending correction. Note :math:`\text{target} =
-  2\,R_{\min}` exactly.
+Setup and targets
+------------------
 
-Per-sweep corrections
----------------------
+For each environment, the rest edge length is ``L0 = perimeter/count`` on the
+constant-spacing centerline. At constant half-width ``w``, the auto exclusion band is
+``max(1, round(2*w/L0))``. A pair participates in separation only when its circular
+index distance is greater than this band. ``relax_band`` overrides the solver's band;
+the later validity check still derives its own band from the final geometry.
 
-Each sweep applies three corrections per real bead ``i`` (kernels ``_step_kernel`` /
-``_step_cached_kernel``):
+The default margin ``m=0.15`` gives separation target ``2*w*(1+m)`` and bending target
+radius ``w*(1+m)``. For variable width, use per-point solver radii
+``r_i=w_i*(1+m)``: pair targets are ``r_i+r_j`` and local bending uses ``r_i``;
+the auto band uses the largest half-width in the environment.
 
-Non-local separation
-~~~~~~~~~~~~~~~~~~~~~~
+.. _relax-margin-comparison:
 
-For every bead ``j`` whose circular index distance from ``i`` exceeds ``band[e]``, if
-the current Euclidean distance is below ``target``, bead ``i`` receives a push along
-:math:`x_i - x_j` of magnitude :math:`0.5\,(\text{target} - \text{dist})/\text{dist}`.
-The pushes are **averaged** over all colliding candidates for that bead (Jacobi
-averaging), then scaled by ``relax_sep_relax``. This is the term that opens
-self-approaches and makes enough room for a constant-width road.
+See what margin changes
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. figure:: ../assets/racing/relaxation-margin.png
+   :alt: Seed 14 after 50 main sweeps at margins zero, 0.15 and 0.5. The middle
+         result passes; zero margin and the largest margin fail sampled thickness.
+
+   Only ``relax_margin`` changes. At half-width ``0.5``, the pair targets are
+   ``1.0``, ``1.15`` and ``1.5`` distance units. The same starting loop, 50 main
+   sweeps and disabled smoothing/polish are used throughout; equal axes expose
+   shape changes. A larger target can reshape the loop substantially and still
+   leave a failed finite-budget result. It is not a monotonic validity control.
+
+The label's minimum nonlocal bead distance is measured on the returned centerline,
+with the validity check's auto-derived index band. It describes one sampled
+diagnostic, not minimum segment clearance or the complete thickness check. Each
+panel shows the actual count, validity and failure mask; failed geometry uses
+explicit ``on_invalid="keep"``. These selected CPU examples do not estimate yield.
+The settings, source information and measurements are in the
+:download:`comparison manifest <../assets/racing/relaxation-manifest.json>`.
+
+Nonlocal separation
+~~~~~~~~~~~~~~~~~~~~
+
+For a bead pair at distance ``d < target``, each bead receives half the missing
+separation along the pair direction. Contributions are averaged over a bead's active
+candidates and scaled by ``relax_sep_relax``. Exactly coincident pairs have no reliable
+separation direction in the track solver; do not rely on it to untangle every degenerate
+input. Candidate caching can omit pairs (:doc:`solver`).
 
 Edge spacing
 ~~~~~~~~~~~~~
 
-The two incident edges ``(i-1, i)`` and ``(i, i+1)`` are corrected toward the rest
-length :math:`L_0[e]` with the local formula
-:math:`0.25\big(\tfrac{\ell_n - L_0}{\ell_n}d_n - \tfrac{\ell_p - L_0}{\ell_p}d_p\big)`,
-scaled by ``relax_spc_relax``, so the relaxed loop keeps near-constant bead spacing
-instead of stretching into a few long chords.
+The two incident edges are corrected toward ``L0``. With outgoing edge vector
+:math:`d_n=x_{i+1}-x_i`, incoming vector :math:`d_p=x_i-x_{i-1}` and lengths
+:math:`\ell_n,\ell_p`, the correction before ``relax_spc_relax`` is
 
-Bending / radius guard
-~~~~~~~~~~~~~~~~~~~~~~~~
+.. math::
 
-The local Menger curvature through ``(i-1, i, i+1)`` gives a radius estimate. If
-:math:`\text{radius} < R_{\min}`, the bead is pushed toward the midpoint of its
-neighbours by a scale of
-:math:`\text{relax\_bend\_relax}\cdot (R_{\min} - \text{radius})/R_{\min}`, **clamped to
-1** so the bead never passes the chord midpoint in a single sweep (the flip clamp). This
-removes jagged under-radius corners introduced by generation or by separation pushes.
+   \tfrac14\left(\frac{\ell_n-L_0}{\ell_n}d_n
+                  -\frac{\ell_p-L_0}{\ell_p}d_p\right).
 
-The three corrections sum into a single per-bead step
-:math:`\Delta x = \text{sr}\cdot\text{sep} + \text{pr}\cdot\text{spc} +
-\text{bscale}\cdot\text{toward}` written to the output buffer.
+Small denominator guards handle near-zero edges. Spacing works alongside the other
+corrections; it does not hold every edge exactly at its rest length.
 
-Count-aware kernels
--------------------
+Bending guard
+~~~~~~~~~~~~~~
 
-The solver is count-aware. Kernels launch over the static stride ``N_max``, but threads
-with ``i >= count[e]`` copy the NaN-padded tail through unchanged. When every
-``count[e] == N_max``, the same kernels reduce to the fixed-N parity path.
+The local three-point Menger radius estimates curvature. When it is below the target
+radius, the bead moves toward its neighbours' midpoint by a fraction
+``min(1, relax_bend_relax*(target_radius-radius)/target_radius)``. This clamp applies to
+the bending term; separation, spacing and later acceleration also affect the final move.
+A radius above the guard's threshold receives no bending correction, so mild curvature
+noise can remain for the smoothing tail.
 
 .. _relax-knobs:
 
-The ``relax_*`` knobs
----------------------
+Constraint settings
+--------------------
+
+These are all **static** ``XpbdParams`` fields: rebuild the generator to change them.
+Distance quantities use the centerline's units; correction factors and margin are
+dimensionless. Use nonnegative sweep budgets and positive target radii.
 
 .. list-table::
    :header-rows: 1
+   :widths: 28 18 54
 
-   * - Knob
-     - Effect
-   * - ``relax_sep_relax``
-     - Scale factor applied to each separation push (damping). Default 1.0.
-   * - ``relax_spc_relax``
-     - Scale factor applied to edge-spacing corrections. Default 1.0.
-   * - ``relax_bend_relax``
-     - Scale factor applied to bending/radius-guard corrections. Default 1.5
-       (over-corrects slightly to remove sharp corners quickly).
-   * - ``relax_margin``
-     - Inflation margin: ``target = 2*half_width*(1+relax_margin)``. Default 0.15. With
-       a per-point half-width (a width stage other than ``width.constant``, see
-       :ref:`pipeline-width`) the pair target is ``r_i + r_j`` and the bend floor
-       ``r_i``, with ``r_i = w_i*(1+relax_margin)``.
-   * - ``relax_band``
-     - Override the auto-computed separation exclusion band. Default ``None`` (auto).
+   * - Setting
+     - Default
+     - Effect and tradeoff
    * - ``relax_iters``
-     - Number of Jacobi sweeps. Default 50 (see :doc:`convergence`).
+     - ``50`` sweeps
+     - Fixed main-solve budget. More sweeps cost more work and can still leave invalid
+       output; compare actual fail bits on representative seeds.
+   * - ``relax_band``
+     - ``None`` (auto)
+     - Integer neighbour exclusion half-window. Larger values omit more pairs; smaller
+       values can make local neighbours fight the spacing and bending targets.
+   * - ``relax_margin``
+     - ``0.15``
+     - Fraction added to solver radii. More margin asks for more room and changes the
+       balance with spacing; it is not a validity tolerance.
+   * - ``relax_sep_relax``
+     - ``1.0``
+     - Separation correction scale. Damping slows displacement; large corrections can
+       overshoot when candidate contacts change.
+   * - ``relax_spc_relax``
+     - ``1.0``
+     - Edge-spacing correction scale. Changes the balance between uniformity and the
+       separation/bending corrections.
+   * - ``relax_bend_relax``
+     - ``1.5``
+     - Bending correction scale before the per-term clamp. Stronger correction can
+       round corners more abruptly.
 
-The separation execution knobs (``relax_sep_every``, ``relax_sep_cache_slots``,
-``relax_sep_cache_skin``) and the Chebyshev knobs (``relax_accel``, ``relax_cheby_rho``,
-``relax_cheby_gamma``, ``relax_cheby_start``) are covered in :doc:`solver`.
+Execution, cache, acceleration and smoothing settings are listed in :doc:`solver`.
 
 .. _relax-gate-coupling:
 
-Gate coupling — a load-bearing overshoot
-----------------------------------------
+Solver target versus validity threshold
+---------------------------------------
 
-The separation target is **not** the validity gate's floor; it deliberately overshoots
-it, and that overshoot is load-bearing: measurements established the relationship and,
-critically, that weakening it collapses yield.
+At constant width, the default solver pair target is ``2.30*w``. The default
+``relax_tol=0.02`` validity check accepts sampled nonlocal distances from ``1.96*w``.
+The difference leaves room for imperfect convergence and later resampling. This is a
+design margin, not a guarantee that every constraint will be met or that every segment
+is disjoint. Validity also checks local radius and other failure conditions
+(:ref:`geometry-validity`).
 
-At the library defaults (``half_width`` = ``hw``, ``relax_margin`` = 0.15,
-``relax_tol`` = 0.02):
-
-- the separation **target** is :math:`2\,\text{hw}\,(1.15) = 2.3\,\text{hw}`, and
-  :math:`\text{target} = 2\,R_{\min}` exactly;
-- the validity **gate** requires :math:`\tfrac{1}{2}\,\text{sep}_{\min} \ge (1 -
-  \text{relax\_tol})\,\text{hw}`, i.e. :math:`\text{sep}_{\min} \ge 1.96\,\text{hw}`.
-
-So the solver aims a bead pair across a legal minimum-radius hairpin at
-:math:`2.3\,\text{hw}` while the gate would accept it at :math:`1.96\,\text{hw}`.
-Because :math:`\text{target} = 2\,R_{\min}`, a pair straddling a legal
-minimum-radius hairpin sits at **zero separation slack** relative to the target — the
-constraint pushes it exactly as hard as the geometry allows. At converged equilibrium
-the solver therefore holds tight hairpins a comfortable **~4–8% above the gate line**,
-not on it.
-
-That headroom is what carries yield. Two changes that *look* like harmless efficiency
-tweaks were both measured to be dead ends because they let near-band pairs settle onto
-the gate floor instead of above it:
-
-- **Widening the exclusion band** (``relax_band`` = auto + 1) removes the near-hairpin
-  pairs from the separation scan entirely. Defaults-regime yield collapsed
-  **0.99 → 0.74**.
-- **Capping near-band pair targets at the chord-feasible distance** (only pushing pairs
-  apart to the distance a minimum-radius arc geometrically permits, rather than to the
-  full ``target``) removes exactly the overshoot. Near-band pairs then settle onto the
-  gate floor and float across it under float noise, again failing the gate.
-
-.. warning::
-
-   These are recorded as **measured dead ends**, not options. Do not widen the exclusion
-   band and do not cap near-band pair targets at the chord-feasible distance: both let
-   near-band pairs settle onto the gate floor, and yield falls off a cliff. The overshoot
-   (``target`` = ``2*R_min`` = ``2.3*hw`` at defaults) is deliberate margin — keep it.
-
-Disabling relaxation
---------------------
-
-If ``relax_enable=False``, ``_run_pipeline`` bypasses ``band_l0_inplace`` and
-``xpbd_solve_inplace`` and inflates the constant-spacing centerline directly (an
-identity pass-through, useful for ablations). Otherwise the relaxed output is
-re-uniformized by the inflation stage before frame, offset, validity, and arclength are
-computed.
+Do not reinterpret ``relax_tol`` as an extra solver sweep tolerance: it belongs to
+``ValidityParams``. Widening ``relax_band`` changes what the solver pushes, while the
+checker continues to use its auto-derived band. Inspect both the final geometry and
+fail bits when tuning either side.

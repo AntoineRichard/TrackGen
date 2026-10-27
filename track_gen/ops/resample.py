@@ -9,7 +9,7 @@ Layout: env ``e`` owns ``[e*stride, (e+1)*stride)`` of every flat array. Cumulat
 arc length is accumulated in float64 and stored as float32. Output slots past an
 env's point count are written ``(nan, nan)``.
 
-Carrying channels (roadmap PR13a): :func:`resample_constant_spacing` and
+Carrying channels: :func:`resample_constant_spacing` and
 :func:`resample_uniform` can also write :class:`ResampleTables` (``tables=``): for every
 output point, the two source points it lies between and its fraction along that
 segment. :func:`resample_channels` then carries any per-point channel of the source

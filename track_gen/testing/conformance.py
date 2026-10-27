@@ -406,7 +406,7 @@ _GATE_POINT = {"position": wp.vec3f, "tangent": wp.vec3f, "forward": wp.vec3f,
                "right": wp.vec3f}
 _GATE_ENV = {"valid": wp.int32, "count": wp.int32, "generation": wp.int32,
              "fail_mask": wp.int32}
-_OPTIONAL = {"truncated", "generation", "fail_mask", "half_width"}
+_OPTIONAL = set()
 # The prefix of a raw attribute buffer in a snapshot (``"raw.attr:raw.acme.grip"``).
 _RAW_ATTR = "raw.attr:"
 
@@ -541,7 +541,7 @@ def _seeded(spec) -> bool:
 
 
 def _layout_problems(gen) -> "list[str]":
-    """``output.shape``'s layout rules (roadmap PR13b): the result's ``layout`` is the
+    """``output.shape``'s layout rules: the result's ``layout`` is the
     Program's (canonical device) and the result validates."""
     from .._src.types import _fmt_layout, _layout_key  # noqa: PLC0415
 
@@ -780,7 +780,6 @@ class _DeviceRun:
         self.results: list = []
         self.snap_b: "_Snapshot | None" = None
         self.capturable = bool(info.capturable)
-        self.accepts_ctx = bool(info.accepts_ctx)
         # The unit's bounded loops with active= (seen during its first generation).
         self.loops: list = []
         self.gen_spec = None            # the bound generator spec (seeded=, ...)
@@ -798,6 +797,7 @@ class _DeviceRun:
         if self.stage is not None:
             return self.stage.facade()(self.stage.spec(E, dev), rng, out=out)
         kw = dict(self.overrides)
+        kw.setdefault("on_invalid", "keep")
         if self.params is not None:
             kw["generator_params"] = self.params
         if self.kind == "generator":
@@ -894,10 +894,7 @@ class _DeviceRun:
         self.gen_spec = gen.program._binding.spec
         # The Program decides: a pipeline with a HOST stage is not caller-capturable.
         self.capturable = bool(gen.program.capturable)
-        if self.stage is not None:
-            self.accepts_ctx = True
-        self.add("construct", True, details={"capturable": self.capturable,
-                                             "accepts_ctx": self.accepts_ctx})
+        self.add("construct", True, details={"capturable": self.capturable})
         out_names = [n for n in names if n.startswith("output.") and n != "output.view"]
         self.guarded(out_names, lambda: self.output_checks(snap, gen))
         self.guarded(["output.view"], lambda: [self.output_view(gen)])
@@ -1838,10 +1835,6 @@ class _DeviceRun:
         category("hot_path.allocation", "allocation", "allocation(s)")
         category("hot_path.stream", "stream", "call(s) off the call's stream")
         name, passed, msg, det = out[-1]
-        if not passed and not self.accepts_ctx:
-            out[-1] = (name, passed, msg + " A legacy spec (accepts_ctx=False) runs its own "
-                       "launches on Warp's current stream: set accepts_ctx=True and emit "
-                       "through ctx.", det)
         category("hot_path.capture", "capture", "nested capture / graph launch call(s)")
 
         allocated = guard.allocated()
@@ -2093,7 +2086,8 @@ def check_generator(name: str, params=None, *, devices=None, num_envs: int = 8,
             (the "different seeds" batch) with ``seeds[1] + e``. They must not overlap.
         config: extra ``TrackGenConfig`` fields (e.g. ``{"num_points": 64}`` to keep a
             slow generator fast); ``generator``, ``device`` and ``num_envs`` are set by
-            the kit.
+            the kit. Diagnostic runs default to ``on_invalid="keep"`` to inspect raw
+            invalid geometry; an explicit ``on_invalid`` value is respected.
         capture_modes: the modes of ``capture.caller`` (see
             :func:`~track_gen.testing.assert_caller_capturable`).
         skip: check names (or a prefix such as ``"hot_path"``) to report as skipped.
@@ -2122,7 +2116,7 @@ def check_gate_generator(name: str, params=None, *, devices=None, num_envs: int 
                          capture_modes: Iterable[str] = CAPTURE_MODES,
                          skip: Iterable[str] = (), modules: Iterable[str] = ()) -> Report:
     """As :func:`check_generator`, for the registered gate generator ``name`` (a
-    ``gate_generator`` Stage or a legacy ``GateGeneratorSpec``; :data:`CHECKS`
+    ``gate_generator`` Stage; :data:`CHECKS`
     ``["gate_generator"]``). ``config`` holds extra ``GateGenConfig`` fields; without a
     ``gate_ordering`` the kit uses the generator's ``preferred["order"]`` when it
     supports it, else ``"ccw"`` when supported, else its first supported ordering."""
@@ -2194,6 +2188,7 @@ class _StageUnderTest:
         from ..pipeline import presets  # noqa: PLC0415
 
         kw = dict(self.upstream)
+        kw.setdefault("on_invalid", "keep")
         first = "gate_default" if self.gate else "default"
         if self.rewrite:
             spec = presets.track(num_envs=E, device=device, **kw)
@@ -2278,7 +2273,8 @@ def check_stage(kind: str, name: str, params=None, *, upstream: "Mapping | None"
             ``generator_params``, ``num_points``, ``n_max``, ``half_width``, the other
             kinds' slots, ``checks`` (the checks BEFORE a validity check under test),
             ``on_invalid``, ``source``). ``num_envs``, ``device`` and the slot under
-            test are set by the kit.
+            test are set by the kit. Diagnostic runs default to ``on_invalid="keep"``;
+            an explicit ``on_invalid`` value is respected.
         pipeline: ``None`` (default: the gate pipeline for an ``order`` / ``stations``
             stage and a validity stage that reads gate channels, else the track
             pipeline), ``"track"`` or ``"gates"``. ``"gates"`` admits ``elevation``,

@@ -1,8 +1,11 @@
 """The Program is the PR9 composition, byte for byte, at every stage boundary (PR10a).
 
 ``TrackGenerator`` runs a :class:`track_gen.pipeline.Program` of the default stage list.
-The PR9 composition (``warp_pipeline._run_pipeline`` -> ``inflate_warp``) is kept
-unchanged as the reference: each case builds a generator, generates (plainly, then with
+The PR9 composition (``warp_pipeline._run_pipeline`` -> ``_inflate_warp``) is kept
+unchanged as the reference for the generators retaining that algorithm. Repulsive
+intentionally changed its solver and final road checks; its geometry, bounded-loop
+and capture regressions live in the Repulsive-specific tests. Each case here builds
+a generator, generates (plainly, then with
 a masked advance), runs ``_run_pipeline`` on fresh PR9 buffers from the same effective
 seeds, and compares every channel version the Program wrote with the PR9 buffer it
 reproduces (raw bytes: NaN padding compares too). The launch sequences (op, kernel,
@@ -33,16 +36,13 @@ from tests._plugin_toys import (TOY_CIRCLE, register_stage_toys,
                                 toy_circle_alloc_scratch, toy_circle_generate)
 from tests._pr13c_delta import ELEVATION_LATCHES, pr13c_sequence
 from tests._pr13d_delta import LATCH_ALL
+from tests.tools._golden_config import keep_config
 from track_gen import PerEnvSeededRNG, TrackGenConfig, TrackGenerator
-from track_gen._src import warp_pipeline
+from tests._reference_generators import warp_pipeline
 from track_gen._src.generator_binding import _StageGenerator, bind_generator
 from track_gen.exec import LaunchContext
 from track_gen.plugin import GeneratorSpec, registry
 from track_gen.testing.trace import trace_launches
-
-# Roadmap PR13d: bezier's style_sampling (the bezier_style case) is deprecated.
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
 
 DEV = "cpu"
 SEEDS = [0, 1, 7, 99991, 2147483647, 1000003]
@@ -61,14 +61,10 @@ CASES = {
     "polar": dict(generator="polar"),
     "voronoi": dict(generator="voronoi"),
     "checkpoint": dict(generator="checkpoint"),
-    "repulsive": dict(generator="repulsive", num_points=64, repulsive_stages=(16, 32, 64),
-                      half_width=0.1, _E=2),
     "bezier_fallback": dict(generator="bezier", rad=0.49, _E=32),
     "voronoi_fallback": dict(generator="voronoi", voronoi_radial_variation=0.85,
                              voronoi_angular_jitter=0.6, voronoi_num_sites=64, _E=32),
     "hull_fallback": dict(generator="hull", hull_displacement=0.9, _E=32),
-    "bezier_style": dict(generator="bezier", style_sampling=True, rad_range=(0.1, 0.35),
-                         scale_range=(0.8, 1.2), handle_clamp_frac_range=(0.3, 0.9)),
     "no_relax": dict(generator="bezier", relax_enable=False),
     "flat_z_base": dict(generator="bezier", z_base=0.25),
     "z_uniform": dict(generator="bezier", **_ZU),
@@ -81,26 +77,14 @@ CASES = {
     "relax_band": dict(generator="bezier", relax_band=2),
     "truncation": dict(generator="bezier", N_max=64, spacing=0.06),
     "toy.circle": dict(generator="toy.circle"),
-    "toy.circle_legacy": dict(generator="toy.circle_legacy"),
     "toy.wobble": dict(generator="toy.wobble"),
     "toy.wobble_input": dict(generator="toy.wobble_input"),
     "toy.lobed": dict(generator="toy.lobed"),
 }
 
 
-def _legacy_circle_generate(seeds_wp, config, out_centerline, out_valid_wp, scratch):
-    toy_circle_generate(seeds_wp, config, out_centerline, out_valid_wp, scratch)
-
-
-# A legacy-ABI spec (accepts_ctx=False): run inside ctx.scope() by both compositions.
-TOY_CIRCLE_LEGACY = GeneratorSpec(name="toy.circle_legacy",
-                                  alloc_scratch=toy_circle_alloc_scratch,
-                                  generate=_legacy_circle_generate, accepts_ctx=False)
-
-
 def _register_toys():
     registry.add(TOY_CIRCLE)
-    registry.add(TOY_CIRCLE_LEGACY)
     register_stage_toys(registry)
 
 
@@ -113,7 +97,7 @@ def _make(case):
         _register_toys()
     rng = PerEnvSeededRNG(seeds=wp.array(seeds, dtype=wp.int32, device=DEV), num_envs=E,
                           device=DEV)
-    return TrackGenerator(TrackGenConfig(device=DEV, num_envs=E, **kw), rng)
+    return TrackGenerator(keep_config(TrackGenConfig, device=DEV, num_envs=E, **kw), rng)
 
 
 def _bytes(arr) -> bytes:
@@ -214,7 +198,8 @@ def test_every_stage_boundary_matches_the_pr9_composition(case, monkeypatch):
 
 
 def _topology(trace) -> list:
-    return [(r.op, r.kernel, r.dim, r.scalars) for r in trace]
+    return [(r.op, r.kernel.replace("tests._reference_generators.", "track_gen._src."),
+             r.dim, r.scalars) for r in trace]
 
 
 def _pr13c_elevation_delta(case: str, rows: list, n_gen_latches: int, E: int) -> list:
@@ -258,11 +243,11 @@ def test_default_bezier_launch_count():
     E). Roadmap PR13c re-pin: 152 -> 154 (``rad`` / ``handle_clamp_frac``); roadmap
     PR13d re-pin: 154 -> 156 (``min_num_points`` int32 first, ``size`` last: the block
     ``[i32, f32, f32, f32]``; the corner count is the array-reading twin)."""
-    gen = TrackGenerator(TrackGenConfig(device=DEV, num_envs=2),
+    gen = TrackGenerator(keep_config(TrackGenConfig, device=DEV, num_envs=2),
                          PerEnvSeededRNG(seeds=3, num_envs=2, device=DEV))
     with trace_launches() as t:
         gen.generate()
     assert len(t) == 156
     assert t[0].kernel.endswith("_effective_seed_k") and t[-1].op == "copy"
     assert [r.kernel for r in t[1:5]] == [LATCH_ALL["i32"]] + [LATCH_ALL["f32"]] * 3
-    assert t[5].kernel.endswith("_sample_counts_dyn_k")
+    assert t[5].kernel.endswith("_sample_counts_dyn_h_k")

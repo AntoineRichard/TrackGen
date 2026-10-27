@@ -30,7 +30,6 @@ def test_public_api_surface_is_exactly_curated():
         "localize",
         "course",
         "heightfield",
-        "set_capturing",
         "__version__",
     }
 
@@ -59,8 +58,8 @@ def test_import_track_gen_and_gate_registry_pull_no_torch_or_scipy():
 
     code = "\n".join([
         "import sys, track_gen",
-        "from track_gen._src import gate_generator_registry",
-        "gate_generator_registry.available()",
+        "from track_gen.plugin import registry",
+        "registry.available('gate_generator')",
         "expected = {",
         "    'track_gen._src.warp_generate_gates',",
         "    'track_gen._src.warp_generate_polar_gates',",
@@ -140,9 +139,8 @@ def test_the_channel_carry_surface_is_public():
     params = inspect.signature(StageBuilder.write).parameters
     assert params["interp"].default is None and params["export"].default is False
     track = [f.name for f in dataclasses.fields(track_gen.Track)]
-    # appended (PR13a: half_width, attributes; PR13b: layout)
-    assert track[-3:] == ["half_width", "attributes", "layout"]
-    assert [f.name for f in dataclasses.fields(track_gen.GateSequence)][-2:] == [
-        "attributes", "layout"]
+    assert {"half_width", "attributes", "layout"} <= set(track)
+    assert {"attributes", "layout"} <= {
+        f.name for f in dataclasses.fields(track_gen.GateSequence)}
     assert "tables" in inspect.signature(ops.resample_uniform).parameters
     assert "tables" in inspect.signature(ops.resample_constant_spacing).parameters

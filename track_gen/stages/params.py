@@ -2,26 +2,24 @@
 
 Like the built-in generators' Params, every class
 keeps the FLAT ``TrackGenConfig`` field names and ``from_legacy(config)`` copies the flat
-values (no casts), except ``WidthFromChannelParams`` (dynamic ``scale`` / ``lo`` /
-``hi``) and ``StationsParams`` (``gates``, ``spacing_metric``), which have no
+values (no casts), except that ``ConstantSpacingParams`` resolves the config's
+optional spacing to its numeric step. ``WidthFromChannelParams`` (dynamic ``scale`` /
+``lo`` / ``hi``) and ``StationsParams`` (``gates``, ``spacing_metric``) have no
 ``TrackGenConfig`` counterpart. Every field is static except ``width.from_channel``'s and
 the elevation profiles' altitude window and shape knobs (``z_min`` / ``z_max`` of
 ``elevation.uniform`` / ``random_walk`` / ``noise``, ``z_max_step`` and
 ``z_noise_amplitude``; per-env arrays, latched each generation, read by the
 ``warp_zprofile`` twins), ``normalize.extent``'s ``size`` and ``gate_frames.default``'s
-``gate_width`` (the course size of the polar / voronoi / checkpoint gate generators and
-the per-env bar width; ``validity.gate_default``'s ``gate_width`` / ``check_crossing``
-are inert: it checks the bars of every env per env).
-The stage hands its Params instance (or, for elevation, a namespace built from its
-static view) to the legacy wrappers as their ``config``
-argument, so the same values reach the same ``float()`` / ``int()`` conversions and the
-launches are unchanged.
+``gate_width`` (the course size of the polar / voronoi / checkpoint gate generators
+and the per-env bar width).
+Stages bind their Params into preallocated arrays or construction-time scalars.
+Dynamic fields are read by pointer when the stage enqueues its work.
 
 ``validate()`` re-runs the ``TrackGenConfig.__post_init__`` rules of the class's own
 fields with the same messages: a spec made from a ``TrackGenConfig`` always passes; the
-rules exist for hand-built specs. The stage Params map the fields a config HAS
-(``from_legacy`` of a ``GateGenConfig`` leaves ``z_control_points`` and
-``check_crossing`` at their class defaults).
+rules also apply to hand-built specs. ``from_legacy`` maps only fields present on
+its input config; other fields keep their stage defaults. In particular, native gate
+elevation uses the gates as knots rather than a track's ``z_control_points`` setting.
 """
 from __future__ import annotations
 
@@ -87,6 +85,11 @@ class ConstantSpacingParams(_FlatParams):
 
     spacing: float = static(0.6 * 0.1, doc="Constant arc-length step between points "
                                            "(> 0).")
+
+    @classmethod
+    def from_legacy(cls, cfg):
+        """Resolve automatic config spacing to the stage's concrete arc-length step."""
+        return cls(spacing=cfg.resolved_spacing)
 
     def validate(self, layout) -> None:
         if float(self.spacing) <= 0.0:
@@ -232,7 +235,7 @@ def _warn_inert(p, ranges, knob: str, what: str) -> None:
 
 
 def _check_z_draws(params, ranges) -> None:
-    """Randomizers on ``z_min`` / ``z_max`` must not cross (roadmap PR13c): a run-time
+    """Randomizers on ``z_min`` / ``z_max`` must not cross: a run-time
     ``z_min > z_max`` gives draws in ``[z_max, z_min]`` (uniform) or ``z = z_max``
     (random_walk / noise: the clamp returns ``hi``). ``ranges``: ``field -> (lo, hi)``
     of the stage's drawn fields (empty when none)."""
@@ -419,41 +422,21 @@ class GateFramesPosedParams(_StageFlatParams):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class GateValidityParams(_StageFlatParams):
-    """``validity.gate_default``: the fused per-env gate validity check. The bar-crossing
-    check runs per env on every env with a non-zero bar, so ``gate_width`` and
-    ``check_crossing`` are INERT (kept so specs and dicts load; a ``gate_width`` other
-    than its default 0 must still equal ``gate_frames``' initial width; removed in
-    1.0)."""
+    """Fused per-env gate validity, including every gate with a non-zero bar.
 
-    #: Inert: left out of the planner's agreement check at the default.
-    _inert_fields = ("gate_width", "check_crossing")
-    _field_hints = {
-        "gate_width": "inert since 0.2.0.dev5: the per-env bar width is "
-                      "gate_frames.gate_width",
-        "check_crossing": "inert since 0.2.0.dev5: the bars of every env that has one "
-                          "are checked",
-    }
-
+    Physical bar width comes from the per-env gate frames.
+    """
     min_gates: int = static(4, lo=2, doc="Fewest real gates of a valid env (>= 2).")
     gate_radius: float = static(0.025, lo=0.0, doc="Gate sphere radius: real gates "
                                                    "closer than 2 * gate_radius fail.")
-    gate_width: float = static(0.0, lo=0.0, doc="Inert since 0.2.0.dev5 (the crossing "
-                                                "check runs per env on non-zero bars); "
-                                                "if set, equals gate_frames' initial "
-                                                "width.")
     z_valid_grade: float = static(0.0, lo=0.0, doc="Maximum |dz|/ds chord grade (0: "
                                                    "off).")
-    check_crossing: str = static("width", choices=("width", "always"),
-                                 doc="Inert since 0.2.0.dev5: both values check the bars "
-                                     "of every env that has one (removed in PR16).")
 
     def validate(self, layout) -> None:
         if int(self.min_gates) < 2:
             raise ValueError(f"min_gates must be >= 2, got {self.min_gates!r}")
         if float(self.gate_radius) < 0.0:
             raise ValueError(f"gate_radius must be >= 0, got {self.gate_radius!r}")
-        if float(self.gate_width) < 0.0:
-            raise ValueError(f"gate_width must be >= 0, got {self.gate_width!r}")
         if float(self.z_valid_grade) < 0.0:
             raise ValueError(f"z_valid_grade must be >= 0, got {self.z_valid_grade!r}")
 

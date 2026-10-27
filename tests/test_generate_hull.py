@@ -9,6 +9,7 @@ determinism within a device, the hot path) is checked for every generator by the
 conformance kit, in tests/test_conformance.py.
 """
 from __future__ import annotations
+from tests._reference_generators import generate_raw
 
 import pytest
 import torch
@@ -55,14 +56,14 @@ def test_hull_generation_polygon_fallback_removes_self_crossers(dev):
     E = 256
     cfg = TrackGenConfig(generator="hull", num_envs=E, num_points=128, device=dev)
     # The frozen legacy entry points (the registered "hull" is a Stage since PR13c).
-    scratch = warp_generate_hull.hull_alloc_scratch(cfg)
+    scratch = warp_generate_hull._alloc_hull_scratch(cfg)
 
     seeds_t = torch.arange(E, dtype=torch.int32, device=dev)
     seeds_wp = wp.from_torch(seeds_t, dtype=wp.int32)
     out = wp.empty(E * int(cfg.num_points), dtype=wp.vec2f, device=dev)
     valid_wp = wp.empty(E, dtype=wp.int32, device=dev)
 
-    warp_generate_hull.generate_hull_warp(seeds_wp, cfg, out, valid_wp, scratch)
+    generate_raw("hull", seeds_wp, cfg, out, valid_wp, scratch)
     if "cuda" in dev:
         wp.synchronize()
 

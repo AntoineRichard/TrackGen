@@ -34,8 +34,9 @@ over fixed-shape arrays, so a different batch size needs a new generator.
 
 Every buffer (scratch, seeds, epochs, the result ``Track``) is allocated once, at
 construction; shapes and device addresses stay stable for the generator's lifetime. The
-generator keeps a private copy of its config: changing the config object afterwards has
-no effect. Change a :term:`dynamic field` through ``gen.params[...]`` instead
+generator keeps a private frozen config snapshot. Config field assignments raise;
+use ``dataclasses.replace`` and build a new generator for static changes. Change a
+:term:`dynamic field` through ``gen.params[...]``
 (:ref:`curricula`), or build a new generator for a static one.
 
 Construction and the generator's own graph
@@ -98,15 +99,17 @@ The generation can be recorded because it is **entirely static**:
   launch dimensions through :term:`N_max`;
 - nothing host-synchronizes or reads device data back; ordering comes from the stream.
 
-``repulsive`` stands out by its cost, not by its recording: its growth loop runs a fixed
-iteration bound, two orders of magnitude more work than the other generators (its own
-cost table is in :doc:`/generators/repulsive`). Each env stops changing once it
-converges, independently of the rest of the batch, so each env still depends only on its
-own seed. Its own graph on ``cuda`` skips, on device, the iterations left once every env
-has converged (CUDA 12.4+ :term:`conditional nodes <conditional node>`), while a plain
-``torch.cuda.graph`` records the full bound and an eager call on ``cuda`` runs it (an
-eager ``cpu`` call stops at the first check that finds every env converged). Its
-construction pays one full run; see :doc:`/generators/repulsive`.
+``repulsive`` runs a fixed iteration bound through a capturable bounded loop.
+Each env can freeze after reaching its actual target with small movement,
+projected stationarity and area change, independently of the rest of the batch.
+A feasible target-reaching curve can also finish valid at the normal budget;
+validity does not require every env to converge. Its own graph on ``cuda`` skips
+remaining windows once every env is frozen (supported CUDA 12.4+
+:term:`conditional nodes <conditional node>`). A plain ``torch.cuda.graph`` records
+the full bound, eager ``cuda`` runs it without host polling, and eager ``cpu``
+can stop at a window check that finds every env frozen. Construction runs a full
+warm-up pass. The repaired solver's runtime needs measurement for your settings;
+see :doc:`/generators/repulsive`.
 
 Buffer reuse and ``clone()``
 ----------------------------
@@ -452,8 +455,7 @@ capturing. Do not combine it with a foreign capture on another stream (e.g. a de
 Rules for recording into your graph
 -----------------------------------
 
-These rules hold for every generator, course and utility (:ref:`upgrading-capture` lists
-what changed from 0.1).
+These rules hold for every generator, course and utility.
 
 - **Build outside, record inside.** Generators, courses and utilities are constructed
   outside any capture (construction allocates and runs a real pass; inside a capture it
@@ -480,9 +482,7 @@ what changed from 0.1).
   registered with ``capturable=False``) raises ``NotCapturableError`` before launching
   anything; build its pipeline with a :term:`PipelineSpec` with
   ``require_caller_capturable=True``
-  to have that refused at construction instead. A generator plugin written for the 0.1
-  plugin interface (no ``accepts_ctx=True``) can only be recorded on Warp's current
-  stream (:ref:`plugin-abis`).
+  to have that refused at construction instead.
 
 .. _capture-requirements:
 
@@ -552,16 +552,6 @@ stream, so independent generators on different threads run concurrently. Each ge
 (and each course) is single-writer, though: do not run the same instance from two
 threads, or on two streams, at once; use one instance per concurrent generator.
 
-The exception is a generator built on a plugin written for the 0.1 plugin interface (no
-``accepts_ctx=True``). That plugin launches on Warp's current stream, which every thread
-shares, so every eager run of it holds a process-wide lock, and a recordable one also
-holds it while it records its own graph, which records that shared stream. Until every
-such generator has recorded its own graph, calls of other generators that resolve to
-Warp's current stream (the default) take the lock too, so they cannot mistake that
-recording for their caller's capture. Calls on any other stream (``stream=``, a
-constructor ``stream=``, a scope) stay lock-free. A non-recordable plugin of that kind
-holds the lock only while its host step runs.
-
 Two caveats apply to multi-threaded programs:
 
 - While a generator records its own graph (once, on its first ``generate()`` on
@@ -618,12 +608,6 @@ from ``track_gen.exec.CaptureError``, a ``RuntimeError``.
      - call it outside the capture (it runs eagerly), or use a recordable generator;
        ``PipelineSpec(require_caller_capturable=True)`` refuses such a pipeline at
        construction
-   * - ``LegacyPluginStreamError``
-     - a plugin written for the 0.1 plugin interface (no ``accepts_ctx=True``) was
-       recorded on a stream other than Warp's current one (a side stream, a plain
-       ``torch.cuda.graph``)
-     - capture Warp's current stream (a plain ``wp.ScopedCapture(device)``), or port the
-       plugin (:ref:`plugin-abis`)
    * - ``RebindAfterCaptureWarning``
      - ``bind`` replaced an array that a recorded ``step()`` / ``query()`` /
        ``update()`` reads: the graph still reads the old one

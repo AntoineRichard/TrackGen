@@ -1,0 +1,6 @@
+/* Keep the pixel identity compact; Furo owns theme selection and max-width. */
+.sidebar-brand .sidebar-logo {
+  width: 224px;
+  height: auto;
+  image-rendering: pixelated;
+}

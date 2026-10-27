@@ -84,11 +84,20 @@ LEAKY = _bounded_toys.LEAKY                # "toy.leaky_smooth"
 HOST_CIRCLE = _bounded_toys.HOST_CIRCLE    # "toy.host_circle"
 HOST_RING = _bounded_toys.HOST_RING        # "toy.host_ring"
 
-# The small repulsive config of tests/test_generate_repulsive.py / test_conformance.py.
-# Its growth schedule equals the default one (the stage starts depend only on growth and
-# subdivision): 269 iterations, first check 128, 9 windows of 16.
+# The small workload preserves the defaults' growth schedule at three lower
+# resolutions: 189 iterations, first check 96, six windows of 16. Ordinary feasible
+# outputs may use the full budget; early convergence is a separate promise.
 _SMALL = dict(num_points=64, repulsive_stages=(16, 32, 64), N_max=384, half_width=0.1)
-_REPULSIVE_SCHEDULE = {"n_iters": 269, "first_check": 128, "check_every": 16, "windows": 9}
+_REPULSIVE_SCHEDULE = {"n_iters": 189, "first_check": 96, "check_every": 16, "windows": 6}
+# A supported near-circle problem for genuine absorbing-freeze checks (the same
+# workload as test_conformance.py). Fixed seeds must skip windows; no seed search or
+# optional skip may hide a failure to exercise the different lowerings.
+_CONVERGING_REPULSIVE = dict(**_SMALL, repulsive_grow_mult_min=1.1,
+                            repulsive_grow_mult_max=1.1,
+                            repulsive_obstacle_count_min=1,
+                            repulsive_obstacle_count_max=1,
+                            repulsive_stall_area_tol=0.5)
+_CONVERGING_SCHEDULE = {"n_iters": 53, "first_check": 16, "check_every": 16, "windows": 3}
 
 _ZERO = np.zeros(E, np.int32)
 # Mixed mask: neighbours differ, so a write that leaks across an env boundary shows up.
@@ -297,18 +306,20 @@ def _marker():
 
 
 # ---------------------------------------------------------------------------------------
-# BOUNDED units: repulsive (small and default config) and the converging toy
+# BOUNDED units: ordinary Repulsive workloads and explicit converging workloads
 # ---------------------------------------------------------------------------------------
 
 class _Unit:
     """A BOUNDED stage under test inside a TrackGenerator: ``make(seeds)`` builds a
     fresh (prepared) generator and its rng; ``stage_id`` is the slot running the loop."""
 
-    def __init__(self, label: str, make, stage_id: str, schedule: dict) -> None:
+    def __init__(self, label: str, make, stage_id: str, schedule: dict,
+                 *, must_skip: bool = False) -> None:
         self.label = label
         self.make = make
         self.stage_id = stage_id
         self.schedule = schedule
+        self.must_skip = must_skip
 
     def check_schedule(self, rec, label: str) -> None:
         got = {"n_iters": rec.n_iters, "first_check": rec.first_check,
@@ -334,19 +345,17 @@ def _unit(name: str) -> _Unit:
     if name == "repulsive-default":
         return _Unit(name, lambda seeds: _track("repulsive", seeds), "generator",
                      _REPULSIVE_SCHEDULE)
+    if name == "repulsive-converging":
+        return _Unit(name, lambda seeds: _track("repulsive", seeds,
+                                               **_CONVERGING_REPULSIVE),
+                     "generator", _CONVERGING_SCHEDULE, must_skip=True)
     assert name in (CONVERGING, LEAKY), name
     spec = _converging_spec(name)
     return _Unit(name, lambda seeds: _track_spec(_converging_spec(name), seeds),
-                 _stage_id(spec, "relax", name), _toy_schedule(name))
+                 _stage_id(spec, "relax", name), _toy_schedule(name), must_skip=True)
 
 
-_UNITS = ("repulsive-small", "repulsive-default", CONVERGING)
-
-# Candidate base seeds for a batch that converges early (lowering (a) skips at least one
-# window). Repulsive's freeze progression is fp32 behaviour, device-dependent: discovered,
-# not hard-coded (11 is the kit's batch A; on CPU it skips the last window).
-_BASE_CANDIDATES = (11, 101, 1009, 4099, 7919, 30011)
-_BASES: dict = {}
+_UNITS = ("repulsive-small", "repulsive-default", "repulsive-converging", CONVERGING)
 
 
 def _poll(gen, unit: _Unit, label: str):
@@ -361,22 +370,14 @@ def _poll(gen, unit: _Unit, label: str):
     return _snapshot(out), rec, len(syncs)
 
 
-def _early_base(unit: _Unit) -> int:
-    """A base seed whose batch makes lowering (a) skip at least one window (so (a) and
-    (b) differ from (c) in what EXECUTES, and the equality is not vacuous)."""
-    if unit.label in _BASES:
-        return _BASES[unit.label]
-    seen = []
-    for base in _BASE_CANDIDATES:
-        gen, _ = unit.make(base)
-        _, rec, _ = _poll(gen, unit, f"{unit.label}: base {base}")
-        seen.append((base, rec.ran, rec.windows))
-        if rec.ran < rec.windows:
-            _BASES[unit.label] = base
-            return base
-    pytest.skip(f"{unit.label}: no candidate batch converges before the iteration bound "
-                f"on this device (base, windows run, windows): {seen}; the early exit "
-                f"cannot be exercised")
+def _assert_early_exit(unit: _Unit, base: int) -> None:
+    """Converging workloads must exercise a real skipped window on fixed seeds."""
+    gen, _ = unit.make(base)
+    _, rec, _ = _poll(gen, unit, f"{unit.label}: base {base}")
+    unit.check_schedule(rec, unit.label)
+    assert rec.ran < rec.windows, f"{unit.label}: (a) skipped no window (vacuous)"
+    if unit.label == "repulsive-converging":
+        assert np.all(_frozen(gen)), "the converging Repulsive batch did not freeze"
 
 
 # ---------------------------------------------------------------------------------------
@@ -387,7 +388,8 @@ def _early_base(unit: _Unit) -> int:
 def test_cuda_eager_is_the_unrolled_lowering_and_never_host_syncs(unit_name):
     """CUDA eager calls (``enqueue()``) keep the "never host-syncs" contract: every window
     runs (lowering (c), probe ``ran == windows``) and no stream is synchronized. The loop
-    has the documented schedule (repulsive: first check 128, 9 windows of 16)."""
+    has its pinned schedule, including the real defaults and the separate converging
+    Repulsive workload."""
     unit = _unit(unit_name)
     gen, _ = unit.make(11)
     _poison_all(gen.program.result)
@@ -468,27 +470,35 @@ def _record_and_replay(unit: _Unit, base: int, mode: str, ref: dict, ref2: dict,
 @pytest.mark.parametrize("mode", _MODES)
 @pytest.mark.parametrize("unit_name", _UNITS)
 def test_lowerings_are_bitwise_identical(unit_name, mode):
-    """Repulsive (small and default config) and the converging toy, E=8, on a batch for
-    which (a) stops early: the eager reference (c) equals
+    """Ordinary Repulsive (small/default), the converging Repulsive workload and the
+    converging toy, E=8: the eager reference (c) equals
 
     - ``poll``: an eager run under the forced host poll (a): at least one window
-      skipped, at most one stream synchronize per window check;
+      skipped for converging workloads, at most one stream synchronize per window check;
     - ``warp``: a Warp ``ScopedCapture`` replay (b) (one conditional node per window);
     - ``warp-unrolled``: the same recording with ``conditional_ok`` False (c);
     - ``torch``: a plain ``torch.cuda.graph`` replay (c) (unregistered);
     - ``torch-registered``: ``interop.torch.registered(conditional=True)`` (b);
 
-    and every recorded graph, reseeded, equals a fresh eager twin of the new seeds."""
+    and every recorded graph, reseeded, equals a fresh eager twin of the new seeds.
+    For each converging case, a forced-poll preflight must actually skip windows,
+    establishing that conditional skipping is nonvacuous. Unrolled captures and
+    plain torch deliberately execute every window; ordinary workloads retain their
+    full-budget parity coverage."""
     if mode in ("warp", "torch-registered") and not _conditional_supported():
         pytest.skip(_NO_CONDITIONAL)
     unit = _unit(unit_name)
-    base = _early_base(unit)
+    base = 11
+    if unit.must_skip:
+        _assert_early_exit(unit, base)
     ref = _eager(unit.make(base)[0])
     if mode == "poll":
         gen, _ = unit.make(base)
         got, rec, n_syncs = _poll(gen, unit, f"{unit_name}/poll")
         unit.check_schedule(rec, f"{unit_name}/poll")
-        assert rec.ran < rec.windows, f"{unit_name}: (a) skipped no window (vacuous)"
+        assert rec.ran <= rec.windows
+        if unit.must_skip:
+            assert rec.ran < rec.windows, f"{unit_name}: (a) skipped no window (vacuous)"
         assert 1 <= n_syncs <= rec.windows, \
             f"{unit_name}: {n_syncs} stream syncs for {rec.windows} window checks"
         _assert_host(got, ref, f"{unit_name}: (a) poll vs (c) eager")
@@ -619,8 +629,9 @@ def _graph_nodes(graph) -> "tuple[int, int] | None":
 
 def test_repulsive_self_graph_node_counts():
     """Default config, E=8: the unrolled self-graph (``conditional_ok`` False before the
-    first ``generate()``) has < 5000 nodes and no conditional node; the windowed one
-    (lowering (b)) has exactly one conditional node per window (9) and far fewer
+    first ``generate()``) stays within its fixed-search node budget and has no
+    conditional node; the windowed one
+    (lowering (b)) has exactly one conditional node per window (6) and far fewer
     top-level nodes. Both replay the eager batch."""
     ref = _eager(_track("repulsive", 11)[0])
     with _unconditional():
@@ -633,7 +644,14 @@ def test_repulsive_self_graph_node_counts():
                     "cuGraphGetNodes / cuGraphNodeGetType is unavailable through ctypes")
     total_u, cond_u = counts_u
     assert cond_u == 0, f"unrolled self-graph holds {cond_u} conditional node(s)"
-    assert total_u < 5000, f"unrolled self-graph has {total_u} nodes (budget 5000)"
+    # The parallel safety search deliberately records every bounded trial:
+    # shape 4 + 24*7 + 1, growth 3 + 16*3 + 1, and 16 other core launches give
+    # about 241*189 = 45,549 nodes before periodic/tail work (45,830 measured).
+    # Keep a tight ceiling above that fixed schedule; convergence cannot shrink
+    # an unrolled graph. The conditional graph still has to reduce it below 60%.
+    node_budget = 48_000
+    assert total_u < node_budget, \
+        f"unrolled self-graph has {total_u} nodes (budget {node_budget})"
     if not _conditional_supported():
         pytest.skip(_NO_CONDITIONAL)
     windowed, _ = _track("repulsive", 11)
@@ -662,44 +680,57 @@ def _frozen(gen) -> np.ndarray:
 def _three_lowerings(make, label: str) -> dict:
     """``{lowering: (snapshot, probe record)}`` for eager (c), forced poll (a) and the
     self-graph (b where supported), each on a fresh generator of ``make()``."""
+    def state(gen, result):
+        return {**_snapshot(result), "solver.frozen": _frozen(gen)}
+
     out = {}
     gen, _ = make()
     _poison_all(gen.program.result)
     with _probe_loops() as recs:
         res = gen.enqueue()
     wp.synchronize()
-    out["eager"] = (_snapshot(res), _record(recs, "generator", f"{label}/eager"))
+    out["eager"] = (state(gen, res), _record(recs, "generator", f"{label}/eager"))
     gen, _ = make()
     _poison_all(gen.program.result)
     with _force_lowering("poll"), _probe_loops() as recs:
         res = gen.enqueue()
     wp.synchronize()
-    out["poll"] = (_snapshot(res), _record(recs, "generator", f"{label}/poll"))
+    out["poll"] = (state(gen, res), _record(recs, "generator", f"{label}/poll"))
     gen, _ = make()
     _poison_all(gen.program.result)
     with _probe_loops() as recs:
         res = gen.generate()
     assert gen.graph is not None
-    out["self-graph"] = (_snapshot(res), _record(recs, "generator", f"{label}/self-graph"))
+    out["self-graph"] = (state(gen, res), _record(recs, "generator", f"{label}/self-graph"))
     return out
 
 
-def test_repulsive_env_is_independent_of_the_batch_in_every_lowering():
-    """Default config: the envs of an E=64 batch that froze, rerun as an E=8 batch (in a
-    scrambled order), give bitwise the same tracks in the eager (c), forced-poll (a) and
-    self-graph (b) lowerings, and the three lowerings agree at E=64 too. Under (a) the
-    small batch (all frozen) skips at least its last window while the big one stops no
-    earlier (later whenever one of its envs never freezes): when the loop stops depends
-    on the batch, the per-env result does not."""
+@pytest.mark.parametrize("workload", ["default", "converging"])
+def test_repulsive_env_is_independent_of_the_batch_in_every_lowering(workload):
+    """Fixed scrambled rows from E=64, rerun at E=8, have identical per-env results
+    under all three lowerings. Real defaults cover the full workload independently
+    of convergence. In the converging workload an infeasible final E=64 row keeps
+    that batch active after its selected E=8 subset has frozen, without affecting
+    the selected rows' results."""
+    kw = dict(_CONVERGING_REPULSIVE, half_width=0.2) if workload == "converging" else {}
     big_seeds = 11 + np.arange(64, dtype=np.int32)
-    probe, _ = _track("repulsive", big_seeds, n=64)
-    _ = _eager(probe)
-    frozen = np.flatnonzero(_frozen(probe))
-    if frozen.size < E:
-        pytest.skip(f"only {frozen.size} of 64 envs froze on this device; need {E}")
-    rows = frozen[np.linspace(0, frozen.size - 1, E).astype(int)][::-1]
-    big = _three_lowerings(lambda: _track("repulsive", big_seeds, n=64), "E=64")
-    small = _three_lowerings(lambda: _track("repulsive", big_seeds[rows]), "E=8")
+    rows = np.asarray([7, 0, 5, 2, 6, 1, 4, 3])
+
+    def make_big():
+        gen, rng = _track("repulsive", big_seeds, n=64, **kw)
+        if workload == "converging":
+            # A NaN world scale can still leave the unscaled solver converged.
+            # Instead use a finite impossible width reservation: .2/.1 = 2
+            # exceeds the domain radius 1.716. Only this unselected row changes;
+            # both batches otherwise have the same supported near-circle problem.
+            sizes = np.ones(64, np.float32)
+            sizes[-1] = 0.1
+            gen.params["generator"].set("size", wp.array(sizes, dtype=wp.float32,
+                                                         device=DEV))
+        return gen, rng
+
+    big = _three_lowerings(make_big, "E=64")
+    small = _three_lowerings(lambda: _track("repulsive", big_seeds[rows], **kw), "E=8")
     ref = _rows(big["eager"][0], 64)
     for name, (snap, _) in big.items():
         _assert_host(snap, big["eager"][0], f"E=64 {name} vs eager")
@@ -710,9 +741,18 @@ def test_repulsive_env_is_independent_of_the_batch_in_every_lowering():
                 np.testing.assert_array_equal(
                     got[k][i], ref[k][r],
                     err_msg=f"E=8 {name}: env {i} (seed {big_seeds[r]}) != E=64 env {r}: {k}")
-    rec_small = small["poll"][1]
-    assert rec_small.ran < rec_small.windows, "the all-frozen E=8 batch skipped no window"
-    assert big["poll"][1].ran >= rec_small.ran
+    if workload == "converging":
+        for name, (snap, _) in big.items():
+            assert snap["valid"][-1] == 0, f"{name}: the infeasible row was marked valid"
+            assert snap["fail_mask"][-1] != 0, f"{name}: the invalid row has no failure bit"
+            assert not snap["solver.frozen"][-1], f"{name}: the infeasible row froze"
+        assert np.all(small["eager"][0]["valid"]), "the selected E=8 rows must be valid"
+        assert np.all(small["eager"][0]["solver.frozen"]), \
+            "the fixed E=8 convergence batch did not freeze"
+        rec_big, rec_small = big["poll"][1], small["poll"][1]
+        assert rec_small.ran < rec_small.windows, "the all-frozen E=8 batch skipped no window"
+        assert rec_big.ran == rec_big.windows, "the active infeasible row skipped a window"
+        assert rec_big.ran > rec_small.ran, "the two batches must stop at different windows"
 
 
 # ---------------------------------------------------------------------------------------
@@ -989,74 +1029,8 @@ def _copy_seeds_k(src: wp.array(dtype=wp.int32), dst: wp.array(dtype=wp.int32)):
     dst[e] = src[e]
 
 
-def _lock_free_elsewhere() -> bool:
-    """Whether ANOTHER thread can take ``runtime._CAPTURE_LOCK`` right now (it is
-    reentrant, so the calling thread could always take it)."""
-    box: dict = {}
-
-    def probe():
-        got = tg_runtime._CAPTURE_LOCK.acquire(blocking=False)
-        if got:
-            tg_runtime._CAPTURE_LOCK.release()
-        box["free"] = got
-
-    t = threading.Thread(target=probe, daemon=True)
-    t.start()
-    t.join(timeout=30)
-    assert "free" in box, "the lock probe thread did not finish"
-    return box["free"]
 
 
-def test_legacy_non_capturable_generator_is_a_host_segment_with_a_captured_tail(monkeypatch):
-    """A legacy-ABI ``GeneratorSpec(capturable=False)`` (no ``accepts_ctx``: its own
-    launches go to Warp's current stream) wrapping polar becomes a HOST generator segment
-    followed by a captured tail: ``generate()`` replays a tail graph (none for the whole
-    Program), on the default and on a side stream, and equals polar's eager twin.
-    ``runtime._CAPTURE_LOCK`` is held around the legacy body (another thread cannot take
-    it there, as at HEAD) and NOT across the tail's graph launch (no legacy self-capture
-    is pending)."""
-    monkeypatch.setattr(runner_mod, "_PENDING_LEGACY", weakref.WeakSet())
-    gc.collect()
-    # The polar generator's legacy GeneratorSpec over its frozen public functions (the
-    # registered "polar" is a generator Stage since roadmap PR13c).
-    base = warp_pipeline._legacy_generator_spec("polar")
-    probes: list = []
-
-    def alloc_scratch(config):
-        seeds = wp.zeros(int(config.num_envs), dtype=wp.int32, device=str(config.device))
-        return base.alloc_scratch(config), seeds
-
-    def legacy_generate(seeds_wp, config, out_centerline, out_valid_wp, scratch):
-        probes.append(("body", _lock_free_elsewhere()))
-        base_scratch, seed_copy = scratch
-        wp.launch(_copy_seeds_k, dim=seeds_wp.shape[0], inputs=[seeds_wp, seed_copy],
-                  device=seeds_wp.device)              # no stream=: Warp's current stream
-        base.generate(seed_copy, config, out_centerline=out_centerline,
-                      out_valid_wp=out_valid_wp, scratch=base_scratch)
-
-    registry.add(GeneratorSpec(name="toy.legacy_host", alloc_scratch=alloc_scratch,
-                               generate=legacy_generate, capturable=False))
-    gen, rng = _track("toy.legacy_host", 11)
-    assert gen.program.legacy_stream
-    out = gen.program.result
-    s = _side_stream()
-    with _counting_capture_launch(
-            probe=lambda: probes.append(("tail launch", _lock_free_elsewhere()))) as launches:
-        for k, (base_seed, kw) in enumerate(((11, {}), (101, {"stream": s}), (202, {}))):
-            want = _eager(_track("polar", base_seed)[0])
-            if k:
-                _reseed(rng, base_seed)
-            _poison_all(out)
-            assert gen.generate(**kw) is out
-            wp.synchronize()
-            _assert_segmented(gen.program, f"legacy call {k}")
-            assert gen.graph is None
-            _assert_host(_snapshot(out), want, f"legacy capturable=False call {k} vs polar")
-    assert len(launches) == 3
-    body = [free for what, free in probes if what == "body"]
-    tail = [free for what, free in probes if what == "tail launch"]
-    assert body and not any(body), f"the legacy body ran without the lock: {probes}"
-    assert len(tail) == 3 and all(tail), f"the tail launch held the lock: {probes}"
 
 
 def test_host_gate_generator_is_segmented_and_matches_its_eager_twin():
@@ -1274,13 +1248,14 @@ def test_course_masked_regeneration_nests_repulsive_windows():
 # ---------------------------------------------------------------------------------------
 
 def test_kit_repulsive_passes_the_bounded_checks_on_cuda():
-    """``check_generator("repulsive")`` (small config, E=8) on ``cuda:0``: every check
-    passes, the new ``bounded.absorbing`` / ``bounded.lowering`` included."""
-    report = check_generator("repulsive", devices=[DEV], config=_SMALL, num_envs=E)
+    """The explicit converging workload passes every kit check on CUDA, with both
+    absorbing freeze and lowering parity actually exercised."""
+    report = check_generator("repulsive", devices=[DEV], config=_CONVERGING_REPULSIVE,
+                             num_envs=E)
     report.raise_for_failures()
     for name in ("bounded.absorbing", "bounded.lowering"):
-        report.result(name, DEV)             # present for a BOUNDED generator
-    assert not report.result("bounded.lowering", DEV).skipped, str(report)
+        assert not report.result(name, DEV).skipped, str(report)
+    assert sum(report.result("bounded.absorbing", DEV).details["skipped"].values()) >= 1
     assert report.result("capture.caller", DEV).details.get("warp") == "ok", str(report)
 
 

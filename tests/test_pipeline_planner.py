@@ -29,11 +29,6 @@ from track_gen.plugin.stage import CaptureClass, StageBuilder
 from track_gen.stages import params as sp
 from track_gen.testing.contract import no_allocation
 
-# Roadmap PR13d: bezier's style_sampling is deprecated (one DeprecationWarning per built
-# generator); this module still exercises it.
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
-
 DEV = "cpu"
 E = 2
 TRACK_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen", "length",
@@ -117,10 +112,6 @@ def test_to_pipeline_spec_raises_the_track_generator_errors():
                                          r"'bogus'; available: \['flat', 'noise', "
                                          r"'random_walk', 'uniform'\]"):
         legacy.to_pipeline_spec(_cfg(z_profile="bogus"))
-    with pytest.warns(DeprecationWarning):
-        cfg = _cfg(smooth_finish=True)
-    with pytest.raises(ValueError, match="smooth_finish=True"):
-        legacy.to_pipeline_spec(cfg)
     with pytest.raises(ValueError, match="unknown generator"):
         legacy.to_pipeline_spec(_cfg(generator="nope"))
 
@@ -180,7 +171,6 @@ def test_edit_operations():
 
 @pytest.mark.parametrize("kw", [{}, dict(z_profile="noise", z_max=0.3,
                                          z_noise_amplitude=0.1),
-                                dict(style_sampling=True, rad_range=(0.1, 0.3)),
                                 dict(relax_enable=False, z_profile="uniform", z_max=0.1)])
 def test_to_dict_round_trip_is_json_and_byte_identical(kw):
     spec = _spec(**kw)
@@ -244,7 +234,7 @@ def test_build_into_out_binds_the_track_buffers():
 
 def test_build_rejects_a_mismatched_out():
     out = warp_pipeline._inflate_warp_alloc(_cfg(N_max=200))[0]
-    with pytest.raises(ValueError, match=r"out\.outer: expected a contiguous \[768\]"):
+    with pytest.raises(ValueError, match=r"out: a Track for Layout\(2, 200,.*this pipeline writes Layout\(2, 384,"):
         build(_spec(), out=out)
 
 
@@ -724,7 +714,9 @@ def test_track_generator_scratch_is_a_view_of_the_program():
     assert gen._inputs is p.inputs and gen._regen_mask is p.inputs["regen_mask"]
     # The PR9 composition still runs on the view and writes the same Track.
     want = _snap(gen._track)
-    warp_pipeline._run_pipeline(gen._config, gen._seed_buf, out=gen._track, scratch=s,
+    from tests._reference_generators.warp_pipeline import _run_pipeline
+
+    _run_pipeline(gen._config, gen._seed_buf, out=gen._track, scratch=s,
                                 generator_spec=gen._generator_spec,
                                 ctx=LaunchContext.for_call(DEV))
     assert _snap(gen._track) == want
@@ -765,7 +757,7 @@ def test_program_enqueue_allocates_nothing_and_returns_the_result():
 def test_program_state_and_call_errors():
     p = build(_spec(), seeds=3)
     assert p.layout == Layout(E, 384, "cpu") and p.device.alias == "cpu"
-    assert p.capturable and p.capture_class == CaptureClass.STATIC and not p.legacy_stream
+    assert p.capturable and p.capture_class == CaptureClass.STATIC
     assert p.graph is None and p.seed.shape == (E,) and p.seeds.num_envs == E
     assert repr(p).startswith("Program(stages=['generator', 'resample'")
     with pytest.raises(ValueError, match="requires advance=True"):

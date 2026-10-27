@@ -13,7 +13,7 @@ when asked), a generation's PR13d trace is:
    bezier / hull ``min_num_points`` (i32, FIRST: a base-class field) and ``size`` (f32,
    LAST of the generator), repulsive's ``size``, the point gate generators' ``size``,
    ``normalize.size`` and ``gate_frames.gate_width``.
-2. **Twins** (:data:`TWINS`): ``_sample_counts_k`` -> ``_sample_counts_dyn_k`` (scalar
+2. **Twins** (:data:`TWINS`): ``_sample_counts_h_k`` -> ``_sample_counts_dyn_h_k`` (scalar
    3, ``lo``, becomes an array; the bezier / hull TRACK generators only: the gate ones
    keep a static count); ``_finalize_frame_k`` -> ``_finalize_frame_dyn_k`` (scalar 9
    becomes an array); ``_finalize_validity_k`` -> ``_finalize_validity_bars_k`` (scalar
@@ -46,9 +46,9 @@ _DTYPE = {wp.float32: "f32", wp.int32: "i32"}
 #: scalar kernel -> (its PR13d twin, the scalar argument indices it takes as [E] arrays
 #: or drops, whether the later scalar indices move down: the argument is REMOVED).
 TWINS = {
-    "_sample_counts_k": ("_sample_counts_dyn_k", (3,), False),
-    "_sample_grid_points_k": ("_sample_grid_points_sized_k", (), False),
-    "_sample_grid_points_scaled_k": ("_sample_grid_points_scaled_sized_k", (), False),
+    "_sample_counts_h_k": ("_sample_counts_dyn_h_k", (3,), False),
+    "_sample_grid_points_h_k": ("_sample_grid_points_sized_h_k", (), False),
+    "_sample_grid_points_scaled_h_k": ("_sample_grid_points_scaled_sized_h_k", (), False),
     "_normalize_extent_k": ("_normalize_extent_sized_k", (), False),
     "_normalize_extent_to_k": ("_normalize_extent_to_sized_k", (), False),
     "_finalize_frame_k": ("_finalize_frame_dyn_k", (9,), False),
@@ -108,10 +108,10 @@ def _as_rows(rows) -> "tuple[list, bool]":
 
 def twin_record(op, kernel, dim, scalars, *, count_twin: bool = True):
     """``(op, kernel, dim, scalars)`` of a PR13c record as its PR13d twin's (unchanged
-    without a twin; ``count_twin=False`` keeps ``_sample_counts_k``: a gate point
+    without a twin; ``count_twin=False`` keeps ``_sample_counts_h_k``: a gate point
     generator's static count). ``scalars``: ``(index, value)`` pairs, tuples or lists."""
     name = _short(kernel)
-    if name not in TWINS or (name == "_sample_counts_k" and not count_twin):
+    if name not in TWINS or (name == "_sample_counts_h_k" and not count_twin):
         return op, kernel, dim, scalars
     twin, idx, shift = TWINS[name]
     as_list = isinstance(scalars, list)

@@ -149,12 +149,9 @@ def test_relax_solver_and_z_profile_resolve_through_the_registry():
     assert gen.program._kinds["relax"] == ("relax", "none")
 
 
-def test_smooth_finish_raises():
-    """TrackGenerator must reject smooth_finish=True at construction time."""
-    cfg = TrackGenConfig(smooth_finish=True, num_envs=4)
-    rng = _make_rng(4)
-    with pytest.raises(ValueError, match="smooth_finish"):
-        TrackGenerator(cfg, rng)
+def test_smooth_finish_is_removed_from_the_config():
+    with pytest.raises(TypeError, match="smooth_finish"):
+        TrackGenConfig(smooth_finish=True, num_envs=4)
 
 
 def test_rng_seed_count_mismatch_raises():

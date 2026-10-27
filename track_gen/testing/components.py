@@ -313,15 +313,18 @@ def _producer(source, E: int, device: str, seeds: np.ndarray):
 
     arr = _i32(seeds, device)
     if source == "track":
-        return TrackGenerator(presets.track(num_envs=E, device=device), seeds=arr)
+        return TrackGenerator(presets.track(num_envs=E, device=device, on_invalid="keep"), seeds=arr)
     if source == "gates":
-        return GateGenerator(presets.gates(num_envs=E, device=device, gate_width=0.1),
+        return GateGenerator(presets.gates(num_envs=E, device=device, gate_width=0.1,
+                                           on_invalid="keep"),
                              seeds=arr)
     if isinstance(source, TrackGenConfig):
-        return TrackGenerator(dataclasses.replace(source, num_envs=E, device=device),
+        return TrackGenerator(dataclasses.replace(source, num_envs=E, device=device,
+                                                  on_invalid="keep"),
                               seeds=arr)
     if isinstance(source, GateGenConfig):
-        return GateGenerator(dataclasses.replace(source, num_envs=E, device=device),
+        return GateGenerator(dataclasses.replace(source, num_envs=E, device=device,
+                                                  on_invalid="keep"),
                              seeds=arr)
     if isinstance(source, PipelineSpec):
         batch = dataclasses.replace(source.batch, num_envs=E, device=device,
@@ -359,7 +362,7 @@ def _done_schedule(i: int, E: int) -> list:
 def _caller_chain(ctx, run, program, done, flag, *, reset: bool,
                   skip: bool = False) -> bool:
     """The chain the capture checks record, as a ``Course`` records its regeneration and
-    step (roadmap PR15): ``any_set(done)`` into ``flag``, then, under
+    step: ``any_set(done)`` into ``flag``, then, under
     ``ctx.skip_unless(flag, ...)`` (a CUDA conditional node where the capture allows
     one), the producer's masked advancing generation, the chain's ``on_generate(done)``
     and (``reset``) ``reset(done)``; then the chain's ``step``.
@@ -1328,7 +1331,8 @@ def check_component(factory: "Callable", *, source="track",
         source: ``"track"`` (``presets.track``), ``"gates"`` (``presets.gates`` with
             ``gate_width=0.1``), or a ``PipelineSpec`` / ``TrackGenConfig`` /
             ``GateGenConfig`` (its ``num_envs``
-            / ``device`` replaced; a spec's ``on_invalid`` forced to ``"keep"``).
+            / ``device`` replaced). Every source uses ``on_invalid="keep"`` so the
+            checks can inspect raw invalid geometry.
         upstream: Factories of the components it reads (``after``, ``source``), attached
             first, in order.
         devices: Devices to run on (default: ``"cpu"``, plus ``"cuda:0"`` when

@@ -20,13 +20,6 @@ FORMAT = "track_gen.pipeline/2"
 #: module imports nothing from track_gen) and equal to
 #: ``track_gen.stages.PARAM_WRITER_KINDS`` (a test pins it).
 PARAM_WRITER_KINDS = ("randomize",)
-#: The 0.2.0.dev3 format (``from_dict`` migrates it: the width stage moved before relax
-#: and the half_width params of relax.xpbd / offset.default / validity.default became
-#: the width stage's).
-_FORMAT_V1 = "track_gen.pipeline/1"
-# The built-ins that lost their half_width field in /2, and the dev3 default value.
-_V1_HALF_WIDTH = (("relax", "xpbd"), ("offset", "default"), ("validity", "default"))
-_V1_DEFAULT_HALF_WIDTH = 0.1
 
 
 def _frozen_map(value, what: str, *, values=None) -> "MappingProxyType":
@@ -183,8 +176,8 @@ class BatchSpec:
             planner builds carries it).
         scale: ``TrackGenConfig.scale``, handed to the stages as ``StageBuilder.scale``.
         on_invalid: What an invalid env (``fail_mask != 0``) leaves in the ``Track``:
-            ``"keep"`` (default: its computed geometry, ``valid = 0``) or
-            ``"poison"`` (``count = 0``, NaN geometry, ``length = winding = 0``, so
+            ``"keep"`` (its computed geometry, ``valid = 0``) or
+            ``"poison"`` (default: ``count = 0``, NaN geometry, ``length = winding = 0``, so
             every utility's degenerate ``count < 3`` path fires; ``fail_mask`` and
             ``truncated`` are kept). A gate pipeline: ``count = 0``, every per-gate
             field NaN, ``valid = 0`` (``fail_mask`` kept).
@@ -199,7 +192,7 @@ class BatchSpec:
     n_max: int
     closed: bool = True
     scale: float = 1.0
-    on_invalid: str = "keep"
+    on_invalid: str = "poison"
     max_gates: "int | None" = None
 
     def _to_dict(self) -> dict:
@@ -366,33 +359,18 @@ class PipelineSpec:
         """Read :meth:`to_dict` data back (params stay mappings; ``build`` coerces
         them). No registry is needed.
 
-        ``track_gen.pipeline/1`` data (written by earlier releases) is migrated,
-        with one ``DeprecationWarning``: the ``half_width`` params of ``relax.xpbd`` /
-        ``offset.default`` / ``validity.default`` are dropped (each must equal the width
-        stage's ``half_width``, else ``ValueError``), every width stage between the
-        first relax and the first frames stage moves to just before that relax, and a
-        ``relax.xpbd`` without a width stage before it (a ``relaxed_stations`` gate spec
-        in format /1) gets ``width.constant`` with that half-width.
-        With ``width.constant`` (or no width stage) the migrated spec builds the outputs
-        of the /1 spec byte for byte; another width stage now runs before relax and is
-        read per point by XPBD and the offset, so its outputs change (the warning says
-        so). A width stage after the first frames stage of a spec whose ``relax.xpbd``
-        has no width before it (an earlier width stage reading ``cl.kappa``) is refused with
-        ``ValueError``: it cannot be both the width XPBD reads and a stage after
-        frames."""
+        Only the current format is supported."""
         if not isinstance(data, _MappingABC):
             raise TypeError(f"PipelineSpec.from_dict expects a mapping, got "
                             f"{type(data).__name__}")
         fmt = data.get("format")
-        if fmt == _FORMAT_V1:
-            data = _migrate_v1(data)
-        elif fmt != FORMAT:
+        if fmt != FORMAT:
             raise ValueError(f"unsupported pipeline format {fmt!r}; expected {FORMAT!r}")
         b = _required(data, "pipeline data", ("batch", "stages"))["batch"]
         _required(b, "batch", ("num_envs", "device", "n_max"))
         batch = BatchSpec(num_envs=b["num_envs"], device=b["device"], n_max=b["n_max"],
                           closed=b.get("closed", True), scale=b.get("scale", 1.0),
-                          on_invalid=b.get("on_invalid", "keep"),
+                          on_invalid=b.get("on_invalid", "poison"),
                           max_gates=b.get("max_gates"))
         raw_stages = data["stages"]
         if isinstance(raw_stages, (str, bytes)) or not isinstance(raw_stages, (list, tuple)):
@@ -456,8 +434,7 @@ def _normalize_size_hint(spec: PipelineSpec) -> str:
         return ""
     if gen.kind == "gate_generator":
         return ("; this gate generator is not re-normalized and holds its size: use "
-                "generator.size, where it declares one (a legacy GateGeneratorSpec has "
-                "none)")
+                "generator.size, where it declares one")
     return "; a centerline generator's per-env size is generator.size, where it declares one"
 
 
@@ -489,98 +466,6 @@ def _with_randomizers(spec: PipelineSpec, randomize) -> PipelineSpec:
                              f"first (spec.remove({sid!r}))")
         spec = spec.insert_before(target, ref)
     return spec
-
-
-def _migrate_v1(data: Mapping) -> dict:
-    """``track_gen.pipeline/1`` data as ``/2`` data (see :meth:`PipelineSpec.from_dict`);
-    registry free, on the data."""
-    import warnings  # noqa: PLC0415
-
-    raw_stages = data.get("stages")
-    if isinstance(raw_stages, (str, bytes)) or not isinstance(raw_stages, (list, tuple)):
-        return dict(data)                  # from_dict reports the shape error
-    stages = []
-    for s in raw_stages:
-        if isinstance(s, _MappingABC):
-            s = dict(s)
-            if isinstance(s.get("params"), _MappingABC):
-                s["params"] = dict(s["params"])
-        stages.append(s)
-    kinds = [(s.get("kind"), s.get("name")) if isinstance(s, dict) else (None, None)
-             for s in stages]
-    # (1) the dropped half_width params, which must agree with the width stage's.
-    popped = []
-    for s, kn in zip(stages, kinds):
-        if kn in _V1_HALF_WIDTH and isinstance(s.get("params"), dict) and \
-                "half_width" in s["params"]:
-            popped.append((s.get("id") or kn[0], kn, s["params"].pop("half_width")))
-    width_hw = None
-    for s, kn in zip(stages, kinds):
-        if kn == ("width", "constant"):
-            p = s.get("params")
-            width_hw = (p or {}).get("half_width", _V1_DEFAULT_HALF_WIDTH) \
-                if isinstance(p, (dict, type(None))) else _V1_DEFAULT_HALF_WIDTH
-            break
-    hw = width_hw
-    for sid, kn, v in popped:
-        if hw is None:
-            hw = v
-        if float(v) != float(hw):
-            raise ValueError(
-                f"pipeline format {_FORMAT_V1}: stage {sid!r} ({kn[0]}.{kn[1]}) sets "
-                f"half_width={v!r} but the width is {hw!r}; half_width is no longer a "
-                f"{kn[0]}.{kn[1]} param (0.2.0.dev4): the half-width is cl.half_width, "
-                f"written by the width stage (presets.track(half_width=...) / "
-                f"width.constant)")
-    if hw is None:
-        hw = _V1_DEFAULT_HALF_WIDTH
-    # (2) the width stages in the dev3 slot (after the first relax, before the first
-    # frames) move to just before that relax.
-    kinds_of = [s.get("kind") if isinstance(s, dict) else None for s in stages]
-    if "relax" in kinds_of:
-        r = kinds_of.index("relax")
-        f = kinds_of.index("frames") if "frames" in kinds_of else len(stages)
-        moved = [s for i, s in enumerate(stages) if r < i < f and kinds_of[i] == "width"]
-        if moved:
-            rest = [s for i, s in enumerate(stages)
-                    if not (r < i < f and kinds_of[i] == "width")]
-            stages = rest[:r] + moved + rest[r:]
-            kinds_of = [s.get("kind") if isinstance(s, dict) else None for s in stages]
-    # (3) a relax.xpbd with no width stage before it gets width.constant; a width stage
-    # left after frames (dev3: a width reading cl.kappa) would then be a second writer.
-    for i, s in enumerate(stages):
-        if isinstance(s, dict) and (s.get("kind"), s.get("name")) == ("relax", "xpbd"):
-            if "width" not in kinds_of[:i]:
-                late = [st for j, st in enumerate(stages)
-                        if j > i and kinds_of[j] == "width"]
-                if late:
-                    sid = late[0].get("id") or "width"
-                    raise ValueError(
-                        f"pipeline format {_FORMAT_V1}: width stage {sid!r} "
-                        f"({late[0].get('kind')}.{late[0].get('name')}) runs after "
-                        f"frames; since {FORMAT} the width relax.xpbd reads comes before "
-                        f"relax (width.constant), so make {sid!r} a rewrite of "
-                        f"cl.half_width (read it) after a width.constant before relax, or "
-                        f"move it before relax")
-                stages.insert(i, {"kind": "width", "name": "constant", "id": None,
-                                  "params": {"half_width": hw}, "ports": {},
-                                  "capacity": {}})
-            break
-    plugin = sorted({f"{s.get('kind')}.{s.get('name')}" for s in stages
-                     if isinstance(s, dict) and s.get("kind") == "width"
-                     and s.get("name") != "constant"})
-    changed = (f"; the width stage(s) {plugin} now run before relax and XPBD, the offset "
-               f"and validity read their per-point width, so the outputs differ from "
-               f"0.2.0.dev3 (CHANGELOG 0.2.0.dev4, 'Changed (outputs)')") if plugin else ""
-    warnings.warn(f"pipeline format {_FORMAT_V1} (0.2.0.dev3) migrated to {FORMAT}: the "
-                  f"width stage runs before relax and the half_width params of "
-                  f"relax.xpbd / offset.default / validity.default moved to it{changed}; "
-                  f"save the spec again (to_dict) to store the new format",
-                  DeprecationWarning, stacklevel=3)
-    out = dict(data)
-    out["format"] = FORMAT
-    out["stages"] = stages
-    return out
 
 
 def _required(data, what: str, keys) -> Mapping:

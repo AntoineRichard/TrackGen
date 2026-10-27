@@ -43,6 +43,7 @@ Two masks: regenerate and reset
 
    before = course.result.center.numpy().reshape(E, -1, 3).copy()   # .copy(): on "cpu",
    epoch = course.result.generation.numpy().copy()                  # .numpy() is a view
+   before_valid = course.result.valid.numpy().copy() != 0
    regen.assign(np.isin(np.arange(E), [0, 5]).astype(np.int32))   # envs 0 and 5
    course.regenerate(mask=regen, advance=True)  # new courses for envs 0 and 5 only
    after = course.result.center.numpy().reshape(E, -1, 3)
@@ -50,7 +51,8 @@ Two masks: regenerate and reset
 .. snippet: after
 
    assert course.result.generation.numpy()[0] == epoch[0] + 1
-   assert not np.array_equal(before[0], after[0], equal_nan=True)
+   if before_valid[0] and course.result.valid.numpy()[0] != 0:
+       assert not np.array_equal(before[0], after[0], equal_nan=True)
    assert np.array_equal(before[1], after[1], equal_nan=True)
 
 ``course.regenerate(mask=m, advance=True)``:
@@ -144,7 +146,7 @@ the masked agents back to their start line.
 
    @wp.kernel
    def _agent_k(center: wp.array(dtype=wp.vec3f), count: wp.array(dtype=wp.int32),
-                stride: int, t: wp.array(dtype=wp.int32), mask: wp.array(dtype=wp.int32),
+                valid: wp.array(dtype=wp.int32), stride: int, t: wp.array(dtype=wp.int32), mask: wp.array(dtype=wp.int32),
                 use_mask: int, pos: wp.array(dtype=wp.vec3f)):
        e = wp.tid()
        if use_mask != 0:
@@ -152,7 +154,7 @@ the masked agents back to their start line.
                return
            t[e] = 0
        n = count[e]
-       if n > 0:
+       if valid[e] != 0 and n > 0:
            pos[e] = center[e * stride + (t[e] * 3) % n]
        if use_mask == 0:
            t[e] = t[e] + 1
@@ -161,14 +163,14 @@ the masked agents back to their start line.
 
    def sim_step(pos, quat, stream=None):
        r = course.result
-       wp.launch(_agent_k, E, [r.center, r.count, r.layout.stride, _clock, regen, 0, pos],
+       wp.launch(_agent_k, E, [r.center, r.count, r.valid, r.layout.stride, _clock, regen, 0, pos],
                  device=device, stream=stream)
 
    def respawn(mask, pos, quat=None, stream=None):
        if not isinstance(mask, wp.array):
            mask = wp.array(np.asarray(mask, np.int32), dtype=wp.int32, device=device)
        r = course.result
-       wp.launch(_agent_k, E, [r.center, r.count, r.layout.stride, _clock, mask, 1, pos],
+       wp.launch(_agent_k, E, [r.center, r.count, r.valid, r.layout.stride, _clock, mask, 1, pos],
                  device=device, stream=stream)
 
 .. code-block:: python

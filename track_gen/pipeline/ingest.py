@@ -1,4 +1,4 @@
-"""Host loader of the ingestion inputs (roadmap PR13b): :func:`load_centerlines`.
+"""Host loader of the ingestion inputs: :func:`load_centerlines`.
 
 Loads numpy centerlines into the ``centerline.*`` inputs of any generator that declares
 them (``generator/external``, or a third-party ingestion generator built with

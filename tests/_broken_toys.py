@@ -11,7 +11,7 @@ name                       defect                                failing check
 ``broken.nan``             writes NaN into valid envs            ``output.finite``
 ``broken.topology``        launch dims follow a call counter     ``hot_path.topology``
 ``broken.batch``           env e reads env e+1's seed            ``batch_independence``
-``broken.legacy_stream``   ``wp.launch`` without ``stream=``     ``hot_path.stream``
+``broken.implicit_stream``   ``wp.launch`` without ``stream=``     ``hot_path.stream``
 ``broken.stateful``        a device counter changes every call   ``statelessness``
 ``broken.constant``        ignores the seeds                     ``diversity``
 ``broken.open``            writes half a circle                  ``output.closed``
@@ -279,9 +279,9 @@ def batch_generate(seeds_wp, config, out_centerline, out_valid_wp, scratch,
                [seeds_wp, N, E, radius, out_centerline, out_valid_wp])
 
 
-def legacy_stream_generate(seeds_wp, config, out_centerline, out_valid_wp, scratch) -> None:
+def implicit_stream_generate(seeds_wp, config, out_centerline, out_valid_wp, scratch, *, ctx) -> None:
     E, N, radius = _shape(config)
-    # the defect: no ctx, no stream= (a legacy accepts_ctx=False plugin)
+    # the defect: bypasses ctx and omits stream=
     wp.launch(_circle_k, dim=(E, N),
               inputs=[seeds_wp, N, radius, out_centerline, out_valid_wp],
               device=str(config.device))
@@ -424,67 +424,67 @@ def struct_scratch_generate(seeds_wp, config, out_centerline, out_valid_wp, scra
 
 BROKEN = {
     "broken.host_sync": (GeneratorSpec(name="broken.host_sync", alloc_scratch=_alloc_none,
-                                       generate=host_sync_generate, accepts_ctx=True),
+                                       generate=host_sync_generate),
                          "hot_path.host_sync"),
     "broken.alloc": (GeneratorSpec(name="broken.alloc", alloc_scratch=_alloc_none,
-                                   generate=alloc_generate, accepts_ctx=True),
+                                   generate=alloc_generate),
                      "hot_path.allocation"),
     "broken.nan": (GeneratorSpec(name="broken.nan", alloc_scratch=_alloc_none,
-                                 generate=nan_generate, accepts_ctx=True),
+                                 generate=nan_generate),
                    "output.finite"),
     "broken.topology": (GeneratorSpec(name="broken.topology", alloc_scratch=topology_alloc,
-                                      generate=topology_generate, accepts_ctx=True),
+                                      generate=topology_generate),
                         "hot_path.topology"),
     "broken.batch": (GeneratorSpec(name="broken.batch", alloc_scratch=_alloc_none,
-                                   generate=batch_generate, accepts_ctx=True),
+                                   generate=batch_generate),
                      "batch_independence"),
-    "broken.legacy_stream": (GeneratorSpec(name="broken.legacy_stream",
+    "broken.implicit_stream": (GeneratorSpec(name="broken.implicit_stream",
                                            alloc_scratch=_alloc_none,
-                                           generate=legacy_stream_generate),
+                                           generate=implicit_stream_generate),
                              "hot_path.stream"),
     "broken.stateful": (GeneratorSpec(name="broken.stateful", alloc_scratch=stateful_alloc,
-                                      generate=stateful_generate, accepts_ctx=True),
+                                      generate=stateful_generate),
                         "statelessness"),
     "broken.constant": (GeneratorSpec(name="broken.constant", alloc_scratch=_alloc_none,
-                                      generate=constant_generate, accepts_ctx=True),
+                                      generate=constant_generate),
                         "diversity"),
     "broken.open": (GeneratorSpec(name="broken.open", alloc_scratch=_alloc_none,
-                                  generate=open_generate, accepts_ctx=True),
+                                  generate=open_generate),
                     "output.closed"),
     "broken.global_buffer": (GeneratorSpec(name="broken.global_buffer",
                                            alloc_scratch=global_buffer_alloc,
                                            generate=global_buffer_generate,
-                                           accepts_ctx=True),
+                                           ),
                              "hot_path.buffers"),
     "broken.shared_scratch": (GeneratorSpec(name="broken.shared_scratch",
                                             alloc_scratch=shared_scratch_alloc,
                                             generate=shared_scratch_generate,
-                                            accepts_ctx=True),
+                                            ),
                               "hot_path.buffers"),
     "broken.unwritten": (GeneratorSpec(name="broken.unwritten", alloc_scratch=_alloc_none,
-                                       generate=unwritten_generate, accepts_ctx=True),
+                                       generate=unwritten_generate),
                          "output.finite"),
     "broken.no_valid": (GeneratorSpec(name="broken.no_valid", alloc_scratch=_alloc_none,
-                                      generate=no_valid_generate, accepts_ctx=True),
+                                      generate=no_valid_generate),
                         "output.shape"),
     "broken.tiled": (GeneratorSpec(name="broken.tiled", alloc_scratch=_alloc_none,
-                                   generate=tiled_generate, accepts_ctx=True),
+                                   generate=tiled_generate),
                      "hot_path.stream"),
     "broken.assign": (GeneratorSpec(name="broken.assign", alloc_scratch=staging_alloc,
-                                    generate=assign_generate, accepts_ctx=True),
+                                    generate=assign_generate),
                       "hot_path.stream"),
 }
 
 #: Toys that look unusual but honour the contract: every check passes.
 EDGE = {
     "edge.stadium": GeneratorSpec(name="edge.stadium", alloc_scratch=_alloc_none,
-                                  generate=stadium_generate, accepts_ctx=True),
+                                  generate=stadium_generate),
     "edge.rejecting": GeneratorSpec(name="edge.rejecting", alloc_scratch=_alloc_none,
-                                    generate=rejecting_generate, accepts_ctx=True),
+                                    generate=rejecting_generate),
     "edge.struct_scratch": GeneratorSpec(name="edge.struct_scratch",
                                          alloc_scratch=struct_scratch_alloc,
                                          generate=struct_scratch_generate,
-                                         accepts_ctx=True),
+                                         ),
 }
 
 #: The five toys the conformance spec names (the others are extras).

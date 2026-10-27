@@ -27,13 +27,12 @@ from tests._plugin_toys import (
     register_toys,
 )
 from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG, TrackGenConfig, TrackGenerator
-from track_gen._src import builtin_plugins, gate_generator_registry, generator_registry
+from track_gen._src import builtin_plugins
 from track_gen.plugin import (
     API_VERSION,
     ENTRY_POINT_GROUP,
     POLICY_ENV,
     DuplicateSpecError,
-    GateGeneratorSpec,
     GeneratorSpec,
     PluginLoadError,
     PluginOverrideWarning,
@@ -107,7 +106,7 @@ def test_plugin_track_generator_runs_through_track_generator(fresh):
     assert info == SpecInfo(kind="generator", name="toy.circle",
                             origin="tests._plugin_toys",
                             distribution=("toy-plugins", "1.2.3"), capturable=True,
-                            accepts_ctx=True, builtin=False, entry_point="toy")
+                            builtin=False, entry_point="toy")
 
 
 def test_plugin_gate_generator_runs_through_gate_generator(fresh):
@@ -196,10 +195,10 @@ def test_overriding_a_builtin_needs_replace(plugin_registry):
 
 def test_same_name_in_another_kind_is_not_a_duplicate(plugin_registry):
     plugin_registry.add(TOY_CIRCLE)
-    plugin_registry.add(GateGeneratorSpec(
-        name="toy.circle", alloc_scratch=TOY_RING.alloc_scratch,
-        generate=TOY_RING.generate, max_gates=TOY_RING.max_gates,
-        supported_orderings=TOY_RING.supported_orderings, accepts_ctx=True))
+    class SameNameRing(TOY_RING):
+        name = "toy.circle"
+
+    plugin_registry.add(SameNameRing)
     assert "toy.circle" in plugin_registry.available("generator")
     assert "toy.circle" in plugin_registry.available("gate_generator")
 
@@ -480,7 +479,6 @@ def test_scoped_restores_every_kind():
     before = registry.available()
     kinds = set(registry._specs)
     bezier = registry.get("generator", "bezier")
-    view = generator_registry.GENERATORS
     with registry.scoped() as reg:
         assert reg is registry
         reg.add(TOY_CIRCLE)
@@ -488,11 +486,11 @@ def test_scoped_restores_every_kind():
         reg.add(types.SimpleNamespace(name="acme.banking"), kind="banking")
         reg.unregister("generator", "bezier")
         reg.unregister("relax", "xpbd")
-        assert "toy.circle" in view and "bezier" not in view     # the view is live
+        assert "toy.circle" in reg.available("generator")
+        assert "bezier" not in reg.available("generator")
     assert registry.available() == before
     assert set(registry._specs) == kinds and set(registry._meta) == kinds
     assert registry.get("generator", "bezier") is bezier
-    assert "toy.circle" not in view and view["bezier"] is bezier
     assert registry.available("banking") == []
     assert registry.available("relax") == ["none", "xpbd"]       # a Stage kind (PR10b)
     with pytest.raises(ValueError, match="unknown kind 'banking'"):
@@ -575,63 +573,20 @@ def test_plugin_register_may_query_the_registry(fresh):
 # Deprecated _src shims
 # ---------------------------------------------------------------------------------------
 
-def test_generator_registry_shim(plugin_registry):
-    assert generator_registry.available() == plugin_registry.available("generator")
-    assert generator_registry.get("bezier") is plugin_registry.get("generator", "bezier")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")               # a new name: no warning at all
-        generator_registry.register(_spec("legacy_new"))
-    assert "legacy_new" in generator_registry.available()
-    replacement = _spec("legacy_new", module="other")
-    with pytest.warns(DeprecationWarning, match="plugin.registry.add"):
-        generator_registry.register(replacement)    # old semantics: overwrite
-    assert generator_registry.get("legacy_new") is replacement
-    view = generator_registry.GENERATORS
-    assert isinstance(view, types.MappingProxyType)
-    assert view["legacy_new"] is replacement and "bezier" in view
-    with pytest.raises(TypeError):
-        view["x"] = replacement
-    from track_gen._src.generator_registry import GENERATORS  # noqa: F401 - importable
-    generator_registry._ensure_loaded()
 
 
-def test_gate_generator_registry_shim(plugin_registry):
-    assert gate_generator_registry.available() == plugin_registry.available("gate_generator")
-    assert gate_generator_registry.get("hull") is plugin_registry.get("gate_generator", "hull")
-    gate_generator_registry.register(TOY_RING)
-    assert "toy.ring" in gate_generator_registry.GATE_GENERATORS
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        gate_generator_registry.register(TOY_RING)     # the identical spec: a no-op
-    same_module = dataclasses.replace(TOY_RING, max_gates=lambda config: TOY_GATES)
-    assert same_module.generate.__module__ == TOY_RING.generate.__module__
-    with pytest.warns(DeprecationWarning):
-        gate_generator_registry.register(same_module)  # same module: overwrites
-    assert gate_generator_registry.get("toy.ring") is same_module
-    # The old gate rule: another module's spec under a taken name raises (ValueError).
-    # (PR11: the built-in gate generators are Stage classes, not GateGeneratorSpecs: the
-    # rule is exercised on the legacy toy.)
-    other = dataclasses.replace(same_module, generate=_spec("x", module="other_gates").generate)
-    with pytest.raises(DuplicateSpecError, match="'toy.ring'.*already registered") as e:
-        gate_generator_registry.register(other)
-    assert isinstance(e.value, ValueError)
-    assert gate_generator_registry.get("toy.ring") is same_module
-    with pytest.raises(TypeError):
-        gate_generator_registry.GATE_GENERATORS["x"] = TOY_RING
-    with pytest.raises(ValueError, match="unknown gate generator 'nope'"):
-        gate_generator_registry.get("nope")
 
 
 def test_spec_types_are_reexported():
     import track_gen.plugin as plugin
 
-    assert plugin.GeneratorSpec is generator_registry.GeneratorSpec
-    assert plugin.GateGeneratorSpec is gate_generator_registry.GateGeneratorSpec
+    from track_gen.plugin._specs import GeneratorSpec as CanonicalGeneratorSpec
+
+    assert plugin.GeneratorSpec is CanonicalGeneratorSpec
     assert GeneratorSpec.registry_kind == "generator"
-    assert GateGeneratorSpec.registry_kind == "gate_generator"
     assert "registry_kind" not in {f.name for f in dataclasses.fields(GeneratorSpec)}
     assert set(plugin.__all__) >= {"Registry", "registry", "GeneratorSpec",
-                                   "GateGeneratorSpec", "DuplicateSpecError",
+                                   "DuplicateSpecError",
                                    "PluginOverrideWarning", "PluginLoadError",
                                    "API_VERSION", "SpecInfo"}
     # Roadmap PR8: per-generator Params and the generator subset of Stage.
@@ -641,7 +596,6 @@ def test_spec_types_are_reexported():
     for name in plugin.__all__:
         assert getattr(plugin, name) is not None, name
     assert [f.name for f in dataclasses.fields(GeneratorSpec)][-1] == "params"
-    assert [f.name for f in dataclasses.fields(GateGeneratorSpec)][-1] == "params"
     assert issubclass(DuplicateSpecError, ValueError)
     assert issubclass(PluginOverrideWarning, UserWarning)
     assert issubclass(PluginLoadError, RuntimeError)
@@ -801,7 +755,6 @@ def test_adding_the_identical_spec_again_is_a_noop(fresh):
         register_toys(registry)
         registry.add(TOY_CIRCLE)
         registry.add(TOY_CIRCLE, replace=True)
-        generator_registry.register(TOY_CIRCLE)
     assert registry.get("generator", "toy.circle") is TOY_CIRCLE
     assert registry.describe("generator", "toy.circle").entry_point == "toy"
     with pytest.raises(DuplicateSpecError):

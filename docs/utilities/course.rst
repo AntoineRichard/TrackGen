@@ -237,9 +237,8 @@ settings as flat fields. It builds the same components as the presets, with its 
                                 seeds=42, collision="segments", checkpoint_spacing=0.6))
 
 Its SDF and height-field components declare no largest course size, so they never warn
-about their resolution (:ref:`collision-resolution-check`). :ref:`course-config-migration`
-maps every ``CourseConfig`` field to its preset argument, and :ref:`upgrading-course`
-lists what differs.
+about their resolution (:ref:`collision-resolution-check`). Prefer the explicit presets when declaring
+maximum course sizes and component capacities.
 
 .. _course-checkpoint-capacity:
 
@@ -299,9 +298,9 @@ It does not depend on the seeds, the batch or the course :term:`size`. At the de
   longer tracks, or pass ``max_checkpoints``.
 - **A warning.** When the default capacity clips a valid env of the construction batch,
   construction emits one ``UserWarning``. An explicit ``max_checkpoints`` never warns.
-- ``course.checkpoint_sampler.max_checkpoints`` reads the capacity in use. To keep the
-  array shapes of code written for 0.1, pass ``max_checkpoints`` explicitly
-  (:ref:`upgrading-checkpoint-capacity`).
+- ``course.checkpoint_sampler.max_checkpoints`` reads the capacity in use. Pass
+  ``max_checkpoints`` explicitly to preserve array shapes across a change in the
+  seed set, generator geometry or curriculum range.
 
 A size curriculum grows the tracks after construction: :ref:`curricula-course` shows how
 to size the checkpoint ring and the SDF and height-field grids for it.

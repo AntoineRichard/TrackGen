@@ -6,7 +6,7 @@ pytest.importorskip("warp")
 import warp as wp  # noqa: E402
 wp.init()
 
-from track_gen._src import warp_pipeline as wpl
+from tests._reference_generators import warp_pipeline as wpl
 from tests._oracle.relaxation import _resample_uniform
 
 from tests.conftest import DEVS  # noqa: E402

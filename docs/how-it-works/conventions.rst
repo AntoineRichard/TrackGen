@@ -28,7 +28,9 @@ Post-generation, ``n_max`` (:term:`N_max`) is the buffer stride and ``count[e]``
 
 - Loop ``range(count[e])``.
 - Base their reads at ``e*n_max``.
-- Wrap neighbours with ``% count[e]``.
+- Check source validity and guard ``count[e] == 0`` before reading points or taking
+  ``% count[e]``; poisoned invalid envs have zero count.
+- Wrap neighbours with ``% count[e]`` only after that guard.
 - Guard ``i ≥ count[e]``.
 
 **Parity invariant:** when ``count[e] == N_max`` for all envs, every count-aware kernel

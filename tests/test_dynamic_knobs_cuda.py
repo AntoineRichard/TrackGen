@@ -93,7 +93,7 @@ from track_gen import (  # noqa: E402
     TrackGenConfig,
     TrackGenerator,
 )
-from track_gen._src import warp_pipeline  # noqa: E402
+from tests._reference_generators import warp_pipeline  # noqa: E402
 from track_gen._src.generator_binding import _StageGenerator  # noqa: E402
 from track_gen.exec import LaunchContext  # noqa: E402
 from track_gen.pipeline import presets  # noqa: E402
@@ -343,6 +343,9 @@ def _rng(seeds=SEEDS) -> PerEnvSeededRNG:
 
 
 def _track_cfg(kw: dict) -> TrackGenConfig:
+    """Keep raw invalid rows for the scalar-kernel geometry comparisons."""
+    kw = dict(kw)
+    kw.setdefault("on_invalid", "keep")
     return TrackGenConfig(device=DEV, num_envs=E, **kw)
 
 
@@ -370,7 +373,7 @@ def _stage_track(kw: dict, sets=(), *, trace=None) -> "tuple[TrackGenerator, dic
 
 
 def _legacy_track(kw: dict, *, trace=None) -> dict:
-    """The PR9 composition (``warp_pipeline._run_pipeline`` -> ``inflate_warp``) for
+    """The PR9 composition (``warp_pipeline._run_pipeline`` -> ``_inflate_warp``) for
     ``TrackGenConfig(**kw)`` on fresh buffers at :data:`SEEDS`: the frozen legacy
     generator spec (``generate_*_warp``) and ``apply_z_profile*``, i.e. the SCALAR
     kernels. Returns the :data:`TRACK_FIELDS` arrays."""
@@ -487,7 +490,7 @@ class _TwinHarness:
     def __init__(self, pair: _Twin, monkeypatch) -> None:
         mod = importlib.import_module(f"track_gen._src.{pair.module}")
         self.pair = pair
-        self.scalar_k = getattr(mod, pair.scalar)
+        self.scalar_k = getattr(importlib.import_module(f"tests._reference_generators.{pair.module}"), pair.scalar)
         self.twin_k = getattr(mod, pair.twin, None)
         assert self.twin_k is not None, f"track_gen._src.{pair.module}.{pair.twin} missing"
         self.dim, self.args = _capture_scalar_launch(monkeypatch, pair.config,
@@ -620,19 +623,7 @@ def test_twin_kernel_equals_its_scalar_kernel_on_generator_inputs(pair, monkeypa
     for e in range(E):
         at = {i: float(_clamp(v[e], *h.bounds[i])) for i, v in per_env.items()}
         h.assert_rows(got, h.scalar(at), e, f"{pair}: per env {at}")
-    # (d): bezier's style-drawn knobs are not clamped.
-    if pair == "assemble":
-        style = importlib.import_module("track_gen._src.warp_generate")._assemble_style_k
-        draws = {6: np.float32([-0.3, 1.7, 0.2, 0.5, -0.0, 0.05, 1.2, 0.35]),
-                 7: np.float32([-0.5, 2.0, 0.3, 0.0, np.inf, 0.7, 0.1, 1.0e9])}
-        got = h.twin(draws, bounds=(-math.inf, math.inf, -math.inf, math.inf))
-        args = list(h.args)
-        keep = {i: _dev(v) for i, v in draws.items()}
-        for i, arr in keep.items():
-            args[i] = arr
-        want = _run(style, h.dim, args)
-        h.assert_same(got, [want[i] for i in h.arrays],
-                      "assemble: (-inf, inf) bounds vs _assemble_style_k")
+
 
 
 # ---------------------------------------------------------------------------------------
@@ -837,6 +828,9 @@ _GATE_CASES = [(g, o, z) for g in _GATE_KNOBS for o in ("ccw", "raw")
 
 
 def _gate_cfg(kw: dict) -> GateGenConfig:
+    """Keep raw invalid rows for the frozen gate-reference comparisons."""
+    kw = dict(kw)
+    kw.setdefault("on_invalid", "keep")
     return GateGenConfig(num_envs=E, device=DEV, **kw)
 
 

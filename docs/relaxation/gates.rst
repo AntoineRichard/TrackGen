@@ -1,208 +1,153 @@
-Gate relaxation — collision solve
-=================================
+Separate crowded gates
+=======================
 
-Drone-style gate sequences (``GateGenerator``, tutorial at
-:doc:`/tutorials/gate-sequences`) run their own **gate self-collision relaxation**, a
-:term:`stage` separate
-from the XPBD track relaxation documented on the other pages in this section. It is a
-small per-env pairwise separation that pushes overlapping gates apart before tangents
-and frames are computed. This page covers why it exists, the sphere model and its
-target distance, the Gauss-Seidel solve semantics, its determinism, the one knob that
-controls it, and how it behaves under CUDA-graph capture.
+Gate relaxation pushes nearby XY centers apart before altitude, tangents and frames
+are built. Its center-separation radius is independent of the square opening's width;
+the solve can fix a spacing failure while leaving a bar-crossing failure.
 
-Why gates need it
------------------
+.. figure:: ../assets/racing/controls-gate-radius.png
+   :alt: A Bezier gate sequence with small separation disks, larger overlapping disks
+         with zero rounds, then larger disks after eight rounds; the spacing failure clears.
 
-A gate pipeline over a native gate generator does **not** run resample, XPBD
-relaxation, or inflation: it emits the generator's anchors directly as gate centres
-(a stations source runs the track stages first, :ref:`pipeline-stations`). Raw anchors routinely land close
-together or exactly coincident (two sampled anchors in the same grid cell, a
-tight-corner cluster). Without separation the resulting sequence has gates overlapping
-in the plane: unusable as a drone course, and — with a positive ``gate_width`` — prone
-to crossing gate bars that fail the validity check. The collision solve spreads
-overlapping gates to a minimum centre spacing so the sequence is a clean, traversable
-course.
+   Current seed 5, epoch 0, env 0. Orange circles have radius ``gate_radius``; blue
+   bars have full width ``gate_width=.12``. At radius ``.13`` the unsolved centers fail
+   spacing. Eight rounds separate this selected sample; this is not a yield estimate.
+   Diagnostics explicitly use ``on_invalid="keep"``.
 
-.. figure:: ../assets/readme-gate-strip.png
-   :alt: Raw gate anchors versus separated gates after the collision solve
-   :align: center
+Try it
+------
 
-   Gate self-collision relaxation: raw anchors (top, ``gate_solve_iters=0``) versus
-   the separated gates (bottom), with gate tangents and ``gate_width`` bars.
+.. code-block:: python
 
-The sphere model and target distance
-------------------------------------
+   from track_gen import GateGenerator
+   from track_gen.pipeline import presets
 
-Each gate centre is treated as a disk (a 2-D sphere) of radius ``gate_radius``. Two
-gates overlap when their centres are closer than the sum of the two radii, so the
-target centre-to-centre distance is twice the radius, derived from a single config
-field:
+   gen = GateGenerator(presets.gates(
+       num_envs=4, device="cpu", generator="bezier",
+       gate_radius=0.13, gate_solve_iters=16, gate_width=0.12,
+       on_invalid="keep",                    # retain failed candidates for inspection
+   ), seeds=5)
+   gates = gen.generate()
+   fail = gates.fail_mask.numpy()
+   spacing_bit = 1 << gates.fail_bits["spacing"]
+   spacing_failed = (fail & spacing_bit) != 0
+
+.. snippet: after
+
+   import numpy as np
+   count = gates.count.numpy()
+   p = gates.position.numpy().reshape(4, gen.max_gates, 3)
+   assert all(np.isfinite(p[e, :count[e]]).all() for e in range(4))
+   assert (gates.valid.numpy() == (fail == 0)).all()
+
+Default generation poisons failed rows: count zero, NaN geometry. ``keep`` makes a
+failed candidate visible without changing ``valid`` or ``fail_mask``. Only use valid
+rows in a simulator (:ref:`invalid-envs`).
+
+Two static controls
+--------------------
+
+``gate_radius=.025`` is a distance in caller coordinate units, ``>=0``. Every real
+pair of gates has the same XY target distance:
 
 .. math::
 
-   d_{\text{target}} = 2 \cdot \text{gate\_radius},
+   d_{\mathrm{target}} = 2\,\mathrm{gate\_radius}.
 
-so at the default ``gate_radius = 0.025`` the target centre spacing is ``0.05`` in
-normalized track coordinates. ``gate_radius`` is the only config field that feeds the
-target; ``gate_width`` is the separate **full** width of the gate bar (``half_size = 0.5 *
-gate_width``, see :ref:`gate-width-config`) and does **not** enter the separation
-target. Neither does the per-env course size (``generator.size`` / ``normalize.size``):
-it spreads the anchors before the solve, while ``gate_radius`` stays absolute, so a
-larger course has fewer overlapping gates to separate (:ref:`gate-width-per-env`).
+The default target is ``.05``. The circles are a **generation spacing model**, not
+physical drone or frame collision geometry. ``gate_width=0`` makes point openings but
+does not disable separation. Larger course ``size`` spreads centers before this solve
+without changing radius or width.
 
-Where it runs in the pipeline
-------------------------------
+``gate_solve_iters=8`` is the maximum number of rounds, ``>=0``. More rounds increase
+the work budget and may resolve remaining crowded pairs. Zero rounds, or a radius
+whose float32 ``2*r`` is zero, selects ``gate_relax.none`` and launches no solve.
+Directly selecting ``gate_relax.spheres`` requires a positive float32 target and at
+least one round; use ``none`` to skip it. Both settings require rebuilding.
+The validity stage's radius must agree with the relaxation radius in a hand-built spec.
 
-The solve is the ``gate_relax`` stage of the gate pipeline
-(:ref:`pipeline-gate-stages`): it runs after the gate generator's anchors have been
-ordered (an ``order`` stage) and normalized, and before the altitude profile, tangents,
-frames and validity. Every gate generator, built-in or plugin, and every stations
-source routes through it, so the stage order is uniform:
-
-.. code-block:: text
-
-   anchors → order (ccw / raw / random_pairs / a plugin's) → bbox normalization (polar,
-       checkpoint, voronoi)
-       → SPHERE RELAXATION (gate_relax) → Z profile → lift → tangents → frames + validity
-
-Concretely, the slot holds ``gate_relax.spheres`` when ``gate_solve_iters > 0`` and the
-float32 target distance ``2 * gate_radius`` is positive, and ``gate_relax.none`` (no
-launch) otherwise. ``gate_relax.spheres`` writes a new version of ``gates.xy`` (the
-ordered positions stay readable with ``gen.program.tap("gates.xy", after="order")``),
-and the tangents are then computed from the moved positions before the frames stage
-writes the orientations, endpoints, and per-sequence validity. Because separation can
-push gates outward, the final bounding box may expand beyond the normalized extent to
-satisfy the requested spacing.
-
-The solve: per-env sequential Gauss-Seidel
-------------------------------------------
-
-``gate_relax.spheres`` launches ``_relax_gate_spheres_k`` with **one thread per env**
-(``dim = E``). Each thread owns one gate sequence, copies its row of the ordered
-positions into the stage's output, and runs the whole separation loop in-kernel on that
-output:
-
-- For up to ``iterations`` rounds, it scans every ordered gate pair :math:`(i, j)`,
-  :math:`j > i`, over the env's real gate ``count``.
-- A pair with centre distance ``dist < target_distance`` is pushed apart
-  **symmetrically** by half the deficit each:
-
-  .. math::
-
-     \text{correction} = \tfrac{1}{2}\,(d_{\text{target}} - \text{dist})\,\hat{n},
-     \qquad p_i \mathrel{-}= \text{correction},\quad p_j \mathrel{+}= \text{correction},
-
-  where :math:`\hat{n}` is the unit vector from :math:`p_i` to :math:`p_j`.
-- Positions are written back **in place** inside the pair loop, so later pairs in the
-  same round already see the corrections applied by earlier pairs. That is
-  **Gauss-Seidel** iteration, unlike the track solver's Jacobi double-buffering. (In
-  place within the thread's own row of the stage's output: the version the stage read is
-  never written.)
-- Each round tracks whether any pair moved; a round that moves nothing triggers an
-  **early exit** from the iteration loop (the sequence is already separated).
+Watch actual rounds
+--------------------
 
 .. raw:: html
 
-   <video controls loop muted playsinline width="100%" poster="../_static/relaxation-gates-iterations-poster.png">
+   <video controls loop muted playsinline width="100%" poster="../_static/relaxation-gates-iterations-poster.png" aria-label="Actual gate separation rounds, including one final spacing failure">
      <source src="../_static/relaxation-gates-iterations.mp4" type="video/mp4">
+     Gate separation moves crowded centers outward over successive rounds.
    </video>
 
-Five bezier gate sequences whose raw anchors (``gate_solve_iters=0``) are heavily
-overlapping (10-15 pairs inside the separation target each), evolving round by round
-through the Gauss-Seidel sphere separation at an illustrative ``gate_radius=0.13``
-(target spacing ``0.26``; the default radius is ``0.025``) with ``gate_width=0.16``
-bars. Because the coincident-pair tie-break is indexed by the **round** index — not the
-total budget — a run with ``gate_solve_iters=k`` executes exactly the first ``k`` rounds
-of a longer run, so each frame is generated afresh at budget ``k`` and is a *true*
-snapshot of the same trajectory (the raw anchors are asserted bit-identical across two
-generations). Each panel gains a ``converged`` tag once its state stops changing — the
-per-env early exit in action; the round budget only bounds the loop. Regenerate with
-``python -m viz.render_relaxation_video --gates`` (needs ffmpeg).
+Native Bezier sequences, seed/env 3 (11 gates), 0 (13 gates) and 9 (10 gates), selected
+from 24 candidates at epoch 0 for crowded raw anchors. Radius ``.13`` gives target
+``.26``; full opening width is ``.16``. Each frame regenerates an actual round budget
+from 0 through 16 with ``keep`` and a fixed viewpoint. The renderer checks that the raw
+round-zero state repeats. The source uses a fixed pair schedule and a round-indexed
+deterministic tie-break; per-round arithmetic does not depend on the total budget.
+Together these justify interpreting the separately generated positions as prefixes of
+the same solve. Tangents and gate frames are recomputed for each budget; the prefix
+reasoning applies to the XY separation states.
 
-Contrast with the track XPBD solver
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+**Text alternative:** overlapping gray spacing disks separate most visibly in the
+early rounds, then the movement shrinks. The first two selected sequences pass validity
+at round 16. The third looks settled but still fails ``spacing``: its smallest pair
+distance is about ``.259996`` against the ``.26`` target. Visual stillness is not the
+acceptance test. Altitude is absent here; dashed traversal chords are not collision bars.
 
-The track solver (see :doc:`solver`) is deliberately the opposite design:
+Reproduce with ``python -m viz.render_relaxation_video --gates --device cpu --out-dir DIR``.
+The clip's JSON provenance records candidate selection and per-round failure results.
+No numerical result here describes the valid fraction of an arbitrary batch.
 
-.. list-table::
-   :header-rows: 1
+What one round does
+--------------------
 
-   * -
-     - Track relaxation
-     - Gate relaxation
-   * - Parallelism
-     - E-wide, **thread-per-bead** (``E * N_max`` threads)
-     - **thread-per-env** (``E`` threads), pairs looped in-kernel
-   * - Update order
-     - **Jacobi** — reads previous-sweep buffer, double-buffered
-     - **Gauss-Seidel** — in-place, later pairs see earlier moves
-   * - Loop structure
-     - Fixed sweep count, one kernel launch per sweep
-     - Single launch; rounds and pairs looped inside the kernel
-   * - Termination
-     - Fixed iteration budget
-     - **Early exit** when a round moves nothing
-
-Why the flip is the right trade-off: a track carries hundreds of beads
-(:math:`N_\text{max}`), so parallelizing across beads is what keeps the sweep cheap, and
-Jacobi double-buffering is what makes that bead-parallel update order-independent and
-graph-capturable. A gate sequence carries only **dozens** of gates (default
-``max_gates = 32``), so the :math:`O(G^2)` pair loop is tiny (a few hundred to a thousand
-comparisons per round) and there is no need to parallelize across gates — one thread per
-env already saturates the batch dimension ``E``. Running the whole solve inside a single
-thread means Gauss-Seidel updates in place with **no double-buffering**, and the early
-exit is **free** (a per-thread ``break``) rather than a host-side sync that would break
-graph capture.
-
-Determinism: the coincident-gate tie-break
--------------------------------------------
-
-When two gates are **exactly coincident** (``dist`` at or below ``1e-8``) there is no
-well-defined separation direction. The kernel synthesizes a deterministic pseudo-random
-one from an angle hash of the pair and iteration indices:
+The solve is sequential **Gauss-Seidel within each env**, with one Warp thread per
+sequence. The kernel copies the ordered XY input into its own output row, then scans
+all pairs ``(i,j)`` with ``j>i`` over real count. If ``dist + 1e-8 < target``, it moves
+both centers by half the deficit in opposite directions:
 
 .. math::
 
-   \theta = 12.9898\,(i{+}1) + 78.233\,(j{+}1) + 37.719\,(\text{it}{+}1)
-            + 19.371\,(e{+}1),
-   \qquad \hat{n} = (\cos\theta,\ \sin\theta).
+   \delta = \tfrac12(d_{\mathrm{target}}-d)\,\hat n,
+   \qquad p_i \leftarrow p_i-\delta,\quad p_j \leftarrow p_j+\delta.
 
-The hash depends only on the gate indices ``(i, j)``, the round ``it``, and the env
-``e`` — no RNG state — so the separation is **bit-for-bit reproducible** across runs and
-across CUDA-graph replays. Distinct coincident pairs and successive rounds get distinct
-directions, so a cluster of stacked gates fans out rather than collapsing along one axis.
+Later pairs see earlier moves in the same round. A round that moves no pair exits
+early. Finite budgets can leave a small spacing deficit; the final validity checker
+uses its own float32 tolerance and decides whether the sequence is usable.
 
-The ``gate_solve_iters`` knob
------------------------------
+Coincident centers have no direction, so the kernel chooses one deterministically
+from pair indices, env index and the current round. It consumes no RNG state. Ordered
+pair traversal and this tie-break are why the same seeds, epoch and built pipeline
+repeat on the same device/runtime. Changing ordering changes the solve's input and
+possibly its trajectory.
 
-The iteration budget is ``GateGenConfig.gate_solve_iters`` (default ``8``, validated
-``>= 0``). It is the ``iterations`` upper bound on the round loop; the early exit means
-well-separated sequences finish in fewer rounds. **Setting ``gate_solve_iters = 0``
-disables the solve entirely**: the pipeline selects ``gate_relax.none``, which launches
-nothing, and the gates keep their ordered, normalized positions. That is the mode to use
-when inspecting the raw ordered, normalized anchors before separation (close gates may
-still overlap). The target distance is governed separately by ``gate_radius``;
-``gate_radius = 0`` (any radius whose float32 ``2 * gate_radius`` is ``0``) also selects
-``gate_relax.none``. In a hand-built spec, ``gate_relax.spheres`` refuses such params
-(``ValueError``): select ``gate_relax.none`` instead.
+Where it runs
+--------------
 
-Graph capture and zero-alloc
-----------------------------
+.. code-block:: text
 
-The solve is a single ``wp.launch`` of a fixed-shape kernel: the launch dimension
-(``E``) and the ``iterations`` bound come from the config, not from data, so the launch
-sequence is data-independent and captures cleanly into the gate pipeline's ``wp.Graph``.
-The in-kernel early-exit ``break`` is per-thread control flow **inside** the kernel — it
-does not vary the host launch sequence, so it is compatible with capture. No host
-synchronization is issued. The separation writes the stage's own ``gates.xy`` version,
-allocated once when the pipeline is built, with no per-call allocation.
+   native anchors or track stations
+     -> order -> optional extent normalization -> gate_relax
+     -> altitude -> 3D lift -> tangents -> gate frames -> validity
 
-See also
---------
+Stations from a relaxed track first run that track's own XY sub-pipeline. They still
+run gate separation afterwards, so a nonzero radius can move gates off their original
+stations. Separation may expand the final box beyond the requested normalized extent.
+The ordered input remains accessible through ``gen.program.tap("gates.xy", after="order")``;
+the normalized input, where present, is a later version (:ref:`pipeline-gate-stages`).
 
-- :doc:`/tutorials/gate-sequences` — the end-to-end gate-generation recipe and output
-  fields, including the runtime section that drives gates for RL.
-- :doc:`/utilities/course` — the runtime side: ``Course`` in gates mode turns these
-  separated gates into checkpoints and optional gate-post collision.
-- :doc:`overview`, :doc:`solver` — the XPBD **track** relaxation stage this solve is
-  deliberately contrasted with.
+Gate and track relaxation solve different problems. Track XPBD uses bead-parallel
+Jacobi sweeps, spacing and bend constraints plus a smoothing tail
+(:doc:`solver`). Gate separation uses a center-pair loop with no track bend or spacing
+rest-length constraint. It does not test or repair the interpolated ``CourseLine``
+spline, and it does not model the 3D gate frame members.
+
+Capture and storage
+--------------------
+
+``gate_relax.spheres`` is one launch with fixed env dimension and static round budget.
+Its per-thread early exit stays inside the kernel; no host readback changes the launch
+sequence. Output storage is allocated when built and reused. The solve writes its
+own channel version, leaving the version it read untouched. Use the ordinary stream,
+mask and CUDA-graph contracts (:doc:`/tutorials/cuda-graph-in-a-sim`).
+
+For native controls, ordering and buffers, see :doc:`/tutorials/gate-sequences`.
+For altitude, planes and physical frame collision, see :doc:`/gates-3d`.

@@ -1,0 +1,160 @@
+{
+  "artwork": "Original hand-designed Circuit branding; not a simulation capture.",
+  "logical_sizes": {
+    "icon": [
+      32,
+      32
+    ],
+    "wordmark": [
+      140,
+      32
+    ]
+  },
+  "outputs": {
+    "brand/trackgen-circuit-icon-16.png": {
+      "bytes": 136,
+      "sha256": "849455d1a19325dd5c176f052da875acfadc061ff7751c978fb48be33fa7fb57",
+      "size": [
+        16,
+        16
+      ]
+    },
+    "brand/trackgen-circuit-icon-24.png": {
+      "bytes": 149,
+      "sha256": "91516c62eaa94b9450f25e5bbddd8617d7495b1f56bd4e57e5ced67b4ddb35f3",
+      "size": [
+        24,
+        24
+      ]
+    },
+    "brand/trackgen-circuit-icon-32.png": {
+      "bytes": 170,
+      "sha256": "ff4f1c3015d94346872543c8b6bdc6b2717fea2e1becf0ae77921ce44c2e7328",
+      "size": [
+        32,
+        32
+      ]
+    },
+    "brand/trackgen-circuit-icon-48.png": {
+      "bytes": 207,
+      "sha256": "0a33478a4da58c5a2d3d0ec30e8e62d25055bf0893fa4e8cc91d519fcdda74d5",
+      "size": [
+        48,
+        48
+      ]
+    },
+    "brand/trackgen-circuit-icon-64.png": {
+      "bytes": 227,
+      "sha256": "8f34ab62e31f7c330e4778127f63d9bd7258005afa8be06d57d6f3860b56f3e9",
+      "size": [
+        64,
+        64
+      ]
+    },
+    "brand/trackgen-circuit-icon-black.svg": {
+      "bytes": 6022,
+      "sha256": "90b9748ae09952d24fc25fd65633c35fb11413ab2877cd63c5d65909e3e70044",
+      "size": [
+        32,
+        32
+      ]
+    },
+    "brand/trackgen-circuit-icon-white.svg": {
+      "bytes": 6022,
+      "sha256": "bbc3c328dfebe2acf1d2824ad603499a634f9fd71d74d2fee019c6146b5a9139",
+      "size": [
+        32,
+        32
+      ]
+    },
+    "brand/trackgen-circuit-icon.svg": {
+      "bytes": 6022,
+      "sha256": "03e0773e01fbd835bc26f1df70109b34481f1a1dd8756da55b2ac0c1c5d5b8b7",
+      "size": [
+        32,
+        32
+      ]
+    },
+    "brand/trackgen-circuit-wordmark-black.svg": {
+      "bytes": 8112,
+      "sha256": "ab3b671f76a364aa8fd87ba187a4f9139d76b7e979b933588c63d93c1090af62",
+      "size": [
+        140,
+        32
+      ]
+    },
+    "brand/trackgen-circuit-wordmark-white.svg": {
+      "bytes": 8112,
+      "sha256": "fb1301dcd42b96693c4ed020753247b44081bfc5c0fdf8a20824515a6c367944",
+      "size": [
+        140,
+        32
+      ]
+    },
+    "brand/trackgen-circuit-wordmark.svg": {
+      "bytes": 8112,
+      "sha256": "39235980eb19799f1c228544782a8898145a8ba142ad47d7712ac8d652025cc1",
+      "size": [
+        140,
+        32
+      ]
+    },
+    "brand/trackgen-circuit.ico": {
+      "bytes": 567,
+      "sha256": "3745157df70711a3528fd96031827885d7f4f6ea5144c85919af65a704abbd21",
+      "size": [
+        [
+          16,
+          16
+        ],
+        [
+          32,
+          32
+        ],
+        [
+          48,
+          48
+        ]
+      ]
+    },
+    "media-dark/trackgen-circuit-icon.svg": {
+      "bytes": 6022,
+      "sha256": "71d4646e0abd071a02859e6a5991219cd47dc657cfe4b7b8b21ae94b51510bfb",
+      "size": [
+        32,
+        32
+      ]
+    },
+    "media-dark/trackgen-circuit-wordmark.svg": {
+      "bytes": 8112,
+      "sha256": "3767cd6407841f3cf617562308d91d0808280374db22c30de290b6be61ca84ca",
+      "size": [
+        140,
+        32
+      ]
+    }
+  },
+  "palette": {
+    "black": {
+      "accent": "#000000",
+      "ink": "#000000"
+    },
+    "dark": {
+      "accent": "#65b8ff",
+      "ink": "#e7e9ed"
+    },
+    "favicon": "#327fba",
+    "light": {
+      "accent": "#166baf",
+      "ink": "#243344"
+    },
+    "white": {
+      "accent": "#ffffff",
+      "ink": "#ffffff"
+    }
+  },
+  "renderer": "viz/render_brand_assets.py",
+  "renderer_sha256": "9830a38739d1ce506ab8fa96be5af61469af38c6f4a8725bf0468b3f46b4e894",
+  "schema_version": 1,
+  "source_revision": "a3b4badcfbfa03dd4de5a9b899faabe14005f1a3"
+}

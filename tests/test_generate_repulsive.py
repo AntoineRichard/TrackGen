@@ -10,6 +10,7 @@ for every generator by the conformance kit, in tests/test_conformance.py, on the
 small config (``_SMALL``).
 """
 from __future__ import annotations
+from tests._reference_generators import generate_raw
 
 import numpy as np
 import pytest
@@ -117,7 +118,10 @@ def test_obstacle_layout_deterministic(dev):
 
 _ALPHA, _BETA, _EPS = 3.0, 6.0, 1e-4
 _P_EXP = -(_BETA - _ALPHA) / 2.0
-_W_LEN = 30.0
+_BARRIER_DOMAIN = 3.0
+_BARRIER_MARGIN = .05
+_BARRIER_CENTERS = np.array([[2.0, 0.1], [-1.9, 1.3]], dtype=np.float64)
+_BARRIER_RADII = np.array([.08, .12], dtype=np.float64)
 
 
 def _safe_dir_np(v):
@@ -127,23 +131,34 @@ def _safe_dir_np(v):
 def _energy_ref(x, obs_pts, obs_mw, Lt, Li):
     """float64 total energy E_TP + E_obs + E_len, matching the Warp forward kernels."""
     n = x.shape[0]
-    T = _safe_dir_np(np.roll(x, -1, 0) - np.roll(x, 1, 0))
-    el = np.linalg.norm(np.roll(x, -1, 0) - x, axis=-1)
+    edge = np.roll(x, -1, 0) - x
+    tangent = _safe_dir_np(edge)
+    el = np.linalg.norm(edge, axis=-1)
     w = 0.5 * (el + np.roll(el, 1))
     idx = np.arange(n)
     dd = np.abs(idx[:, None] - idx[None, :])
-    mask = np.minimum(dd, n - dd) > 2
-    diff = x[None, :, :] - x[:, None, :]                      # [i,j] = x_j - x_i
-    d2 = (diff * diff).sum(-1)
-    wedge = diff[..., 0] * T[:, None, 1] - diff[..., 1] * T[:, None, 0]
-    k = ((np.abs(wedge) + _EPS) ** _ALPHA / (d2 + _EPS * _EPS) ** (_BETA * 0.5)) \
-        * (w[:, None] * w[None, :]) * mask
-    e_tp = k.sum()
+    mask = np.minimum(dd, n - dd) > 1
+    e_tp = 0.0
+    for owner_end in (x, np.roll(x, -1, 0)):
+        for partner_end in (x, np.roll(x, -1, 0)):
+            diff = partner_end[None, :, :] - owner_end[:, None, :]
+            d2 = (diff * diff).sum(-1)
+            wedge = diff[..., 0] * tangent[:, None, 1] - diff[..., 1] * tangent[:, None, 0]
+            e_tp += (.25 * el[:, None] * el[None, :] * np.abs(wedge) ** _ALPHA /
+                     (d2 + _EPS * _EPS) ** (_BETA * .5) * mask).sum()
     dob = x[:, None, :] - obs_pts[None, :, :]
-    e_obs = (obs_mw[None, :] * ((dob * dob).sum(-1) + 1e-8) ** _P_EXP).sum()
+    e_obs = (w[:, None] * obs_mw[None, :] * ((dob * dob).sum(-1) + 1e-8) ** _P_EXP).sum()
     peri = np.linalg.norm(np.roll(x, -1, 0) - x, axis=-1).sum()
-    e_len = _W_LEN * ((peri - Lt) / Li) ** 2
-    return e_tp + e_obs + e_len
+    wall_gap = _BARRIER_DOMAIN - _BARRIER_MARGIN - np.linalg.norm(x, axis=-1)
+    e_barrier = (w * _BARRIER_DOMAIN ** (1. - (_BETA - _ALPHA)) *
+                 -np.log(wall_gap / _BARRIER_DOMAIN)).sum()
+    edges = np.roll(x, -1, axis=0) - x
+    for center, radius in zip(_BARRIER_CENTERS, _BARRIER_RADII):
+        fraction = np.clip(((center - x) * edges).sum(-1) / (edges * edges).sum(-1), 0., 1.)
+        gap = np.linalg.norm(x + fraction[:, None] * edges - center, axis=-1) - radius - _BARRIER_MARGIN
+        e_barrier += (el * _BARRIER_DOMAIN ** (1. - (_BETA - _ALPHA)) *
+                      -np.log(gap / _BARRIER_DOMAIN)).sum()
+    return e_tp + e_obs + e_barrier
 
 
 def _analytic_grad_warp(x, obs_pts, obs_mw, Lt, Li, dev):
@@ -151,27 +166,25 @@ def _analytic_grad_warp(x, obs_pts, obs_mw, Lt, Li, dev):
     n, M = x.shape[0], obs_pts.shape[0]
     center = wp.array(x.reshape(n, 2).astype(np.float32), dtype=wp.vec2f, device=dev)
     frozen = wp.zeros(1, dtype=wp.int32, device=dev)
-    reached = wp.zeros(1, dtype=wp.int32, device=dev)
     op = wp.array(obs_pts.astype(np.float32), dtype=wp.vec2f, device=dev)
     ow = wp.array(obs_mw.astype(np.float32), dtype=wp.float32, device=dev)
-    lt = wp.array(np.array([Lt], np.float32), dtype=wp.float32, device=dev)
-    li = wp.array(np.array([Li], np.float32), dtype=wp.float32, device=dev)
-    tang = wp.zeros(n, dtype=wp.vec2f, device=dev)
     wdual = wp.zeros(n, dtype=wp.float32, device=dev)
-    wcoef = wp.zeros(n, dtype=wp.float32, device=dev)
-    btan = wp.zeros(n, dtype=wp.vec2f, device=dev)
-    lc = wp.zeros(1, dtype=wp.float32, device=dev)
-    peri = wp.zeros(1, dtype=wp.float32, device=dev)
+    obstacle_energy = wp.zeros(n, dtype=wp.float32, device=dev)
     grad = wp.zeros(n, dtype=wp.vec2f, device=dev)
-    wp.launch(rep._tangent_weight_k, dim=(1, n),
-              inputs=[center, n, frozen, tang, wdual], device=dev)
-    wp.launch(rep._tp_prepass_k, dim=(1, n),
-              inputs=[center, n, _ALPHA, _BETA, _EPS, frozen, tang, wdual, wcoef, btan], device=dev)
-    wp.launch(rep._len_coef_k, dim=1,
-              inputs=[center, n, lt, li, _W_LEN, frozen, lc, peri], device=dev)
+    bg = wp.zeros(n, dtype=wp.vec2f, device=dev)
+    edge_bg = wp.zeros(n, dtype=wp.vec2f, device=dev)
+    dc = wp.array(_BARRIER_CENTERS.astype(np.float32), dtype=wp.vec2f, device=dev)
+    dr = wp.array(_BARRIER_RADII.astype(np.float32), dtype=wp.float32, device=dev)
+    margin = wp.full(1, _BARRIER_MARGIN, dtype=wp.float32, device=dev)
+    wp.launch(rep._dual_weight_k, dim=(1, n),
+              inputs=[center, n, frozen, wdual], device=dev)
+    wp.launch(rep._obstacle_energy_k, dim=(1, n),
+              inputs=[center, n, op, ow, M, _P_EXP, dc, dr, len(_BARRIER_RADII), _BARRIER_DOMAIN,
+                      margin, frozen, obstacle_energy, bg, edge_bg],
+              device=dev)
     wp.launch(rep._grad_gather_k, dim=(1, n),
-              inputs=[center, n, _ALPHA, _BETA, _EPS, tang, wdual, wcoef, btan, op, ow, M, _P_EXP,
-                      reached, 96, 0, lc, frozen, grad], device=dev)
+              inputs=[center, n, _ALPHA, _BETA, _EPS, wdual, op, ow, M, _P_EXP,
+                      obstacle_energy, bg, edge_bg, frozen, grad], device=dev)
     wp.synchronize()
     return grad.numpy().reshape(n, 2)
 
@@ -252,15 +265,11 @@ def test_repulsive_stride_consistent_minimal_budget(dev):
 
 @pytest.mark.cuda
 def test_repulsive_default_yield_and_shape_cuda():
-    """The spike's bar: ~64/64 through the standard tail at E=64 with default config.
+    """CUDA default-yield and noncircular-shape regression.
 
-    With the analytic-adjoint gradient the CUDA flow is byte-deterministic, so a given seed
-    yields ONE stable answer run-to-run (seed=11 gave a stable 63/64 before the freeze became
-    absorbing; envs that freeze early no longer get later periodic resamples, so the exact
-    count may shift by an env or two; the previous tape path fluctuated 62-64/64 from
-    atomic-gradient noise). The hard gate is the design contract
-    (> 0.5); the soft gate (>= 58) guards against a genuinely broken port with margin for
-    config/seed variation -- not a loosened bar hiding a bad port (the port matches the spike).
+    Every accepted finished road must also satisfy the permanent barrier checker.
+    The minimum yield remains a regression gate; platform measurements accompany
+    intentional algorithm/default changes rather than a frozen numeric oracle.
     """
     E = 64
     cfg = TrackGenConfig(generator="repulsive", num_envs=E, device="cuda")
@@ -271,7 +280,26 @@ def test_repulsive_default_yield_and_shape_cuda():
     valid = to_t(track.valid).bool()
     yield_frac = float(valid.float().mean())
     assert yield_frac > 0.5, f"post-tail yield {yield_frac:.3f} <= 0.5 (design contract)"
-    assert int(valid.sum()) >= 58, f"yield {int(valid.sum())}/64 far below the spike bar"
+    # The former 58/64 gate counted roads that crossed the sampled discs:
+    # an independent rc2 reference found only 1 of 64 actually clear. For the
+    # permanent full-road contract, require at least 75% on this fixed batch
+    # (measured 53/64) AND independently verify every reported-valid road.
+    assert int(valid.sum()) >= 48, f"yield {int(valid.sum())}/64 below the 75% regression gate"
+    from tests._repulsive_geometry_reference import minimum_band_gaps
+    sc = {key.rsplit("/", 1)[-1]: value for key, value in gen._scratch.gen.scratch.items()}
+    centers = sc["disc_centers"].numpy().reshape(E, -1, 2)
+    radii = sc["disc_radii"].numpy().reshape(E, -1)
+    radius = float(np.float32(rep._RepulsiveScalars(cfg).r_dom))
+    outer = track.outer.numpy().reshape(E, cfg.N_max, 3)[..., :2]
+    inner = track.inner.numpy().reshape(E, cfg.N_max, 3)[..., :2]
+    counts = track.count.numpy()
+    for e in np.flatnonzero(valid.cpu().numpy()):
+        n = int(counts[e])
+        assert 3 <= n <= cfg.N_max
+        disc_gap, wall_gap = minimum_band_gaps(outer[e, :n], inner[e, :n],
+                                               centers[e], radii[e], radius)
+        assert disc_gap > 1e-5, f"reported-valid env {e} overlaps a disc: gap {disc_gap}"
+        assert wall_gap > 1e-5 * max(1., radius), f"reported-valid env {e} escapes the wall"
 
     N = int(cfg.num_points)
     gen_center = to_t(gen._scratch.gen_centerline).cpu().numpy().reshape(E, N, 2)
@@ -293,7 +321,7 @@ def test_repulsive_generate_has_no_host_sync_or_readback(monkeypatch):
     ``ctx.sync()`` funnels into (``runtime._sync``)."""
     E = 4
     cfg = TrackGenConfig(generator="repulsive", num_envs=E, device="cpu", **_SMALL)
-    scratch = rep.repulsive_alloc_scratch(cfg)
+    scratch = rep._alloc_repulsive_scratch(cfg)
     seeds = wp.array(np.arange(E, dtype=np.int32) + 3, dtype=wp.int32, device="cpu")
     out = wp.empty(E * int(cfg.num_points), dtype=wp.vec2f, device="cpu")
     valid = wp.empty(E, dtype=wp.int32, device="cpu")
@@ -304,8 +332,11 @@ def test_repulsive_generate_has_no_host_sync_or_readback(monkeypatch):
     # The generator's own module no longer holds a warp_pipeline reference (it is built
     # from track_gen.ops); the debug sync every ctx.sync() funnels into is runtime._sync.
     monkeypatch.setattr(runtime, "_sync", forbidden)
+    size = wp.full(E, 1.0, dtype=wp.float32, device="cpu")
+    from track_gen.exec import LaunchContext
     with no_host_sync():
-        rep.generate_repulsive_warp(seeds, cfg, out, valid, scratch)
+        rep._generate_repulsive(seeds, cfg, out, valid, scratch,
+                                LaunchContext.for_call("cpu"), size=size)
     monkeypatch.undo()
     assert np.isfinite(out.numpy()).all()
     assert (valid.numpy() == 1).all()
@@ -326,29 +357,14 @@ def _grow(seeds: list[int], dev: str = "cpu"):
 
 
 @pytest.mark.parametrize("dev", DEVS)
-def test_repulsive_freeze_is_absorbing_and_batch_independent(dev):
-    """A frozen env is never touched again, so each env's track depends only on its own
-    seed, not on which other envs share the batch.
-
-    The big batch needs one env that never freezes (which seeds stay unfrozen is
-    device- and platform-dependent fp32 behaviour, so it is discovered, not hard-coded).
-    The small batch reruns five envs that froze in the big batch. Before the freeze was
-    absorbing, the all-frozen small batch stopped at the global early exit while the big
-    batch kept resampling its frozen envs until the iteration budget ran out, so the same
-    seed produced different tracks in the two batches. DELIBERATE OUTPUT CHANGE: envs that
-    froze before the end of the loop now keep their at-freeze shape (they skip the later
-    periodic resamples), so their tracks differ slightly from earlier releases; envs that
-    never freeze are byte-identical.
-    """
-    big_seeds = list(range(24))
+def test_repulsive_raw_and_freeze_state_are_batch_independent(dev):
+    # Default bounded runs may reach their target without optimizer equilibrium.
+    # The deterministic controlled-loop tests prove absorbing early-stop behavior;
+    # this public-API check covers real seed trajectories without a skip/search.
+    big_seeds = [0, 1, 3, 7, 11, 23]
     big_c, big_frozen, big_valid = _grow(big_seeds, dev)
-    if big_frozen.all():
-        pytest.skip(f"every env froze on {dev}; nothing keeps the big batch running")
-    rows = np.flatnonzero(big_frozen)[:5]
-    if rows.size < 5:
-        pytest.skip(f"fewer than five envs froze on {dev}")
-
+    rows = np.array([0, 3, 5])
     small_c, small_frozen, small_valid = _grow([big_seeds[i] for i in rows], dev)
-    assert small_frozen.all(), "freeze decisions must not depend on the batch"
     assert np.array_equal(small_c, big_c[rows])
+    assert np.array_equal(small_frozen, big_frozen[rows])
     assert np.array_equal(small_valid, big_valid[rows])

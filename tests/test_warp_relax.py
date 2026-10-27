@@ -9,7 +9,7 @@ pytestmark = pytest.mark.cuda
 
 from tests._oracle import relaxation, geometry
 from tests._warp_compare import xpbd_solve
-from track_gen._src.types import TrackGenConfig
+from tests._oracle.config import OracleConfig as TrackGenConfig
 
 
 def _star(n=256, r0=1.0, amp=0.6, k=7, phase=0.0):

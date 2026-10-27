@@ -1,9 +1,8 @@
-"""The built-in stages of the track pipeline (roadmap PR10a).
+"""The built-in stages of the track pipeline.
 
 Each stage wraps the EXISTING kernels and wrappers of ``warp_pipeline`` /
 ``warp_relax`` / ``warp_zprofile`` verbatim: the same launches, in the same order, with
-the same scalars as the 0.2.0.dev2 composition (``warp_pipeline._run_pipeline`` +
-``inflate_warp``), so a :class:`~track_gen.pipeline.Program` of the default stage list
+the same scalars as the frozen PR9 composition in ``tests/_reference_generators``, so a :class:`~track_gen.pipeline.Program` of the default stage list
 is byte-identical to it. The wrappers are looked up on their module at every call (not
 bound at import), so a test that wraps one sees every call.
 
@@ -34,6 +33,7 @@ from .._src import warp_relax as _relax
 from .._src import warp_width as _width
 from .._src import warp_zprofile as _zprof
 from ..ops import resample as _ops_resample
+from ..ops.fill import fill as _fill
 from ..plugin.params import NoParams
 from ..plugin.stage import CaptureClass, Stage
 from . import params as _p
@@ -93,7 +93,7 @@ def _carry_ops(b, carried, tables, per: str) -> list:
             value, n = float(c.constant), int(dst.shape[0])
 
             def fill(ctx, dst=dst, value=value, n=n):
-                ctx.launch(_wpl._fill_f32_k, n, [dst, value])
+                _fill(ctx, dst, value)
             ops.append(fill)
             continue
         kernel = _ops_resample._carry_kernel(c.interp, c.dtype)
@@ -131,6 +131,7 @@ def _alloc_track(layout):
         generation=wp.zeros(E, dtype=wp.int32, device=dev),
         fail_mask=wp.zeros(E, dtype=wp.int32, device=dev),
         half_width=wp.empty(flat, dtype=wp.float32, device=dev),
+        layout=layout,
     )
 
 
@@ -146,12 +147,13 @@ class _Builtin(Stage):
 # ---------------------------------------------------------------------------------------
 
 class _GeneratorSlot:
-    """Stage 0: runs the bound generator exactly as ``_run_pipeline`` step 1 does.
+    """Stage 0: runs the bound generator as in the frozen PR9 composition in
+    ``tests/_reference_generators``.
 
     A Stage plugin (its ``_StageGenerator`` adapter) is built on the PR8 builder code
     path (``adapter.build``) bound to this slot's ``raw.xy`` / ``gen.valid`` versions and
     the Program's seed; a ``GeneratorSpec`` gets ``alloc_scratch(run_config)`` and its
-    ``generate`` (with ``ctx=``, or inside ``ctx.scope()`` for a legacy spec).
+    ``generate`` with the required ``ctx=`` argument.
     """
 
     kind = "generator"
@@ -163,12 +165,15 @@ class _GeneratorSlot:
         self.binding = binding
         self.name = binding.name
         self.scratch = None            # the generator's private scratch (_scratch.gen)
+        self.repulsive_half_width = 0.0  # known constant band width, a planning hint
         # The fields a randomize.* stage draws: field -> [E] array (set by the planner).
         self.drawn: dict = {}
         # A Stage generator's raw attributes (roadmap PR13a): one write port each, named
         # after its channel (the planner carries them; static, before any build). Its
         # DECLARED writes for its params (Stage.declare, roadmap PR13b).
         attrs = raw_attributes(binding)
+        if "gen.repulsive.barriers" in binding.writes.values():
+            attrs.append("gen.repulsive.barriers")
         if attrs:
             self.writes = types.MappingProxyType(
                 {"xy": "raw.xy", "valid": "gen.valid", **{ch: ch for ch in attrs}})
@@ -183,24 +188,20 @@ class _GeneratorSlot:
         valid = b.write("valid", wp.int32)
         if isinstance(spec, _StageGenerator):
             def resolve(channel, dtype, interp, export):
-                return b.write(channel, dtype, per="raw", interp=interp, export=export)
+                from .channels import CHANNELS
+
+                per = CHANNELS[channel].per if channel in CHANNELS else "raw"
+                return b.write(channel, dtype, per=per, interp=interp, export=export)
             gen = spec.build(seed=seed, out_xy=xy, out_valid=valid, resolve=resolve,
-                             drawn=self.drawn)
+                             drawn=self.drawn,
+                             repulsive_half_width=self.repulsive_half_width)
         else:
             gen = spec.alloc_scratch(run_cfg)
         self.scratch = gen
         generate = spec.generate
-        if getattr(spec, "accepts_ctx", False):
-            def enqueue(ctx):
-                generate(seed, run_cfg, out_centerline=xy, out_valid_wp=valid,
-                         scratch=gen, ctx=ctx)
-        else:
-            def enqueue(ctx):
-                # Legacy plugin: no ctx= keyword. Make ctx ambient so the _pipe helpers
-                # it calls with ctx=None resolve to this call's stream.
-                with ctx.scope():
-                    generate(seed, run_cfg, out_centerline=xy, out_valid_wp=valid,
-                             scratch=gen)
+        def enqueue(ctx):
+            generate(seed, run_cfg, out_centerline=xy, out_valid_wp=valid,
+                     scratch=gen, ctx=ctx)
         return enqueue
 
 
@@ -252,10 +253,12 @@ class ConstantSpacing(_Builtin):
         spacing = float(p.spacing)
         carried = b._carried()
         if not carried:
+            N = int(raw_xy.shape[0]) // b.E
             def enqueue(ctx):
-                _wpl.resample_constant_spacing(
-                    raw_xy, spacing, S, out_wp=xy, count_wp=count, seg_wp=seg, s_wp=s,
-                    truncated_wp=truncated, ctx=ctx)
+                _ops_resample._constant_spacing_launch(
+                    ctx, raw_xy, N, spacing, S,
+                    seg, s, xy, count, truncated)
+                ctx.sync()
             return enqueue
         N = int(raw_xy.shape[0]) // b.E
         tables = _tables(b, b.E * S, int(raw_xy.shape[0]))
@@ -364,14 +367,13 @@ class Uniform(_Builtin):
 
         def enqueue(ctx):
             if tables is None:
-                _wpl.resample_uniform(x_in, x_out, S, count, seg_wp=seg, s_wp=s,
-                                      device=dev, ctx=ctx)
+                _ops_resample._resample_uniform_launch(ctx, x_in, count, S, seg, s, x_out)
             else:
                 _ops_resample._resample_uniform_launch(ctx, x_in, count, S, seg, s, x_out,
                                                        tables=tables)
             for op in ops:
                 op(ctx)
-            ctx.sync()              # debug-only (TRACKGEN_DEBUG_SYNC=1), as inflate_warp
+            ctx.sync()              # debug-only (TRACKGEN_DEBUG_SYNC=1), as _inflate_warp
         return enqueue
 
 
@@ -503,7 +505,7 @@ class OffsetDefault(_Builtin):
 def _zcfg(b, profile: str, p):
     """The namespace the z-profile wrappers read (``num_envs``, ``device``,
     ``z_profile`` and the profile's ``z_*`` fields), built once. ``p`` is the static
-    view: a dynamic field (roadmap PR13c: ``z_min`` / ``z_max`` / ``z_max_step`` /
+    view: a dynamic field (``z_min`` / ``z_max`` / ``z_max_step`` /
     ``z_noise_amplitude``) holds the raising sentinel, so a missed ``dyn`` routing
     raises instead of reading a host copy."""
     fields = {f: getattr(p, f) for f in p.__dataclass_fields__}
@@ -539,7 +541,7 @@ class ElevationFlat(_Builtin):
         zcfg = _zcfg(b, self.name, p)
 
         def enqueue(ctx):
-            _zprof.apply_z_profile(zcfg, None, count, G, None, None, z, ctx=ctx)
+            _zprof._apply_z_profile(zcfg, None, count, G, None, None, z, ctx, None)
         return enqueue
 
 
@@ -547,7 +549,7 @@ class _ElevationKnots(_Builtin):
     """Knot-based profiles: K arc-spaced knots, then a periodic monotone cubic. On a
     gate pipeline (ports rewired to ``gates.*``) the profile is drawn per gate instead
     (the gates are already sparse, knot-like anchors), as 0.2.0.dev3 did. The
-    profile's ``z_*`` window / grade are dynamic (roadmap PR13c: per-env arrays, the
+    profile's ``z_*`` window / grade are dynamic (per-env arrays, the
     ``warp_zprofile`` twins)."""
 
     kind = "elevation"
@@ -595,7 +597,7 @@ class ElevationRandomWalk(_ElevationKnots):
 
 class ElevationNoise(_Builtin):
     """``elevation.noise``: periodic harmonic noise, per point (``z_min`` / ``z_max`` /
-    ``z_noise_amplitude`` dynamic, roadmap PR13c)."""
+    ``z_noise_amplitude`` dynamic)."""
 
     kind = "elevation"
     name = "noise"
@@ -637,8 +639,13 @@ class ValidityDefault(_Builtin):
              "z": "cl.z", "truncated": "cl.truncated"}
     writes = {"valid": "track.valid", "fail": "valid.fail"}
 
+    def __init__(self, *, repulsive_barriers=False):
+        if repulsive_barriers:
+            self.reads = {**self.reads, "barriers": "gen.repulsive.barriers"}
+
     def build(self, b, p):
         from .channels import BUILTIN_FAIL_BITS  # noqa: PLC0415
+        from .._src.repulsive_clearance import finished_band_validity_inplace
 
         S = int(b.layout.stride)
         xy, w, count = b.read("xy"), b.read("half_width"), b.read("count")
@@ -648,6 +655,15 @@ class ValidityDefault(_Builtin):
         valid = b.write("valid", wp.int32)
         fail = b.write("fail", wp.int32)
         b._reserve_fail_bits(BUILTIN_FAIL_BITS)
+        barriers = b.read("barriers") if "barriers" in self.reads else None
+        if barriers is not None:
+            b._reserve_fail_bits({"repulsive_disc": 8, "repulsive_wall": 9})
+
+        def check_barriers(ctx):
+            if barriers is not None:
+                finished_band_validity_inplace(ctx, outer2, inner2, count, barriers,
+                                               S, valid, fail)
+
         has_border = 1 if getattr(p, "validity_border_check", False) else 0
         if hw is not None:
             cfg = _with_half_width(p, hw)
@@ -656,11 +672,13 @@ class ValidityDefault(_Builtin):
                 _wpl.validity_inplace(xy, w, count, gen_valid, outer2, inner2, has_border,
                                       S, z, valid, cfg, truncated_wp=truncated, ctx=ctx,
                                       fail_wp=fail)
+                check_barriers(ctx)
             return enqueue
 
         def enqueue(ctx):
             _width.validity_w_inplace(xy, w, count, gen_valid, outer2, inner2, has_border,
                                       S, z, valid, p, truncated, fail, ctx=ctx)
+            check_barriers(ctx)
         return enqueue
 
 
@@ -694,7 +712,7 @@ class LiftFlat(_Builtin):
             ctx.launch(_wpl._lift_track_k, n,
                        [out2, ctr2, inn2, tan2, nrm2, z_base,
                         outer, center, inner, tangent, normal])
-            ctx.sync()              # debug-only (TRACKGEN_DEBUG_SYNC=1), as inflate_warp
+            ctx.sync()              # debug-only (TRACKGEN_DEBUG_SYNC=1), as _inflate_warp
         return enqueue
 
 
@@ -730,7 +748,7 @@ class LiftElevated(_Builtin):
                        [out2, ctr2, inn2, nrm2, z, outer, center, inner, normal])
             ctx.launch(_wpl._track_frames3_k, E,
                        [center, count, S, tangent, arclen, length])
-            ctx.sync()              # debug-only (TRACKGEN_DEBUG_SYNC=1), as inflate_warp
+            ctx.sync()              # debug-only (TRACKGEN_DEBUG_SYNC=1), as _inflate_warp
         return enqueue
 
 

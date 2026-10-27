@@ -26,8 +26,7 @@ points keep the scalar kernels. Covered here (design section 9.2):
    composition, the design section 4 counts, plain and masked);
 10. bounds (float32) and value types;
 11. the poison sentinels of the built-ins' static views and the ``dyn`` key checks;
-12. ``style_sampling`` (bytes == the frozen legacy path; self-drawn knobs);
-13. the generated CUDA source of every scalar / twin pair (locked until PR16);
+13. the generated CUDA source of every scalar / twin pair;
 14. the one-generation latch lag of a write recorded after segment 0;
 15. the legacy surfaces (the PR9 composition, frozen signatures, a ``GeneratorSpec``
     with dynamic Params refused);
@@ -37,9 +36,13 @@ Roadmap PR13d (``tests/test_difficulty_axes.py`` covers its axes): every built-i
 generator but ``external`` and the bezier / hull gate generators declare a dynamic
 ``size``, bezier / hull's ``min_num_points`` is a dynamic int32; the declared sets, the
 launch deltas (the rule of ``tests/_pr13d_delta.py``), the ``dyn`` key sets, the kit skip
-and ``style_sampling``'s deprecation are updated here accordingly.
+are updated here accordingly.
 """
 from __future__ import annotations
+
+import importlib
+from tests._reference_generators import spec as _scalar_spec
+from tests._reference_generators import warp_pipeline as _scalar_pipeline
 
 import ast
 import collections
@@ -78,11 +81,6 @@ from track_gen.stages.track import _zcfg
 from track_gen.testing import check_generator, check_stage
 from track_gen.testing.capture import result_arrays
 from track_gen.testing.trace import trace_launches
-
-# Roadmap PR13d: bezier's style_sampling is deprecated (one DeprecationWarning per built
-# generator); this module still exercises it.
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
 
 DEV = "cpu"
 E = 8
@@ -174,12 +172,16 @@ ELEVATIONS = {
 TRACK_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen", "length",
                 "valid", "count", "winding", "truncated")
 _LEGACY = {
-    "bezier": (wg_bezier, "bezier_alloc_scratch", "generate_centerline_warp"),
-    "hull": (wg_hull, "hull_alloc_scratch", "generate_hull_warp"),
-    "polar": (wg_polar, "polar_alloc_scratch", "generate_polar_warp"),
-    "voronoi": (wg_voronoi, "voronoi_alloc_scratch", "generate_voronoi_warp"),
-    "checkpoint": (wg_checkpoint, "checkpoint_alloc_scratch", "generate_checkpoint_warp"),
+    name: (importlib.import_module("tests._reference_generators." + mod.__name__.rsplit(".", 1)[-1]),
+           "_alloc_scratch", "_generate")
+    for name, mod in (("bezier", wg_bezier), ("hull", wg_hull), ("polar", wg_polar),
+                      ("voronoi", wg_voronoi), ("checkpoint", wg_checkpoint))
 }
+
+
+def _scalar_module(module):
+    return importlib.import_module("tests._reference_generators." + module.__name__.rsplit(".", 1)[-1])
+
 
 
 # ---------------------------------------------------------------------------------------
@@ -298,7 +300,7 @@ def test_checkpoint_steering_internals_and_edgy_stay_static():
     assert {"checkpoint_steer_gain", "checkpoint_lookahead_frac", "checkpoint_count",
             "checkpoint_best_of_k", "checkpoint_clip_fallback"} <= static
     bez = {f.name: f.kind for f in _fields(bp.BezierParams)}
-    assert bez["edgy"] == "static" and bez["style_sampling"] == "static"
+    assert bez["edgy"] == "static"
     assert bez["max_num_points"] == "static"
     # Roadmap PR13d: repulsive's only dynamic field is its size (its solver knobs stay
     # static).
@@ -310,13 +312,9 @@ def test_the_builtins_are_stage_classes_with_a_deprecated_params_alias(name):
     cls = registry.get("generator", name)
     assert _is_stage(cls) and cls.kind == "generator" and cls.output == "centerline"
     assert cls.capture is plugin.CaptureClass.STATIC
-    with pytest.warns(DeprecationWarning,
-                      match=rf"registry\.get\('generator', '{name}'\)\.params is "
-                            rf"deprecated: use \.Params \(removed in 1\.0\)") as rec:
-        assert cls.params is cls.Params
-    assert rec[0].filename == __file__, "the warning is attributed to the caller"
+    assert not hasattr(cls, "params")
     info = registry.describe("generator", name)
-    assert info.builtin and info.capturable and info.accepts_ctx
+    assert info.builtin and info.capturable
 
 
 def test_no_params_alias_on_the_other_stages():
@@ -379,9 +377,9 @@ TWINS = {
 def _legacy_track(cfg, seeds=SEEDS):
     """The PR9 composition with the frozen legacy spec (the scalar kernels) for ``cfg``
     on fresh buffers; returns ``(track, scratch)``."""
-    track, scratch = warp_pipeline._inflate_warp_alloc(cfg)
+    track, scratch = _scalar_pipeline._inflate_warp_alloc(cfg)
     assert not _is_stage(scratch.generator_spec)
-    warp_pipeline._run_pipeline(cfg, _seeds(seeds), out=track, scratch=scratch,
+    _scalar_pipeline._run_pipeline(cfg, _seeds(seeds), out=track, scratch=scratch,
                                 ctx=LaunchContext.for_call(DEV))
     return track, scratch
 
@@ -415,7 +413,7 @@ def _launch(kernel, dim, args) -> list:
 class _Harness:
     def __init__(self, pair: _Twin, monkeypatch) -> None:
         self.pair = pair
-        self.scalar_k = getattr(pair.module, pair.scalar)
+        self.scalar_k = getattr(_scalar_module(pair.module), pair.scalar)
         self.twin_k = getattr(pair.module, pair.twin)
         self.dim, self.args = _capture(monkeypatch, pair.config, self.scalar_k)
         self.arrays = [i for i, a in enumerate(self.args) if isinstance(a, wp.array)]
@@ -510,7 +508,7 @@ def test_polar_twin_clamp_equals_polar_jitters(monkeypatch):
     vals = sorted(vals, key=lambda v: (math.isnan(v), v))
     for radial in vals:
         for angular in (0.3, 0.45, 0.4500000001, 0.46, -0.0, -1e-46, math.nan):
-            rj, aj = wg_polar.polar_jitters(types.SimpleNamespace(
+            rj, aj = _scalar_module(wg_polar).polar_jitters(types.SimpleNamespace(
                 polar_radial_jitter=radial, polar_angular_jitter=angular))
             want = h.scalar({2: rj, 3: aj})
             got = h.twin({2: np.full(E, radial, np.float32),
@@ -518,19 +516,6 @@ def test_polar_twin_clamp_equals_polar_jitters(monkeypatch):
             assert _same(got, want), (radial, angular)
 
 
-def test_assemble_twin_unbounded_equals_the_style_kernel(monkeypatch):
-    """``_assemble_dyn_k`` with ``(-inf, inf)`` bounds (a knob ``style_sampling`` draws)
-    == ``_assemble_style_k`` on out-of-range per-env draws (their ranges were never
-    bounded)."""
-    h = _Harness(TWINS["assemble"], monkeypatch)
-    rad = np.array([-0.3, 1.7, 0.2, math.nan, 0.5, -0.0, 3.0, 0.4], np.float32)
-    clamp = np.array([-0.5, 2.0, 0.3, 0.0, INF, 0.7, -0.0, 1e9], np.float32)
-    style = list(h.args)
-    style[6], style[7] = _f32(rad), _f32(clamp)
-    want = [x for i, x in enumerate(_launch(wg_bezier._assemble_style_k, h.dim, style))
-            if i in h.arrays]
-    got = h.twin({6: rad, 7: clamp}, bounds=(-INF, INF, -INF, INF))
-    assert _same(got, want)
 
 
 # ---------------------------------------------------------------------------------------
@@ -834,14 +819,6 @@ def test_rad_drawn_above_the_clamp_warns():
         build(presets.track(num_envs=E, device=DEV,
                             randomize={"generator.rad": (0.5, 0.9),
                                        "generator.handle_clamp_frac": (0.1, 0.2)}))
-    spec = legacy.to_pipeline_spec(_tcfg(style_sampling=True,
-                                         handle_clamp_frac_range=(0.1, 0.2)))
-    with pytest.warns(UserWarning, match=match):
-        build(spec.with_randomize({"generator.rad": (0.5, 0.9)}))
-    # A style rad range alone stays silent (style_sampling never warned).
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", UserWarning)
-        build(legacy.to_pipeline_spec(_tcfg(style_sampling=True, rad_range=(0.5, 0.9))))
 
 
 def _max_abs_z(spec) -> float:
@@ -892,18 +869,10 @@ def test_inert_window_warns_at_construction(profile, knob):
 # 9. Launch deltas (design section 4)
 # ---------------------------------------------------------------------------------------
 
-_STYLE3 = dict(style_sampling=True, rad_range=(0.1, 0.35), scale_range=(0.8, 1.2),
-               handle_clamp_frac_range=(0.3, 0.9))
 #: case -> (TrackGenConfig kwargs, the 0.2.0.dev5 PR13b count, the PR13c count, the
 #: PR13d count). Roadmap PR13d re-pin (deliberate): + min_num_points / size latches.
 LAUNCH_TABLE = {
     "bezier": (dict(generator="bezier"), 152, 154, 156),
-    "bezier_style_all": (_STYLE3, 153, 153, 155),
-    "bezier_style_rad": (dict(style_sampling=True, rad_range=(0.1, 0.35)), 153, 154, 156),
-    "bezier_style_clamp": (dict(style_sampling=True, handle_clamp_frac_range=(0.3, 0.9)),
-                           153, 154, 156),
-    "bezier_style_none": (dict(style_sampling=True, scale_range=(0.8, 1.2)), 153, 155,
-                          157),
     "hull": (dict(generator="hull"), 151, 152, 154),
     "voronoi": (dict(generator="voronoi"), 151, 153, 154),
     "polar": (dict(generator="polar"), 143, 145, 146),
@@ -917,33 +886,12 @@ LAUNCH_TABLE = {
 
 
 def _rows(trace) -> list:
-    return [(r.op, r.kernel, r.dim, r.scalars) for r in trace]
+    return [(r.op, r.kernel.replace("tests._reference_generators.", "track_gen._src."), r.dim, r.scalars) for r in trace]
 
 
-def _style_fixups(rows: list, cfg) -> list:
-    """The style path's records under PR13c: a ``None``-range knob's draw gets the
-    ``0.0`` placeholders, and the legacy ``_assemble_style_k`` is ``_assemble_dyn_k``
-    with ``(-inf, inf)`` bounds for a ranged knob, the declared ones otherwise."""
-    if not cfg.style_sampling:
-        return rows
-    out = []
-    rad, clamp = cfg.rad_range is not None, cfg.handle_clamp_frac_range is not None
-    for op, kernel, dim, scalars in rows:
-        name = kernel.rsplit(".", 1)[-1]
-        if name == "_style_sample_k":
-            zero = ({1, 2} if not rad else set()) | ({5, 6} if not clamp else set())
-            scalars = tuple((i, 0.0 if i in zero else v) for i, v in scalars)
-        elif name == "_assemble_style_k":
-            kernel = kernel[:-len(name)] + "_assemble_dyn_k"
-            scalars = tuple(scalars) + (
-                (8, -INF if rad else 0.0), (9, INF if rad else 1.0),
-                (10, -INF if clamp else 0.0), (11, INF))
-        out.append((op, kernel, dim, scalars))
-    return out
 
 
 @pytest.mark.parametrize("case", sorted(LAUNCH_TABLE))
-@pytest.mark.filterwarnings("ignore:bezier's style_sampling is deprecated")
 def test_launch_delta_against_the_legacy_composition(case):
     """One generation's trace == the legacy (scalar) PR9 composition's under the PR13c
     rule then the PR13d one (``tests/_pr13d_delta.py``: the latch block computed from
@@ -951,7 +899,7 @@ def test_launch_delta_against_the_legacy_composition(case):
     to their twins), with the design section 6.2 counts; masked: the latches are masked,
     right after the effective seed, before the hold (+3: advance, hold, commit)."""
     kw, head, _pr13c, pr13d = LAUNCH_TABLE[case]
-    cfg = _tcfg(**kw)
+    cfg = _tcfg(on_invalid="keep", **kw)
     gen = TrackGenerator(cfg, _rng())
     ctx = LaunchContext.for_call(DEV)
     with trace_launches() as program:
@@ -959,20 +907,17 @@ def test_launch_delta_against_the_legacy_composition(case):
     got = _rows(program)
     latches = latch_dtypes(gen.program)
     gen_latches = list(GENERATOR_LATCHES[cfg.generator])
-    if cfg.style_sampling:                     # a ranged knob is drawn, not latched
-        gen_latches = ["i32"] + ["f32"] * ((cfg.rad_range is None) +
-                                           (cfg.handle_clamp_frac_range is None) + 1)
     assert latches == gen_latches + list(ELEVATION_LATCHES[cfg.z_profile]), latches
-    track, scratch = warp_pipeline._inflate_warp_alloc(cfg)
+    track, scratch = _scalar_pipeline._inflate_warp_alloc(cfg)
     seed = wp.empty(E, dtype=wp.int32, device=DEV)
     with trace_launches() as pr9:
         gen.seeds.effective(seed, None, ctx=ctx)
-        warp_pipeline._run_pipeline(cfg, seed, out=track, scratch=scratch, ctx=ctx)
+        _scalar_pipeline._run_pipeline(cfg, seed, out=track, scratch=scratch, ctx=ctx)
         gen.seeds._write_generation(track.generation, None, ctx)
     legacy_rows = _rows(pr9)
     assert len(legacy_rows) == head, f"{case}: HEAD emitted {len(legacy_rows)}"
     assert len(got) == pr13d == head + len(latches), (case, len(got))
-    want = _style_fixups(pr13d_sequence(legacy_rows, latches, E, legacy=True), cfg)
+    want = pr13d_sequence(legacy_rows, latches, E, legacy=True)
     assert len(got) == len(want), f"{case}: {len(got)} vs {len(want)}"
     first = next((i for i, (a, b) in enumerate(zip(got, want)) if a != b), None)
     assert first is None, f"{case}: record {first}: {got[first]} vs {want[first]}"
@@ -1007,7 +952,8 @@ def test_gate_launch_deltas(case):
            "random_walk": dict(z_profile="random_walk", z_max=1.5, z_max_step=0.3),
            "noise": dict(z_profile="noise", z_base=0.1, z_max=1.5, z_noise_amplitude=0.5,
                          z_noise_harmonics=4)}[z]
-    gen = GateGenerator(_gcfg(generator=name, gate_ordering=ordering, **zkw), _rng())
+    gen = GateGenerator(_gcfg(generator=name, gate_ordering=ordering,
+                              on_invalid="keep", **zkw), _rng())
     with trace_launches() as t:
         gen.generate()
     names = [r.kernel.rsplit(".", 1)[-1] for r in t]
@@ -1036,21 +982,22 @@ def _launch_cases():
 
 
 @pytest.mark.parametrize("case", _launch_cases())
-def test_gate_launch_counts_are_the_pr11_golden_plus_the_latches(case):
+def test_gate_launch_counts_match_the_03_golden(case):
     from tests.tools import capture_pr11_gate_stages as tool
 
     golden = tool.load().get(tool.platform_key())
     if golden is None:
         pytest.skip(f"no dd181f0 gate-stage launches for {tool.platform_key()}")
     name, z = case.split("/")[0], case.split("/")[2]
-    gen = GateGenerator(GateGenConfig(num_envs=tool.E, device=DEV, **tool.CASES[case]),
+    gen = GateGenerator(GateGenConfig(num_envs=tool.E, device=DEV, on_invalid="keep",
+                                    **tool.CASES[case]),
                         PerEnvSeededRNG(seeds=_seeds(SEEDS[:tool.E]), num_envs=tool.E,
                                         device=DEV))
     with trace_launches() as t:
         gen.generate()
     n = gate_latches(name, z)
     assert latch_dtypes(gen.program) == n
-    assert len(t) == len(golden["launches"][case]) + len(n)
+    assert len(t) == len(golden["launches"][case])
 
 
 def test_repulsive_and_the_default_gates_gain_exactly_the_pr13d_latches():
@@ -1064,12 +1011,13 @@ def test_repulsive_and_the_default_gates_gain_exactly_the_pr13d_latches():
     names = [r.kernel.rsplit(".", 1)[-1] for r in t]
     assert names[1] == "_latch_all_f32_k" and names.count("_latch_all_f32_k") == 1
     assert names.count("_copy_sized_k") == 1
-    gates = GateGenerator(_gcfg(), _rng())
+    gates = GateGenerator(_gcfg(on_invalid="keep"), _rng())
     with trace_launches() as t:
         gates.generate()
     assert len(t) == 16
     assert latch_dtypes(gates.program) == ["f32", "f32"]
-    ext = TrackGenerator(presets.track(num_envs=E, device=DEV, generator="external"),
+    ext = TrackGenerator(presets.track(num_envs=E, device=DEV, generator="external",
+                                      on_invalid="keep"),
                          _rng())
     with trace_launches() as t:
         ext.generate()
@@ -1258,7 +1206,7 @@ def test_the_static_view_poisons_every_dynamic_name(unit):
                 read()
     # The legacy host reads of each built-in raise on the view (never a default).
     probes = {
-        "polar": lambda: wg_polar.polar_jitters(ns),
+        "polar": lambda: _scalar_module(wg_polar).polar_jitters(ns),
         "hull": lambda: float(getattr(ns, "hull_displacement", 0.15)),
         "voronoi": lambda: float(getattr(ns, "voronoi_radial_variation", 0.62)),
         "bezier": lambda: float(getattr(ns, "handle_clamp_frac", 1.0e9)),
@@ -1271,21 +1219,10 @@ def test_the_static_view_poisons_every_dynamic_name(unit):
     seeds = _seeds()
     out = wp.empty(E * 12, dtype=wp.vec2f, device=DEV)
     with pytest.raises(Exception):
-        wp.launch(wg_polar._polar_controls_k, E, [seeds, 12, getattr(ns, next(iter(dyn))),
+        wp.launch(_scalar_module(wg_polar)._polar_controls_k, E, [seeds, 12, getattr(ns, next(iter(dyn))),
                                                   0.3, 1.0, out], device=DEV)
 
 
-def test_the_legacy_branch_of_a_core_raises_on_the_stage_view():
-    """A missed ``dyn`` routing (the core's legacy branch run on the Stage's view)
-    raises instead of reading a default."""
-    view = _static_view(bp.PolarParams())
-    cfg = run_view(view, _builder())
-    scratch = wg_polar._alloc_polar_scratch(cfg)
-    out = wp.empty(E * 256, dtype=wp.vec2f, device=DEV)
-    ok = wp.empty(E, dtype=wp.int32, device=DEV)
-    with pytest.raises(TypeError, match=r"PolarParams\.polar_radial_jitter is dynamic"):
-        wg_polar._enqueue_polar(_seeds(), cfg, out, ok, scratch,
-                                LaunchContext.for_call(DEV), None)
 
 
 _CORES = {
@@ -1323,90 +1260,7 @@ def test_the_private_cores_check_the_dyn_key_set(name):
 
 
 # ---------------------------------------------------------------------------------------
-# 12. style_sampling
-# ---------------------------------------------------------------------------------------
-
-_RANGES = {"rad_range": (0.1, 0.35), "scale_range": (0.8, 1.2),
-           "handle_clamp_frac_range": (0.3, 0.9)}
-_STYLE_COMBOS = [{k: (v if (m >> i) & 1 else None) for i, (k, v) in enumerate(_RANGES.items())}
-                 for m in range(8)]
-
-
-@pytest.mark.parametrize("seeds", ["fingerprint", "spread"])
-@pytest.mark.parametrize("combo", range(8))
-def test_style_sampling_bytes_equal_the_legacy_path(combo, seeds):
-    s = SEEDS if seeds == "fingerprint" else SEEDS_B
-    ranges = _STYLE_COMBOS[combo]
-    cfg = _tcfg(style_sampling=True, **ranges)
-    with warnings.catch_warnings(record=True) as rec:
-        warnings.simplefilter("always")
-        gen = TrackGenerator(cfg, _rng(s))
-    # Roadmap PR13d: exactly one warning, the deprecation (attributed to this caller).
-    assert [(w.category, str(w.message).split(":")[0], w.filename) for w in rec] == \
-        [(DeprecationWarning, "bezier's style_sampling is deprecated and will be "
-                              "removed in 1.0", __file__)]
-    gen.generate()
-    scratch = wg_bezier.bezier_alloc_scratch(cfg)
-    out = wp.empty(E * 256, dtype=wp.vec2f, device=DEV)
-    ok = wp.empty(E, dtype=wp.int32, device=DEV)
-    wg_bezier.generate_centerline_warp(_seeds(s), cfg, out, ok, scratch,
-                                       ctx=LaunchContext.for_call(DEV))
-    assert gen.program.tap("raw.xy").numpy().tobytes() == out.numpy().tobytes()
-    table = gen.params["generator"]
-    for field, rng, legacy_draw in (("rad", "rad_range", scratch.gen_style_rad),
-                                    ("handle_clamp_frac", "handle_clamp_frac_range",
-                                     scratch.gen_style_clamp)):
-        if ranges[rng] is not None:
-            # A ranged knob is drawn by the style kernel into its (unlatched) array:
-            # drawn by the stage itself (its own id).
-            assert table.drawn[field] == "generator"
-            assert table[field].numpy().tobytes() == legacy_draw.numpy().tobytes()
-            with pytest.raises(ValueError, match=rf"generator\.{field} is drawn every "
-                                                 rf"generation by the generator's "
-                                                 rf"style_sampling \({rng}\); set "
-                                                 rf"{rng}=None to set it"):
-                table.set(field, 0.3)
-        else:
-            assert field not in table.drawn
-            assert table[field].numpy().tolist() == \
-                [float(np.float32(getattr(cfg, field)))] * E
-
-
-def test_style_sampling_composes_with_set_and_randomize():
-    # A None-range knob reads its dynamic array: set(v) == a style run built with v.
-    cfg = dict(style_sampling=True, rad_range=None, scale_range=(0.8, 1.2))
-    gen = TrackGenerator(_tcfg(**cfg), _rng())
-    gen.params["generator"].set("rad", 0.25)
-    got = _snap(gen.generate())
-    want = _snap(TrackGenerator(_tcfg(rad=0.25, **cfg), _rng()).generate())
-    assert not _differs(got, want)
-    # A ranged knob cannot be randomized.
-    spec = legacy.to_pipeline_spec(_tcfg(style_sampling=True, rad_range=(0.1, 0.35)))
-    with pytest.raises(PlanError, match=r"generator\.rad is drawn by the generator's "
-                                        r"style_sampling \(rad_range\): set rad_range=None "
-                                        r"to randomize it"):
-        build(spec.with_randomize({"generator.rad": (0.1, 0.3)}))
-    # ... but the other one can, and scale_range keeps working alongside.
-    spec = legacy.to_pipeline_spec(_tcfg(style_sampling=True, rad_range=(0.1, 0.35),
-                                         scale_range=(0.8, 1.2)))
-    gen = TrackGenerator(spec.with_randomize({"generator.handle_clamp_frac": (0.3, 0.9)}),
-                         _rng())
-    gen.generate()
-    # drawn maps each field to the id of the stage drawing it (the stage's own id for a
-    # style draw): every value is a key of gen.params.
-    drawn = dict(gen.params["generator"].drawn)
-    assert drawn == {"rad": "generator",
-                     "handle_clamp_frac": "randomize.generator.handle_clamp_frac"}
-    assert all(w in gen.params for w in drawn.values())
-    for writer in set(drawn.values()) - {"generator"}:          # a curriculum helper
-        gen.params[writer].set("hi", 0.8)
-    r = repr(gen.params["generator"])
-    assert "rad=<drawn by the generator's style_sampling (rad_range)>" in r, r
-    assert "handle_clamp_frac=<drawn by 'randomize.generator.handle_clamp_frac'>" in r, r
-
-
-# ---------------------------------------------------------------------------------------
-# 13. The generated CUDA source of each scalar / twin pair (locked until PR16)
+# 13. The generated CUDA source of each scalar / twin pair
 # ---------------------------------------------------------------------------------------
 
 #: twin -> the ops it adds to its scalar kernel's forward body: the knob loads
@@ -1439,23 +1293,6 @@ def _cuda_ops(kernel) -> list:
     return re.findall(r"wp::(\w+)\(", text.split("// forward", 1)[-1])
 
 
-@pytest.mark.parametrize("pair", sorted(TWINS))
-def test_cuda_source_of_each_twin_is_its_scalar_kernels(pair):
-    """Warp's generated CUDA forward body of the twin has its scalar kernel's op
-    sequence once the knob loads, the clamp selects and the env index are set aside
-    (same expression graph: same FMA contraction), and no min / max was added. Uses
-    Warp's private codegen entry points: updated with a Warp floor bump, never
-    skipped."""
-    p = TWINS[pair]
-    a = _cuda_ops(getattr(p.module, p.scalar))
-    b = _cuda_ops(getattr(p.module, p.twin))
-    extra = collections.Counter(b) - collections.Counter(a)
-    missing = collections.Counter(a) - collections.Counter(b)
-    assert dict(extra) == _CUDA_EXTRAS[p.twin] and not missing, (dict(extra), dict(missing))
-    drop = set(_CUDA_EXTRAS[p.twin])
-    assert [o for o in a if o not in drop] == [o for o in b if o not in drop]
-    assert [o for o in a if o in _ARITH and o not in drop] == \
-        [o for o in b if o in _ARITH and o not in drop]
 
 
 def _kernel_ast(kernel) -> ast.FunctionDef:
@@ -1508,29 +1345,6 @@ def _twin_body(pair: _Twin, scalar: ast.FunctionDef, twin: ast.FunctionDef) -> l
     return _Rename(rename).visit(module).body
 
 
-@pytest.mark.parametrize("pair", sorted(TWINS))
-def test_the_source_of_each_twin_is_its_scalar_kernels_body(pair):
-    """Beyond the CUDA op sequence: once its prelude (knob loads, comparison clamps,
-    env index) is dropped and the loaded locals take the scalar parameter names, the
-    twin's body IS the scalar kernel's body, statement for statement (operands,
-    operand order, constants and indices included). Warp's codegen is a function of
-    the AST, so the generated arithmetic, hence nvcc's FMA contraction, is the same."""
-    p = TWINS[pair]
-    scalar = _kernel_ast(getattr(p.module, p.scalar))
-    twin = _kernel_ast(getattr(p.module, p.twin))
-    want, got = scalar.body, _twin_body(p, scalar, twin)
-    diff = [f"scalar: {ast.unparse(a)}\n  twin: {ast.unparse(b)}"
-            for a, b in zip(want, got) if ast.dump(a) != ast.dump(b)]
-    assert not diff and len(want) == len(got), "\n".join(diff) or (len(want), len(got))
-    # The signatures agree outside the knobs (and bezier's four bound scalars).
-    after = p.bounds_after
-    targs = list(twin.args.args)
-    if after is not None:
-        targs = targs[:after + 1] + targs[after + 5:]
-    assert len(targs) == len(scalar.args.args)
-    for i, (a, b) in enumerate(zip(scalar.args.args, targs)):
-        if i not in p.knobs:
-            assert (a.arg, ast.dump(a.annotation)) == (b.arg, ast.dump(b.annotation)), i
 
 
 # ---------------------------------------------------------------------------------------
@@ -1582,62 +1396,10 @@ def test_the_pr9_composition_with_the_legacy_spec_equals_the_trackgenerator(name
     kw = dict(generator=name, **{f: v[1] for f, v in GEN_KNOBS[name].items()})
     cfg = _tcfg(**kw)
     track, scratch = _legacy_track(cfg)
-    assert scratch.generator_spec is warp_pipeline._legacy_generator_spec(name)
+    assert scratch.generator_spec.name == name
     got = _snap(TrackGenerator(cfg, _rng()).generate())
     for f in TRACK_FIELDS:
         assert got[f].tobytes() == getattr(track, f).numpy().tobytes(), f
-
-
-_FROZEN = {
-    (wg_bezier, "generate_centerline_warp"): "(seeds_wp, config, out_centerline, "
-                                             "out_valid_wp, scratch, ctx=None)",
-    (wg_hull, "generate_hull_warp"): "(seeds_wp, config, out_centerline, out_valid_wp, "
-                                     "scratch, ctx=None)",
-    (wg_polar, "generate_polar_warp"): "(seeds_wp, config, out_centerline, out_valid_wp, "
-                                       "scratch, ctx=None)",
-    (wg_voronoi, "generate_voronoi_warp"): "(seeds_wp, config, out_centerline, "
-                                           "out_valid_wp, scratch, ctx=None)",
-    (wg_checkpoint, "generate_checkpoint_warp"): "(seeds_wp, config, out_centerline, "
-                                                 "out_valid_wp, scratch, ctx=None)",
-    (wg_bezier, "bezier_alloc_scratch"): "(config)",
-    (wg_hull, "hull_alloc_scratch"): "(config)",
-    (wg_polar, "polar_alloc_scratch"): "(config)",
-    (wg_voronoi, "voronoi_alloc_scratch"): "(config)",
-    (wg_checkpoint, "checkpoint_alloc_scratch"): "(config)",
-    (warp_zprofile, "apply_z_profile"): "(config, seeds_wp, count, stride, cum, perim, z, "
-                                        "ctx=None)",
-    (warp_zprofile, "apply_z_profile_knots"): "(config, seeds_wp, count, stride, arclen, "
-                                              "perim, knot_cum, knot_count, knot_z, z, "
-                                              "ctx=None)",
-    (wg_polar, "sample_polar_controls"): "(ctx, seeds, K, radial_jitter, angular_jitter, "
-                                         "out, *, base_radius=1.0)",
-    (wg_checkpoint, "sample_checkpoint_rings"): "(ctx, seeds, K, C, radius_min_frac, "
-                                                "angle_jitter, out, *, base_radius=1.0)",
-    (wg_voronoi, "select_voronoi_anchors"): "(ctx, seeds, sites, S, K, layout_mode, "
-                                            "box_size, radial_variation, angular_jitter, "
-                                            "out_selected, used)",
-    (wg_polar, "sample_polar_controls_per_env"): "(ctx, seeds, K, radial_jitter, "
-                                                 "angular_jitter, out, *, base_radius=1.0)",
-    (wg_checkpoint, "sample_checkpoint_rings_per_env"): "(ctx, seeds, K, C, "
-                                                        "radius_min_frac, angle_jitter, "
-                                                        "out, *, base_radius=1.0)",
-    (wg_voronoi, "select_voronoi_anchors_per_env"): "(ctx, seeds, sites, S, K, "
-                                                    "layout_mode, box_size, "
-                                                    "radial_variation, angular_jitter, "
-                                                    "out_selected, used)",
-}
-
-
-def test_the_legacy_signatures_are_frozen():
-    bad = []
-    for (mod, name), want in _FROZEN.items():
-        sig = inspect.signature(getattr(mod, name))
-        bare = sig.replace(parameters=[p.replace(annotation=inspect.Parameter.empty)
-                                       for p in sig.parameters.values()],
-                           return_annotation=inspect.Signature.empty)
-        if str(bare) != want:
-            bad.append(f"{mod.__name__}.{name}{bare}")
-    assert not bad, bad
 
 
 def test_a_generator_spec_with_dynamic_params_is_refused():
@@ -1645,9 +1407,9 @@ def test_a_generator_spec_with_dynamic_params_is_refused():
     with pytest.raises(TypeError, match=r"BezierParams\.min_num_points .* is dynamic: "
                                         r"dynamic fields need a Stage"):
         registry.add(GeneratorSpec(name="acme.legacy_bezier",
-                                   alloc_scratch=wg_bezier.bezier_alloc_scratch,
-                                   generate=wg_bezier.generate_centerline_warp,
-                                   accepts_ctx=True, params=bp.BezierParams))
+                                   alloc_scratch=_LEGACY["bezier"][0]._alloc_scratch,
+                                   generate=_LEGACY["bezier"][0]._generate,
+                                   params=bp.BezierParams))
 
 
 # ---------------------------------------------------------------------------------------

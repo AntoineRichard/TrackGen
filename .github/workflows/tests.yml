@@ -4,7 +4,12 @@ on:
     branches: [main]
   pull_request:
   # Manual runs, e.g. the CPU lane of a branch on Linux before it is opened as a PR.
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      capture_goldens:
+        description: Capture platform fragments for the approved RNG rebaseline
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -22,9 +27,9 @@ jobs:
   cpu:
     name: cpu (warp ${{ matrix.warp }})
     runs-on: ubuntu-latest
-    # A hung example is stopped by the snippet runner (120 s per group); this is the
-    # backstop for the whole job.
-    timeout-minutes: 30
+    # A hung example is stopped by the snippet runner (120 s per group). A cold
+    # validated CPU lane took 27 minutes; allow slower runners to finish the whole job.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -45,6 +50,17 @@ jobs:
             pip install "warp-lang==${{ matrix.warp }}"
           fi
           python -c "import warp; print('warp-lang', warp.__version__)"
+      - name: Capture RNG rebaseline fragment
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.capture_goldens }}
+        run: python -m tests.tools.capture_03_goldens capture golden-fragment.json
+      - uses: actions/upload-artifact@v4
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.capture_goldens }}
+        with:
+          name: golden-${{ matrix.warp }}
+          path: golden-fragment.json
+      - name: Install captured platform entry for validation
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.capture_goldens }}
+        run: python -m tests.tools.capture_03_goldens merge golden-fragment.json
       - name: Test
         # The runners are not the machines the byte goldens were captured on: leave out
         # the host-sensitive fields (the checkpoint track generator's chaotic path tracer

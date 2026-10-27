@@ -96,8 +96,10 @@ Select it by name. ``order=None`` (the default of ``presets.gates``, and
 .. snippet: after
 
    _count = gates.count.numpy()
-   assert ((_count >= MIN_GATES) & (_count <= MAX_GATES)).all()
-   assert gates.valid.numpy().any()
+   _valid = gates.valid.numpy() != 0
+   assert ((_count[_valid] >= MIN_GATES) & (_count[_valid] <= MAX_GATES)).all()
+   assert (_count[~_valid] == 0).all()
+   assert _valid.any()
 
 Because it excludes ``"raw"`` instead of whitelisting ``"ccw"``, it also runs with
 ``"random_pairs"`` and with any order a plugin registers (`Writing an ordering`_).
@@ -134,7 +136,7 @@ tangent:
    import warp as wp
 
    from track_gen import plugin
-   from track_gen.ops.funcs import hash32
+   from track_gen.ops import rng
 
 
    @wp.kernel
@@ -144,8 +146,7 @@ tangent:
        t = wp.tid()                         # one thread per anchor slot: t = e * A + i
        e = t // A
        i = t - e * A
-       key = hash32(wp.uint32(seed[e]) ^ salt) & wp.uint32(0x7FFFFFFF)
-       state = wp.rand_init(wp.int32(key))
+       state = rng.init(seed[e], salt)
        phase = 6.2831853 * wp.randf(state)  # the same draw for every anchor of e
        s = 6.2831853 * float(i) / float(A)  # lap parameter in [0, 2*pi)
        u = s + phase
@@ -370,8 +371,9 @@ the others with ``gate generator 'acme.helix' does not support gate_ordering
 'acme.reverse'; supported: ['raw'] (its preferred order is 'raw')``. An order that needs
 randomness reads the ``seed`` channel (``reads = {..., "seed": "seed"}``) and keys its
 stream on ``b.salt(<stream>)`` (:ref:`stage-salts`); the built-in ``order.random_pairs``
-keeps a fixed salt, 7919, for byte identity with earlier releases. The registry and the
-built-in orders are described in :ref:`pipeline-ordering-registry`.
+uses the fixed namespace ``order.random_pairs/pairs`` and
+``ops.rng.init_at(seed, salt, pair_index)`` (:ref:`ops-rng-keying`). The registry and
+the built-in orders are described in :ref:`pipeline-ordering-registry`.
 
 Gate fail bits
 --------------
@@ -387,13 +389,14 @@ generator cannot fill well is rejected by writing fewer anchors than the pipelin
 finished gates is a validity stage that reads gate channels and owns bits from 16 on
 (:ref:`stage-validity-check`, "On gates").
 
-Porting a ``GateGeneratorSpec``
--------------------------------
+Gate stages in a pipeline
+--------------------------
 
-Gate generators written against the 0.1 interface are ``GateGeneratorSpec`` objects. They
-keep working through an adapter stage until 1.0, with a ``DeprecationWarning`` when one
-is bound: :ref:`plugin-abis` describes that interface and the steps to port one to the
-anchors ``Stage`` of this page.
+Register a ``gate_generator`` Stage with ``output="anchors"``. Write anchor positions
+and real counts, then declare the orderings it accepts. A generator that provides its
+own gate poses or attributes uses index-preserving raw order and declares those provided
+channels; the downstream pipeline carries them into the result. See
+:ref:`gate-generator-stage` for the complete contract.
 
 Testing a gate generator
 ------------------------

@@ -65,7 +65,7 @@ def test_checkpoint_shape_variety_non_degenerate():
     The tighter threshold (0.65 vs. test_shape_variety.py's 0.85) captures checkpoint's
     characteristic ~0.58 organic shape compactness. Compactness 1.0 == circle (degenerate).
     """
-    E = 128
+    E = 512
     cfg, gen, track = _run(seed=0, E=E, relax_iters=40)
     N_max = int(cfg.N_max)
     center = wp.to_torch(track.center).cpu().numpy().reshape(E, N_max, 3)[..., :2]

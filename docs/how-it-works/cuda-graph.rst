@@ -136,7 +136,7 @@ inside ``unconditional()``:
    from track_gen.exec import unconditional
    from track_gen.pipeline import presets
 
-   gen = TrackGenerator(presets.track(num_envs=8, device="cuda:0", generator="repulsive"))
+   gen = TrackGenerator(presets.track(num_envs=1, device="cuda:0", generator="repulsive"))
    with wp.ScopedCapture(device="cuda:0") as cap:
        with unconditional():           # no conditional node in this recording
            gen.generate()              # repulsive: every window recorded
@@ -204,8 +204,8 @@ Pass ``capture_mode=`` when torch captures with a non-default ``capture_error_mo
 Iterative stages (BOUNDED)
 --------------------------
 
-A stage whose work is an iteration that may stop early (an optimizer that runs until
-every env has converged) declares ``capture = CaptureClass.BOUNDED`` and emits its loop
+A stage whose work is an iteration that may stop early (a bounded optimizer whose
+envs can freeze before the budget) declares ``capture = CaptureClass.BOUNDED`` and emits its loop
 through ``LaunchContext.bounded_loop``:
 
 .. snippet: skip=signature
@@ -286,9 +286,15 @@ stage's ``ctx.host()`` operations; any other sync, including one made inside the
 body, is still a violation. The conformance kit runs its hot-path checks with every
 window unrolled, the superset of what any lowering launches.
 
-``repulsive`` is the built-in ``BOUNDED`` stage: its growth loop checks
-``active = any env not frozen`` every stall window (``check_every = 16``) from
-``first_check = 128``, 9 windows at the defaults (see :doc:`/generators/repulsive`).
+``repulsive`` is the built-in ``BOUNDED`` stage. At final-resolution stall
+checks it writes ``active = any env not frozen``. The host derives the first
+window boundary as ``W * ceil((s_final + 1) / W)``, where ``W`` is
+``repulsive_stall_window`` and ``s_final`` is the scheduled start iteration of the
+final resolution; subsequent boundaries are ``W`` iterations apart. The total
+bound follows the configured growth and settle budgets. Frozen envs remain
+unchanged, so skipping later windows does not change the result. A feasible
+target-reaching curve may also finish valid at the full bound without freezing;
+optional early exit is separate from validity (:doc:`/generators/repulsive`).
 
 .. _cuda-graph-warm-up:
 
@@ -344,7 +350,7 @@ HOST stages and segments
 ------------------------
 
 A stage that must read device data back or run host control flow declares ``capture =
-CaptureClass.HOST``; a legacy ``GeneratorSpec`` (or the deprecated ``GateGeneratorSpec``)
+CaptureClass.HOST``; a ``GeneratorSpec``
 registered with ``capturable=False`` is a ``HOST`` generator too. A ``HOST`` stage runs
 eagerly, outside every capture, on every call. It no longer makes the whole pipeline
 eager: the planner groups the stages into **segments**, maximal runs of consecutive
@@ -370,9 +376,9 @@ How such a generator runs:
   Python runs every call), the others with ``wp.capture_launch``. The seed prologue
   belongs to the first segment, the commit and the ``generation`` write to the last.
   ``gen.graph`` stays ``None``; masked regeneration keys a set of segment graphs per
-  ``(advance, mask)`` like the plain self-graph (`Masked regeneration`_). A legacy
-  ``capturable=False`` generator thus becomes a ``HOST`` segment followed by a captured
-  tail, with the same outputs as before.
+  ``(advance, mask)`` like the plain self-graph (`Masked regeneration`_). A
+  ``GeneratorSpec(capturable=False)`` runs as a ``HOST`` segment followed by a captured
+  tail.
 - **On** ``cpu`` **and with** ``enqueue()``: every segment eagerly, in order.
 - **Under a caller's capture**: ``generate()``, ``enqueue()``, ``Program.run()`` and
   ``Program.enqueue()`` raise ``NotCapturableError`` before launching anything, so your
@@ -409,59 +415,12 @@ syncs run with the thread's capture mode relaxed. A direct ``.numpy()`` or
 ``wp.synchronize*()`` in a ``HOST`` stage allocates or syncs in the default mode, and can
 invalidate another thread's capture in torch's default global mode.
 
-Legacy plugin generators
-~~~~~~~~~~~~~~~~~~~~~~~~
+Plugin launch contexts
+~~~~~~~~~~~~~~~~~~~~~~
 
-A plugin generator that does not set ``accepts_ctx=True`` (the legacy ABI) issues its own
-``wp.launch`` calls on Warp's current stream rather than on the stream the call resolved.
-Its self-graph is therefore captured on Warp's current stream, behind a process-wide
-lock. Outside a capture, when a call resolves another stream (``stream=``, a constructor
-``stream=``, an ambient scope), the whole body runs on Warp's current stream instead,
-ordered after and before the resolved stream with events, so the plugin's launches and the
-library's stages stay ordered. Recording it into your graph requires the capture stream to
-BE Warp's current stream; otherwise the call raises ``LegacyPluginStreamError`` before any
-launch. Capture Warp's current stream (a plain ``wp.ScopedCapture(device)``), or make your
-capture stream current before the capture begins. With ``torch.cuda.graph``, pass it that
-explicit stream (a plain ``torch.cuda.graph(g)`` captures on torch's internal stream, which
-you cannot make current beforehand):
-
-.. snippet: group=legacy-torch cuda requires=upgrading/from-0.1#common,upgrading/from-0.1#reg-01
-
-.. snippet: setup
-
-   gen = TrackGenerator(TrackGenConfig(generator="wobbly", num_envs=E, device=device))
-
-.. code-block:: python
-
-   import torch
-
-   s = torch.cuda.Stream()
-   ws = wp.stream_from_torch(s)        # one Warp wrapper of s, created once and kept
-   g = torch.cuda.CUDAGraph()
-   with wp.ScopedStream(ws):                         # Warp's current stream is now s
-       with torch.cuda.graph(g, stream=s):           # torch captures that same stream
-           track = gen.generate()                    # recorded; returns the Track
-
-.. snippet: after
-
-   g.replay()
-   torch.cuda.synchronize()
-   assert track.valid.numpy().all()
-
-Create the wrapper once and keep it alive for the life of the process, not a fresh
-``wp.stream_from_torch(s)`` per capture: when a wrapper of a torch stream is
-garbage-collected, Warp unregisters the stream handle for the whole process, which breaks
-a later capture on the same handle (:ref:`the same warning <torch-stream-wrapper>` in the
-CUDA graphs tutorial).
-
-Every shipped generator sets ``accepts_ctx=True`` and has neither restriction.
-
-Inside ``torch.cuda.graph``, adoption reuses the ``wp.Stream`` that already wraps torch's
-capture stream (Warp's current stream, as in the recipe above, or the stream an open Warp
-capture was started on), and otherwise one wrapper per torch stream kept for the process.
-It never creates a short-lived wrapper per call: dropping one would unregister the handle
-from Warp for the whole process, breaking an open Warp capture on it and Warp's current
-stream.
+Every plugin generator emits device work through the call's launch context. A
+``GeneratorSpec`` generate callable must accept ``ctx=``; a Stage returns
+``enqueue(ctx)``. This lets a caller record either form on its own stream.
 
 Buffer reuse
 ------------

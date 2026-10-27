@@ -8,6 +8,8 @@ samples.
 Oracle<->Warp parity is guarded by tests/test_warp_assemble.py: both paths get the same
 closed behaviour, so they must still match bit-for-bit.
 """
+from dataclasses import replace
+
 import math
 
 import pytest
@@ -16,7 +18,8 @@ import torch
 pytest.importorskip("warp")
 
 import warp as wp  # noqa: E402
-from track_gen._src import warp_pipeline as wpl
+from tests._reference_generators import warp_pipeline as wpl
+from tests._reference_generators import generate_raw
 from track_gen._src.types import TrackGenConfig
 from tests._warp_compare import (
     corner_count_sample, corner_sample, ccw_sort, assemble,
@@ -42,8 +45,7 @@ def _fixed_corners(P: int, device) -> torch.Tensor:
 @pytest.mark.parametrize("dev", DEVS)
 def test_closed_assemble_keeps_all_count_segments(dev):
     """Every one of the `count` segments is a real Bezier -> count*npseg finite samples."""
-    config = TrackGenConfig()
-    config.device = dev
+    config = TrackGenConfig(device=dev)
     P = config.max_num_points
     npseg = config.num_points_per_segment
 
@@ -65,7 +67,7 @@ def test_closed_assemble_keeps_all_count_segments(dev):
 def _fatband_cfg(E: int, dev: str) -> TrackGenConfig:
     """The fat-band regime from tests/test_warp_corner_ordering.py."""
     return TrackGenConfig(num_envs=E, num_points=256, half_width=0.5, scale=10.0,
-                          output_mode="constant_spacing", spacing=0.30, N_max=384, device=dev)
+                          spacing=0.30, N_max=384, device=dev)
 
 
 def _attempt0_centerline(cfg, dev):
@@ -88,7 +90,7 @@ def test_adaptive_handle_clamp_drives_out_crossings(dev):
     what guarantees the FINAL centerline is simple. Pin both: the clamp MECHANISM at a tight
     frac (independent of the production default) and the polygon-fallback end-to-end guarantee."""
     cfg = _fatband_cfg(2048, dev)
-    cfg.handle_clamp_frac = 0.10  # tight clamp: exercise the overshoot-removal mechanism
+    cfg = replace(cfg, handle_clamp_frac=0.10)
     rs = _attempt0_centerline(cfg, dev)
     crossing_free = (self_intersections(rs) == 0).float().mean().item()
     assert crossing_free >= 0.985, (
@@ -102,7 +104,7 @@ def test_adaptive_handle_clamp_drives_out_crossings(dev):
     _, scratch_fb = wpl._inflate_warp_alloc(fb_cfg)
     seeds_t = torch.arange(fb_cfg.num_envs, dtype=torch.int32, device=dev)
     seeds_wp = wp.from_torch(seeds_t, dtype=wp.int32)
-    wpl.generate_centerline_warp(seeds_wp, fb_cfg,
+    generate_raw("bezier", seeds_wp, fb_cfg,
                                  out_centerline=scratch_fb.gen_centerline,
                                  out_valid_wp=scratch_fb.gen_valid,
                                  scratch=scratch_fb.gen)
@@ -129,8 +131,8 @@ def test_handle_clamp_preserves_shape_diversity(dev):
     corners = ccw_sort(corner_sample(seeds, 0, cfg), count)
 
     def area_std(frac):
-        cfg.handle_clamp_frac = frac
-        dense = assemble(corners, count, cfg)
+        varied = replace(cfg, handle_clamp_frac=frac)
+        dense = assemble(corners, count, varied)
         rs, _ = arc_length_resample_warp(dense, int(cfg.num_points))
         x, y = rs[..., 0], rs[..., 1]
         xn, yn = torch.roll(x, -1, 1), torch.roll(y, -1, 1)

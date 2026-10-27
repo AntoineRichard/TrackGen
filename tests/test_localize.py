@@ -197,8 +197,8 @@ def test_sign_convention_on_generated_tracks():
 
 def test_warm_matches_cold_two_laps_on_generated_tracks():
     # Heterogeneous per-env counts, two full laps, wrap seam crossed
-    # forward: warm and cold must stay bitwise identical throughout (points
-    # hug the centerline, so no pinch ambiguity is in play).
+    # forward: warm and cold must stay bitwise identical throughout (segment
+    # midpoints avoid endpoint ties and pinch ambiguity).
     E = 4
     track = _generate("bezier", E, seeds=123)
     valid = track.valid.numpy().astype(bool)
@@ -209,13 +209,15 @@ def test_warm_matches_cold_two_laps_on_generated_tracks():
     center = track.center.numpy().reshape(E, n_max, 3)[..., :2]
     cold = TrackLocalizer(track)
     warm = TrackLocalizer(track, warm_window=8)
-    rng = np.random.default_rng(3)
     steps = int(counts[valid].max()) + 4  # 2 points/step -> >= 2 laps each
     for step in range(steps):
         pts = np.zeros((E, 2), np.float32)
         for e in range(E):
-            i = (2 * step) % int(counts[e])
-            pts[e] = center[e, i] + rng.normal(0.0, 0.02, 2)
+            if not valid[e]:
+                continue
+            m = int(counts[e])
+            i = (2 * step) % m
+            pts[e] = 0.5 * (center[e, i] + center[e, (i + 1) % m])
         pos = _positions(pts)
         fc = cold.query(pos).clone()
         fw = warm.query(pos)

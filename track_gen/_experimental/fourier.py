@@ -15,6 +15,19 @@ import torch
 import warp as wp
 
 
+@dataclass(frozen=True)
+class FourierConfig:
+    """Private experiment settings; these are outside the runtime config schema."""
+
+    device: str = "cpu"
+    num_harmonics: int = 5
+    num_centerline_samples: int = 256
+    amplitude: float = 1.0
+    decay_p: int = 2
+    scale: float = 1.0
+    turning_tol: float = 0.1
+
+
 @dataclass
 class Centerline:
     """A closed, ordered, dense centerline batch (points [E, M, 2], valid [E])."""

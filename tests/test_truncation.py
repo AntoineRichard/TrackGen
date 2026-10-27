@@ -14,10 +14,12 @@ import numpy as np
 import pytest
 import warp as wp
 
-from track_gen._src import warp_pipeline as wpl
+from track_gen import ops
+from track_gen.exec import LaunchContext
 from track_gen._src.rng_utils import PerEnvSeededRNG
 from track_gen._src.track_generator import TrackGenerator
 from track_gen._src.types import TrackGenConfig
+from track_gen.testing import hot_path_guard
 
 DEVS = [
     "cpu",
@@ -59,13 +61,11 @@ def test_resample_flags_truncation_from_unclamped_count(dev):
     E = len(perims)
     out = wp.empty(E * n_max, dtype=wp.vec2f, device=dev)
     count = wp.empty(E, dtype=wp.int32, device=dev)
-    seg = wp.empty(E * _N, dtype=wp.float32, device=dev)
-    s = wp.empty(E * (_N + 1), dtype=wp.float32, device=dev)
+    scratch = ops.ArcScratch.alloc(E, _N, dev, compact=False)
     truncated = wp.full(E, -1, dtype=wp.int32, device=dev)
 
-    wpl.resample_constant_spacing(_loops_wp(perims, dev), spacing, n_max,
-                                  out_wp=out, count_wp=count, seg_wp=seg, s_wp=s,
-                                  truncated_wp=truncated)
+    ops.resample_constant_spacing(LaunchContext.for_call(dev), _loops_wp(perims, dev),
+                                  _N, spacing, n_max, scratch, out, count, truncated)
 
     assert truncated.numpy().tolist() == [1, 0, 0, 0]
     cnt = count.numpy()
@@ -75,35 +75,36 @@ def test_resample_flags_truncation_from_unclamped_count(dev):
 
 
 def test_inplace_resample_does_no_host_readback():
-    """The in-place (pipeline) path never reads count back to warn; the flag is the
-    diagnostic. The allocating convenience path still warns on truncation."""
+    """The op leaves truncation diagnostics on device and performs no host readback."""
     n_max, spacing = 64, 0.1
     src = _loops_wp([1.1 * n_max * spacing], "cpu")
     out = wp.empty(n_max, dtype=wp.vec2f, device="cpu")
     count = wp.empty(1, dtype=wp.int32, device="cpu")
     truncated = wp.empty(1, dtype=wp.int32, device="cpu")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
-        wpl.resample_constant_spacing(src, spacing, n_max, out_wp=out, count_wp=count,
-                                      truncated_wp=truncated)
+    scratch = ops.ArcScratch.alloc(1, _N, "cpu", compact=False)
+    ctx = LaunchContext.for_call("cpu")
+    ops.resample_constant_spacing(ctx, src, _N, spacing, n_max, scratch, out, count,
+                                  truncated)
+    with hot_path_guard():
+        ops.resample_constant_spacing(ctx, src, _N, spacing, n_max, scratch, out, count,
+                                      truncated)
     assert int(truncated.numpy()[0]) == 1
 
-    with pytest.warns(RuntimeWarning, match="N_max"):
-        wpl.resample_constant_spacing(src, spacing, n_max, count_wp=count)  # out_wp allocated
 
-
-def _gen(dev, E, n_max, seed=1234):
-    cfg = TrackGenConfig(num_envs=E, device=dev, N_max=n_max)
+def _gen(dev, E, n_max, seed=1234, **kw):
+    cfg = TrackGenConfig(num_envs=E, device=dev, N_max=n_max, **kw)
     return TrackGenerator(cfg, PerEnvSeededRNG(seeds=seed, num_envs=E, device=dev))
 
 
 @pytest.mark.parametrize("dev", DEVS)
-def test_truncated_tracks_are_flagged_and_invalid(dev):
+@pytest.mark.parametrize("on_invalid", [None, "keep"])
+def test_truncated_tracks_are_flagged_and_invalid(dev, on_invalid):
     """Force truncation with a small N_max (default bezier needs ~57-95 points at the
     default spacing): every env is flagged and fails validity, on the first call and,
     on CUDA, on graph replay."""
     E, n_max = 8, 32
-    gen = _gen(dev, E, n_max)
+    policy = {} if on_invalid is None else {"on_invalid": on_invalid}
+    gen = _gen(dev, E, n_max, **policy)
     for _ in range(2):  # cuda: capture + replay
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
@@ -112,7 +113,12 @@ def test_truncated_tracks_are_flagged_and_invalid(dev):
         assert track.truncated.shape == (E,) and track.truncated.dtype == wp.int32
         np.testing.assert_array_equal(track.truncated.numpy(), np.ones(E, np.int32))
         np.testing.assert_array_equal(track.valid.numpy(), np.zeros(E, np.int32))
-        np.testing.assert_array_equal(track.count.numpy(), np.full(E, n_max, np.int32))
+        expected_count = n_max if on_invalid == "keep" else 0
+        np.testing.assert_array_equal(track.count.numpy(), np.full(E, expected_count, np.int32))
+        if on_invalid is None:                         # the default poisons geometry
+            assert np.isnan(track.center.numpy()).all()
+            assert np.isnan(track.half_width.numpy()).all()
+            assert (track.fail_mask.numpy() != 0).all()
 
 
 def test_truncation_flag_is_per_env():

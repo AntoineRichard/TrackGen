@@ -125,8 +125,7 @@ a pair that would not move anything: use ``gate_relax.none``); ``gate_frames.def
 takes ``gate_width`` and ``gate_align``, ``gate_frames.posed`` ``gate_align`` only; the
 elevation stages take the ``z_*`` fields their profile uses (``elevation.flat`` takes
 ``z_base`` on gates); ``validity.gate_default`` takes ``min_gates``, ``gate_radius``,
-``gate_width``, ``z_valid_grade`` and ``check_crossing`` (see `Gate fail bits`_; its
-``gate_width`` and ``check_crossing`` are inert). ``gate_frames.default``'s
+``z_valid_grade`` (see `Gate fail bits`_). ``gate_frames.default``'s
 ``gate_width`` is a :term:`dynamic field` (per env) (:ref:`gate-width-per-env`). The generator's
 params are its ``generator_params``; the order and ``carry`` stages take none, and
 ``normalize.extent`` takes ``size`` (``NormalizeExtentParams``, a dynamic per-env
@@ -134,9 +133,7 @@ multiplier, default ``1.0``, ``GateGenConfig.size`` for the ``polar``, ``voronoi
 ``checkpoint`` gate generators): it scales to ``ops.constants.TARGET_EXTENT *
 BatchSpec.scale * size[e]``.
 
-Then the commit (`The gate commit`_) and the ``generation`` write. A legacy
-``GateGeneratorSpec`` replaces ``generator``, ``order`` and ``normalize`` with one
-adapter slot (`Legacy gate generators`_), and a centerline generator replaces
+Then the commit (`The gate commit`_) and the ``generation`` write. A centerline generator replaces
 ``generator`` with ``generator`` + ``stations`` (`Stations: gates from any track
 generator`_).
 
@@ -264,9 +261,7 @@ A native gate generator is a ``Stage`` with ``kind="gate_generator"`` and
 and does not order, normalize or lift anything (:ref:`writing-a-gate-generator` is the
 guide, :ref:`gate-generator-stage` the stage's contract). Its ``capacity(params, layout)`` returns ``{"gates": A, "min_gates": k}``: ``A``
 is the most anchors it writes per env (its row stride), ``k`` the fewest (default ``0``).
-This replaces the legacy ``GateGeneratorSpec.max_gates`` callable, which meant both "how
-many slots I need" and "how many gates I can make". The planner checks it against the
-batch and the validity stage, with the messages ``GateGenConfig`` users already know:
+
 
 - ``A > BatchSpec.max_gates``: ``PlanError``: ``... BatchSpec.max_gates=8 is too small for
   gate generator 'polar'; required max_gates 12.``
@@ -305,7 +300,7 @@ compute them and carries the provided values to the gate slots instead:
    * - ``"half_size"``, ``"roll"``
      - nothing
      - ``carry_half_size``, ``carry_roll``; ``gate_frames.posed`` instead of
-       ``.default``, and ``validity.gate_default(check_crossing="always")``
+       ``.default``; validity checks the resulting nonzero bars
 
 The ``carry`` stages copy by anchor index (padding ``0.0`` for ``z`` and ``roll``, NaN for
 the others), so they need the index-preserving ``order.raw``: a generator that provides
@@ -418,8 +413,7 @@ A generator declares which orders it accepts, in one of two ways:
   order of its own), ``polar``, ``checkpoint`` and ``voronoi`` exclude ``random_pairs``.
   A third-party order therefore runs with every built-in generator.
 - ``orderings``, a whitelist. Generators that provide attributes declare
-  ``frozenset({"raw"})``; a legacy ``GateGeneratorSpec``'s ``supported_orderings`` is
-  one.
+  ``frozenset({"raw"})``.
 
 ``preferred = {"order": name, "normalize": name}`` names the generator's default order
 and its normalization (``preferred["normalize"] = "extent"`` inserts
@@ -433,10 +427,9 @@ The default order is one rule, for an anchors generator: its ``preferred["order"
 it accepts it, else ``"ccw"`` when it accepts it, else the first order it accepts
 (``"raw"`` for stations). ``presets.gates(order=None)``,
 ``GateGenConfig.gate_ordering=None`` (the config default, resolved by
-``legacy.to_gate_pipeline_spec`` when ``GateGenerator`` or ``Course`` is constructed)
+``bind_generator`` before the run config and pipeline spec are constructed)
 and the conformance kit all apply it, so ``GateGenerator(GateGenConfig(
-generator="acme.helix"))`` runs ``order.raw``. The run config (the config a legacy
-``GateGeneratorSpec`` receives) holds the resolved name, never ``None``. For the five
+generator="acme.helix"))`` runs ``order.raw``. The run config holds the resolved name, never ``None``. For the five
 built-ins the rule gives ``"ccw"``. An explicit name is checked against the orders the
 generator accepts.
 
@@ -680,7 +673,7 @@ decides the crossing check per env (below). ``GateSequence.fail_mask`` is the fi
      - a chord's ``|dz| / ds`` exceeds ``z_valid_grade`` (only when it is ``> 0``)
    * - 6-15
      - reserved
-     - TrackGen's future built-in gate checks
+     - Reserved built-in gate-check range
    * - 16-30
      - plugin checks
      - assigned by ``StageBuilder.fail_bit()``, in pipeline order (as for tracks)
@@ -700,11 +693,9 @@ loop for a point-gate env changes no decision: the valid and fail bits are those
 kernel that checks every env. So a run-time bar width (``gate_frames.gate_width`` drawn or set
 from point gates, :ref:`gate-width-per-env`) is checked like a width built in, and the
 default point-gate pipelines pay nothing (one compare per real gate in an existing loop).
-``check_crossing`` (``"width"`` or ``"always"``) and ``validity.gate_default``'s
-``gate_width`` are **inert**: both values select the per-env check. They are kept so
-stored specs and dicts load, and go at 1.0 (:ref:`upgrading-removals`). Posed gates (a
-generator that provides ``half_size``) are checked the same way under either value, and
-the planner accepts ``gate_frames.posed`` with ``"width"``.
+``GateValidityParams`` accepts ``min_gates``, ``gate_radius`` and ``z_valid_grade``.
+Crossing is derived from the gate geometry, including provided poses; it has no separate
+width or crossing-mode setting.
 
 .. _pipeline-gate-commit:
 
@@ -718,15 +709,15 @@ The gate Program ends with the commit of :ref:`The commit <pipeline-commit>`, ov
   them after, bit for bit (``position``, ``tangent``, ``forward``, ``left``, ``right``,
   ``orientation``, ``half_size``, ``count``, ``valid``, ``fail_mask``, every attribute;
   ``generation`` is written for the masked envs only).
-- **Invalid envs.** ``BatchSpec.on_invalid`` applies: ``"keep"`` (default) leaves an
+- **Invalid envs.** ``BatchSpec.on_invalid`` applies: explicit ``"keep"`` leaves an
   :term:`invalid env`'s computed gates and
-  ``valid = 0``. ``"poison"`` leaves it with ``count = 0``, every per-gate field NaN
+  ``valid = 0``. The default, ``"poison"``, leaves it with ``count = 0``, every per-gate field NaN
   (``orientation`` and ``half_size`` included), every attribute its padding and
   ``valid = 0``, keeping ``fail_mask``;
   ``CheckpointSet.from_gates`` and ``ProgressTracker`` then take their empty-course path
-  for that env. There is no ``GateGenConfig.on_invalid``: use ``presets.gates(...,
-  on_invalid="poison")`` or edit the spec's batch.
-- **Cost.** As for tracks: no launch for an unmasked default generation, one for a derived
+  for that env. ``GateGenConfig`` and ``presets.gates`` expose the same policy;
+  a saved ``/2`` batch missing the key also defaults to poison.
+- **Cost.** As for tracks: no launch for an unmasked explicit-keep generation, one for a derived
   ``valid`` (a check after ``validity.gate_default``) or for poison, two for a masked
   generation, plus per exported attribute two for a masked generation and one for
   poison. The held copy costs 80 B per gate slot (plus each attribute's size) and 12 B
@@ -741,7 +732,7 @@ A default gate generation is a short, fixed launch sequence: the effective seed,
 parameter latches (:ref:`pipeline-latch`), the generator's kernels, the order (its
 ``gates.xy`` and a ``gates.count`` copy), the normalization for the generators that
 prefer it, the sphere separation, the elevation, the lift, the tangents, the frames and
-the validity kernel, then the ``generation`` write. The normalizing
+the validity kernel, the default poison commit, then the ``generation`` write. The normalizing
 generators (``polar``, ``checkpoint``, ``voronoi``) normalize after the order stage, out
 of place: ``_normalize_extent_to_sized_k`` reads the order's ``gates.xy`` and writes its
 own version.
@@ -753,21 +744,22 @@ own version.
    * - generation (CPU, launches per ``generate()``)
      - launches
    * - ``bezier`` / ``hull``, any ordering, flat, ``gate_solve_iters=8``
-     - 16 (2 latches: ``size`` and ``gate_frames.gate_width``)
+     - 17 (2 latches: ``size`` and ``gate_frames.gate_width``)
    * - ``polar`` / ``checkpoint``, flat, ``gate_solve_iters=8``
-     - 18 (4 latches: the two ring knobs, ``normalize.size`` and
+     - 19 (4 latches: the two ring knobs, ``normalize.size`` and
        ``gate_frames.gate_width``)
    * - ``voronoi``, flat, ``gate_solve_iters=8``
-     - 19 (4 latches)
+     - 20 (4 latches)
    * - masked (``advance=True, mask=m``)
-     - three more: the epoch advance, the hold and the commit
-   * - ``on_invalid="poison"``
-     - one more (the commit)
+     - two more: the epoch advance and the hold (the poison commit becomes masked)
+   * - explicit ``on_invalid="keep"``
+     - one fewer when the default validity check is last (no commit)
    * - a plugin check after ``validity.gate_default``
-     - one more for the commit (the derived ``valid``), plus the check's own launches
-       (and its parameter latch, for a check with dynamic params)
+     - the check's own launches (and its parameter latch for dynamic params); the
+       default poison commit also derives the final ``valid``
 
-A non-flat elevation adds the ``gate_arclen`` launch and its latches (2 for ``uniform``,
+These counts include the default poison policy and were remeasured with the current
+CPU pipeline. A non-flat elevation adds the ``gate_arclen`` launch and its latches (2 for ``uniform``,
 3 for ``random_walk`` / ``noise``); ``gate_solve_iters=0`` drops the separation launch.
 
 .. _pipeline-gate-plan-rules:
@@ -792,33 +784,16 @@ before allocating anything when:
   ``cl.<package>.<name>`` plugin channel, or an elevation port after the anchors
   producer stays on a ``cl.*`` channel without gate counterpart (`Two point domains`_,
   `Elevation on gates`_);
-- stages disagree on ``gate_width`` or ``gate_radius`` (``gate_frames`` holds the
-  initial bar width, ``gate_relax.spheres`` the separation target,
-  ``validity.gate_default`` a copy of each): one initial value per pipeline
-  (``validity.gate_default``'s ``gate_width`` is inert, and the per-env width starts
-  at ``gate_frames.default``'s);
+- stages disagree on ``gate_radius``: ``gate_relax.spheres`` and
+  ``validity.gate_default`` share one separation radius. Bar width belongs to
+  ``gate_frames.default`` or the provider's ``half_size`` channel;
 - a ``GateSequence`` field has no writer, or ``valid.fail`` does not start at
   ``validity.gate_default``.
 
 .. _pipeline-legacy-gates:
 
-Legacy gate generators
-----------------------
+Gate plugin construction
+------------------------
 
-A ``GateGeneratorSpec`` (the legacy gate plugin ABI, :ref:`plugin-abis`: ``generate(seeds, config, out,
-scratch[, ctx])`` writing ordered plan-view gates into a staging view, ``alloc_scratch``,
-``max_gates``, ``supported_orderings``) keeps working, through an adapter slot that
-writes ``gates.xy`` and ``gates.count`` directly. It orders its own gates as before, so no
-order or normalize stage follows it, and it reads the user's ``GateGenConfig``, exactly
-the fields it read before. A ``capturable=False`` spec is a ``HOST`` generator: it runs
-eagerly as the Program's first segment, ahead of a captured tail (see :ref:`Capture classes
-and segments <pipeline-segments>`); an ``accepts_ctx=False`` spec runs inside ``ctx.scope()`` (see
-:doc:`cuda-graph`).
-
-It is **deprecated**: registering one stays silent, but binding one (``GateGenerator``,
-``Course``, ``build``, ``legacy.to_gate_pipeline_spec``, the conformance kit) emits a
-``DeprecationWarning`` once per registry and name, attributed to the calling code:
-``GateGeneratorSpec 'acme.ring' (...) is deprecated: write a Stage with
-kind='gate_generator' and output='anchors' (docs/contributing/writing-a-generator.rst);
-legacy gate generators run through an adapter until 1.0``. Port it with
-:ref:`writing-a-gate-generator`.
+Gate generators use Stages. :ref:`writing-a-gate-generator` gives a complete example,
+including native anchors, supplied attributes, ordering and the conformance checks.

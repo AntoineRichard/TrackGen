@@ -44,8 +44,6 @@ and :ref:`composing-a-course` for composing your own.
 
    .. automethod:: clone
 
-.. autofunction:: track_gen.course.set_capturing
-
 Components
 ----------
 

@@ -12,6 +12,8 @@ when the stages recompute it differently), an all-zero mask is an exact no-op, a
 """
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 import warp as wp
@@ -64,7 +66,7 @@ def _rows(host: dict, e: int) -> dict:
 
 
 def _count_split() -> int:
-    counts = _gen().program.result.count.numpy()
+    counts = _gen(on_invalid="keep").program.result.count.numpy()
     uniq = np.unique(counts)
     assert uniq.size >= 2, counts
     return int(uniq[uniq.size // 2])
@@ -136,8 +138,7 @@ def test_each_check_sets_exactly_its_bit(case, bit):
         points[2][2] = 3.0
         cfg_kw["z_valid_grade"] = 0.5
     seq, cfg = _sequence(points, tangents=tangents, **kw)
-    for k, v in cfg_kw.items():
-        setattr(cfg, k, v)
+    cfg = dataclasses.replace(cfg, **cfg_kw)
     fail = wp.full(1, -1, dtype=wp.int32, device=DEV)
     warp_gate.finalize_gate_sequence(seq, cfg, fail=fail)
     want = 0 if bit is None else 1 << GATE_FAIL_BITS[bit]
@@ -192,7 +193,8 @@ def _perturb(program, stage_id: str, channel: str):
     return calls
 
 
-@pytest.mark.parametrize("kw", [{}, dict(checks=("gate_default", gt.MAX_HEIGHT)),
+@pytest.mark.parametrize("kw", [dict(on_invalid="keep"),
+                                dict(checks=("gate_default", gt.MAX_HEIGHT), on_invalid="keep"),
                                 dict(on_invalid="poison"),
                                 dict(elevation="noise", generator="polar")])
 def test_a_masked_regeneration_never_writes_an_unmasked_env(kw):
@@ -214,7 +216,8 @@ def test_a_masked_regeneration_never_writes_an_unmasked_env(kw):
 
 
 def test_an_all_zero_mask_writes_nothing():
-    for kw in ({}, dict(on_invalid="poison", checks=("gate_default", gt.MAX_HEIGHT))):
+    for kw in (dict(on_invalid="keep"),
+               dict(on_invalid="poison", checks=("gate_default", gt.MAX_HEIGHT))):
         g = _gen(**kw)
         poison_all(g._gate_sequence)
         before = _host(g._gate_sequence)
@@ -254,7 +257,7 @@ def _poisoned(keep: dict) -> dict:
 
 def test_poison_is_keep_with_the_invalid_envs_poisoned():
     split = _count_split()
-    keep = _host(_gen(min_gates=split)._gate_sequence)
+    keep = _host(_gen(min_gates=split, on_invalid="keep")._gate_sequence)
     poison = _host(_gen(min_gates=split, on_invalid="poison")._gate_sequence)
     bad = keep["fail_mask"] != 0
     assert bad.any() and not bad.all()
@@ -299,7 +302,7 @@ def test_launch_counts():
     # 14 -> 16; polar 16 -> 18; masked 19, the hold at 4; poison 17; checked 19), and
     # the validity record is _finalize_validity_bars_k (the crossing toggle dropped).
     ctx = LaunchContext.for_call(DEV)
-    default = _gen()
+    default = _gen(on_invalid="keep")
     with trace_launches() as plain:
         default.program.enqueue(ctx)
     assert len(plain) == 16                                      # 0.2.0.dev3's 14 + 2
@@ -307,7 +310,7 @@ def test_launch_counts():
     assert _kernels(plain)[1:3] == ["_latch_all_f32_k"] * 2      # size, gate_width
     assert "_finalize_validity_bars_k" in _kernels(plain)
     assert "_finalize_validity_k" not in _kernels(plain)
-    polar = _gen(generator="polar")
+    polar = _gen(generator="polar", on_invalid="keep")
     with trace_launches() as t:
         polar.program.enqueue(ctx)
     # The normalization runs out of place: no extra copy. Roadmap PR13c re-pin
@@ -328,7 +331,7 @@ def test_launch_counts():
     with trace_launches() as t:
         poison.program.enqueue(ctx)
     assert len(t) == 17 and _kernels(t)[-2] == "_gate_commit_k"
-    checked = _gen(checks=("gate_default", gt.MAX_HEIGHT))
+    checked = _gen(checks=("gate_default", gt.MAX_HEIGHT), on_invalid="keep")
     with trace_launches() as t:
         checked.program.enqueue(ctx)
     # + the z_cap latch, the check, the commit (valid only: one thread per env)

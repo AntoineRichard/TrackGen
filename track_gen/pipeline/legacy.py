@@ -28,7 +28,9 @@ def to_pipeline_spec(config, *, registry=None) -> PipelineSpec:
     profile, else ``lift.elevated``). A generator that provides ``"z"`` has no
     elevation (``lift.elevated``), one that provides ``"half_width"`` no width stage.
     Each stage's params are its Params class's ``from_legacy(config)``
-    (the flat field names); the generator's are its resolved ``generator_params``.
+    (the flat field names); constant-spacing resampling records the concrete
+    ``config.resolved_spacing``. The generator's params are its resolved
+    ``generator_params``.
     ``relax_solver`` and ``z_profile`` name any stage registered under ``relax`` /
     ``elevation``; a ``half_width`` field of their Params is ``config.half_width`` (the
     stages with the field share the nominal width).
@@ -41,7 +43,7 @@ def to_pipeline_spec(config, *, registry=None) -> PipelineSpec:
     Raises:
         TypeError: ``config`` is a ``GateGenConfig`` (use :func:`to_gate_pipeline_spec`).
         ValueError: an unknown or oracle-only ``relax_solver``, an unknown
-            ``z_profile``, ``smooth_finish=True`` (as ``TrackGenerator``), the
+            ``z_profile``, the
             generator's params are invalid, a non-flat ``z_profile`` / non-zero
             ``z_base`` for a generator that provides ``z``, or a
             ``size`` other than 1 for a generator that declares no ``size`` (or whose
@@ -135,18 +137,14 @@ def _to_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
         relax_cls = reg.get("relax", solver)
     except ValueError as exc:                 # PluginLoadError (quarantined) passes
         raise ValueError(f"TrackGenConfig.relax_solver: {exc}") from None
-    if cfg.smooth_finish:
-        raise ValueError(
-            "TrackGenerator does not support smooth_finish=True; "
-            "set smooth_finish=False."
-        )
     profile = cfg.z_profile
     try:
         elevation_cls = reg.get("elevation", profile)
     except ValueError as exc:
         raise ValueError(f"TrackGenConfig.z_profile: {exc}") from None
     batch = BatchSpec(num_envs=int(cfg.num_envs), device=str(cfg.device),
-                      n_max=int(cfg.N_max), closed=True, scale=cfg.scale)
+                      n_max=int(cfg.N_max), closed=True, scale=cfg.scale,
+                      on_invalid=cfg.on_invalid)
     if not cfg.relax_enable:
         relax = StageRef("relax", "none")
     else:
@@ -200,7 +198,7 @@ def generator_config(spec: PipelineSpec):
     return TrackGenConfig(generator=ref.name, device=batch.device,
                           num_envs=batch.num_envs, N_max=batch.n_max, scale=batch.scale,
                           num_points=int(ref.capacity.get("raw", 256)),
-                          generator_params=params)
+                          generator_params=params, on_invalid=batch.on_invalid)
 
 
 # ---------------------------------------------------------------------------------------
@@ -223,8 +221,6 @@ def to_gate_pipeline_spec(config, *, registry=None) -> PipelineSpec:
     ``elevation`` (``elevation.<z_profile>``; both dropped when the generator provides
     ``z``), ``lift`` (``lift.gates``), ``tangents`` (``tangents.central``, dropped when it
     provides ``tangent``), ``gate_frames`` and ``validity`` (``validity.gate_default``).
-    A legacy ``GateGeneratorSpec`` orders its own gates: no order / normalize stage; it
-    reads the resolved name from its run config (never ``None``).
     ``BatchSpec(n_max=384, max_gates=config.max_gates, scale=config.scale)``.
 
     Raises:
@@ -249,34 +245,28 @@ def to_gate_pipeline_spec(config, *, registry=None) -> PipelineSpec:
 def _to_gate_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
     """The default gate spec of the bound run config ``cfg`` (``binding.run_config``),
     with 0.2.0.dev3's checks and messages in its order (ordering, capacity), then the
-    z-profile and provided-attribute rules. ``cfg.gate_ordering=None`` is resolved here
-    to the generator's default order and written onto ``cfg`` (the binding's own
-    snapshot), so every later reader of the run config (a legacy spec's ``max_gates`` /
-    ``alloc_scratch`` / ``generate``, an elevation's ``from_legacy``,
-    ``GateGenerator._config``) sees the name."""
+    z-profile and provided-attribute rules. ``cfg.gate_ordering`` is already resolved:
+    ``bind_generator`` replaces ``None`` with the generator's default order on its
+    snapshot before constructing this run config."""
     from ..plugin import registry as _default_registry  # noqa: PLC0415
     from ..plugin.params import _static_view  # noqa: PLC0415
-    from ..plugin.stage import _is_stage  # noqa: PLC0415
-    from ..stages.gates import _default_order, _orderings_of, _preferred  # noqa: PLC0415
+    from ..stages.gates import _orderings_of, _preferred  # noqa: PLC0415
     from .planner import _check_capacity  # noqa: PLC0415
     from .presets import _gate_stages  # noqa: PLC0415
 
     reg = _default_registry if registry is None else registry
     spec = binding.spec
-    stage = _is_stage(spec)
-    if cfg.gate_ordering is None:
-        cfg.gate_ordering = _default_order(spec, reg)
+    assert cfg.gate_ordering is not None, "bind_generator resolves gate_ordering"
     name, ordering = cfg.generator, cfg.gate_ordering
     # 1. the ordering
-    if stage:
-        try:
-            reg.get("order", ordering)
-        except ValueError as exc:            # PluginLoadError (quarantined) passes
-            from ..plugin import PluginLoadError  # noqa: PLC0415
+    try:
+        reg.get("order", ordering)
+    except ValueError as exc:
+        from ..plugin import PluginLoadError  # noqa: PLC0415
 
-            if isinstance(exc, PluginLoadError):
-                raise
-            raise ValueError(f"GateGenConfig.gate_ordering: {exc}") from None
+        if isinstance(exc, PluginLoadError):
+            raise
+        raise ValueError(f"GateGenConfig.gate_ordering: {exc}") from None
     supported = _orderings_of(spec, reg)
     if ordering not in supported:
         preferred = _preferred(spec).get("order")
@@ -284,11 +274,8 @@ def _to_gate_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
         raise ValueError(f"gate generator {name!r} does not support gate_ordering "
                          f"{ordering!r}; supported: {supported}{hint}")
     # 2. the capacity
-    if stage:
-        A = _check_capacity(spec, spec().capacity(_static_view(binding.params),
-                                                  binding.layout))["gates"]
-    else:
-        A = int(spec.max_gates(cfg))
+    A = _check_capacity(spec, spec().capacity(_static_view(binding.params),
+                                              binding.layout))["gates"]
     if A < int(cfg.min_gates):
         raise ValueError(f"GateGenConfig.min_gates={cfg.min_gates!r} is too large for "
                          f"gate generator {name!r}; generator can produce at most {A} "
@@ -306,7 +293,7 @@ def _to_gate_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
         if isinstance(exc, PluginLoadError):
             raise
         raise ValueError(f"GateGenConfig.z_profile: {exc}") from None
-    provides = frozenset(spec.provides) if stage else frozenset()
+    provides = frozenset(spec.provides)
     if "z" in provides and (profile != "flat" or float(cfg.z_base) != 0.0):
         field = f"z_profile={profile!r}" if profile != "flat" else f"z_base={cfg.z_base!r}"
         raise ValueError(f"GateGenConfig.{field}: gate generator {name!r} provides its own "
@@ -330,10 +317,10 @@ def _to_gate_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
     # 4. the stage list
     from ..stages.channels import is_plugin_channel  # noqa: PLC0415
 
-    attrs = stage and ordering == "raw" and any(
+    attrs = ordering == "raw" and any(
         is_plugin_channel(ch) and ch.startswith("anchors.")
         for ch in dict(spec.writes).values())
-    normalize = stage and _preferred(spec).get("normalize") == "extent"
+    normalize = _preferred(spec).get("normalize") == "extent"
     # Roadmap PR13d: GateGenConfig.size reaches normalize.extent when the gates are
     # re-normalized (polar / voronoi / checkpoint; also a generator declaring a size of
     # its own, which the normalization erases), else the generator (its Params declare
@@ -344,14 +331,15 @@ def _to_gate_pipeline_spec(cfg, binding, registry=None) -> PipelineSpec:
     stages = _gate_stages(
         StageRef("gate_generator", binding.name, params=binding.params, id="generator"),
         provides=provides,
-        order_ref=StageRef("order", ordering) if stage else None,
+        order_ref=StageRef("order", ordering),
         normalize=normalize,
         gate_radius=cfg.gate_radius, gate_solve_iters=cfg.gate_solve_iters,
         gate_width=cfg.gate_width, gate_align=cfg.gate_align, elevation_ref=elevation,
         min_gates=cfg.min_gates, z_valid_grade=cfg.z_valid_grade,
         carry_attributes=attrs, size=getattr(cfg, "size", 1.0) if routed else 1.0)
     batch = BatchSpec(num_envs=int(cfg.num_envs), device=str(cfg.device), n_max=384,
-                      closed=True, scale=cfg.scale, max_gates=int(cfg.max_gates))
+                      closed=True, scale=cfg.scale, max_gates=int(cfg.max_gates),
+                      on_invalid=cfg.on_invalid)
     return PipelineSpec(batch=batch, stages=stages)
 
 
@@ -374,7 +362,7 @@ def gate_generator_config(spec: PipelineSpec, *, registry=None):
     ``gate_ordering`` (the order stage's name; a legacy generator: ``"ccw"`` if it
     supports it, else its first ordering), ``gate_width`` / ``gate_radius`` /
     ``gate_solve_iters`` / ``gate_align`` / ``z_valid_grade`` / ``z_profile`` from their
-    stages; other fields default. A legacy ``GateGeneratorSpec`` in a PipelineSpec sees
+    stages; other fields default. A gate generator in a PipelineSpec sees
     only these fields."""
     from .._src.types import GateGenConfig  # noqa: PLC0415
 
@@ -387,7 +375,7 @@ def gate_generator_config(spec: PipelineSpec, *, registry=None):
         by_kind.setdefault((ref.kind, ref.name), ref)
         by_kind.setdefault(ref.kind, ref)
     kw: dict = dict(generator=first.name, device=batch.device, num_envs=batch.num_envs,
-                    max_gates=G, scale=batch.scale)
+                    max_gates=G, scale=batch.scale, on_invalid=batch.on_invalid)
     if first.kind == "gate_generator":
         params = first.params
         if isinstance(params, _MappingABC):
@@ -442,7 +430,8 @@ def _legacy_ordering(name: str, registry=None) -> str:
 def _scratch_view(program):
     """A PR9 ``warp_pipeline._Scratch`` whose attributes ALIAS the Program's channel
     versions and stage scratch (``TrackGenerator._scratch``): the same field names and
-    meanings, so ``_run_pipeline(..., scratch=gen._scratch)`` still runs on it. A slot
+    meanings, so the frozen PR9 composition in ``tests/_reference_generators`` still
+    runs on it. A slot
     whose stage is absent is ``None``."""
     from .._src.warp_pipeline import InflateScratch, RelaxScratch, _Scratch  # noqa: PLC0415
 
@@ -473,6 +462,9 @@ def _scratch_view(program):
         knot_z=scratch("elevation", "knot_z"),
         fail=ch("valid.fail", "validity") if "validity" in program._stage_ids else None,
         hw_out=ch("track.half_width"))
+    elevation = program.params.get("elevation")
+    inflate.z_dyn = ({name: elevation.in_effect(name) for name in elevation}
+                     if elevation is not None else {})
     has_resample = kinds.get("resample") == ("resample", "constant_spacing")
     return _Scratch(
         inflate=inflate, generator_spec=program._binding.pipeline_spec,

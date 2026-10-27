@@ -2,8 +2,8 @@
 
 What runs here without a GPU:
 
-- epoch 0 is byte-identical to the PR3 code path (the rng's seeds fed straight to the
-  pipeline) for every registered track and gate generator;
+- epoch 0 equals a direct copy of the rng's seeds for every track and gate generator;
+  unchanged algorithms also retain the frozen PR3 composition as a byte reference;
 - ``generate(advance=True, mask=m)``: masked envs change, unmasked envs are bitwise
   identical, ``generation`` equals the epoch, and ``(seed, epoch)`` reproduces an env;
 - ``SeedState`` (bound seeds are never written, ``set`` on bound raises, ``reset_epoch``),
@@ -36,7 +36,8 @@ import warp as wp
 from tests._fake_cuda import FakeCuda, FakeGraph, FakeSeedState, FakeStream, patch_facade_seeds
 from tests.test_caller_capture_cpu import _FACADES, _fake_rng
 from track_gen import GateGenConfig, GateGenerator, PerEnvSeededRNG, TrackGenConfig, TrackGenerator
-from track_gen._src import gate_generator_registry, generator_registry, warp_pipeline
+from tests._reference_generators import warp_pipeline
+from track_gen.plugin import registry
 from track_gen._src.generator_binding import _StageGenerator, bind_generator
 from track_gen.plugin import registry as _plugin_reg
 from track_gen.course import Course, CourseConfig
@@ -55,9 +56,6 @@ _GATE_FIELDS = ("position", "tangent", "forward", "orientation", "half_size", "l
                 "right", "valid", "count")
 
 
-@pytest.fixture(autouse=True)
-def _fresh_legacy_registry(monkeypatch):
-    monkeypatch.setattr(runner_mod, "_PENDING_LEGACY", weakref.WeakSet())
 
 
 # ---------------------------------------------------------------------------------------
@@ -80,19 +78,19 @@ def _track_kw(g: str) -> dict:
     return {}
 
 
-def _track_cfg(g="bezier", n=E):
-    return TrackGenConfig(generator=g, num_envs=n, device=DEV, **_track_kw(g))
+def _track_cfg(g="bezier", n=E, **kw):
+    return TrackGenConfig(generator=g, num_envs=n, device=DEV, **_track_kw(g), **kw)
 
 
 def _gate_cfg(g="bezier", n=E, **kw):
     return GateGenConfig(generator=g, num_envs=n, device=DEV, gate_width=0.2, **kw)
 
 
-def _make(which: str, g: str, rng):
+def _make(which: str, g: str, rng, **kw):
     if which == "track":
-        gen = TrackGenerator(_track_cfg(g), rng)
+        gen = TrackGenerator(_track_cfg(g, **kw), rng)
         return gen, gen._track, _TRACK_FIELDS
-    gen = GateGenerator(_gate_cfg(g), rng)
+    gen = GateGenerator(_gate_cfg(g, **kw), rng)
     return gen, gen._gate_sequence, _GATE_FIELDS
 
 
@@ -114,9 +112,9 @@ def _assert_bytes_equal(a, b, fields, label=""):
 
 # Seed-dependent generators only: an ingestion generator (seeded=False, "external") does
 # not change with its epoch (roadmap PR13b; its masked reloads are tests/test_external.py).
-GENERATORS = ([("track", g) for g in generator_registry.available()
+GENERATORS = ([("track", g) for g in registry.available("generator")
                if _plugin_reg.describe("generator", g).seeded]
-              + [("gates", g) for g in gate_generator_registry.available()])
+              + [("gates", g) for g in registry.available("gate_generator")])
 GEN_IDS = [f"{w}-{g}" for w, g in GENERATORS]
 
 
@@ -304,20 +302,41 @@ def test_any_set():
 
 
 # ---------------------------------------------------------------------------------------
-# Facades: epoch 0 is the PR3 code path, byte for byte
+# Facades: epoch 0 equals a direct seed copy, byte for byte
 # ---------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("which,g", GENERATORS, ids=GEN_IDS)
-def test_epoch0_is_byte_identical_to_the_pr3_seed_copy_path(which, g):
-    """PR3's body copied the rng's seeds into the pipeline's seed buffer; PR4 writes the
-    effective seeds, which equal the seeds at epoch 0. Run the PR3 body (the rng's seeds
-    fed straight to the pipeline) into separate buffers and compare every field."""
+def test_epoch0_is_byte_identical_to_the_pr3_seed_copy_path(which, g, monkeypatch):
+    """Compare epoch-zero effective keying with a direct RNG seed copy. Unchanged
+    algorithms also retain the frozen PR3 composition. Repulsive needs the current
+    planned stages for its width reservation and mandatory final clearance checks."""
     for seed in (5, 1234):
         rng = _rng(seed)
-        gen, out, fields = _make(which, g, rng)
+        gen, out, fields = _make(which, g, rng, on_invalid="keep")
         gen.generate()
         ctx = LaunchContext.for_call(DEV)
-        if which == "track":
+        if which == "track" and g == "repulsive":
+            from track_gen.pipeline import build
+
+            program = build(gen._program.spec, seeds=rng, prepare=False)
+            copies = []
+
+            def copy_rng_seeds(dst, mask=None, *, ctx):
+                assert mask is None
+                ctx.copy(dst, rng.seeds_warp)
+                copies.append(True)
+
+            # Bypass effective_seed entirely on the reference side; only the current
+            # geometry stages are shared, with separately allocated output/scratch.
+            monkeypatch.setattr(program.seeds, "effective", copy_rng_seeds)
+            assert program.seed.ptr != gen._seed_buf.ptr
+            assert program.result.outer.ptr != out.outer.ptr
+            program.enqueue(ctx)
+            assert copies == [True]
+            ref = program.result
+            _assert_bytes_equal(out, ref, ("fail_mask", "generation"), f"{g} seed {seed}")
+            np.testing.assert_array_equal(program.seed.numpy(), rng.seeds_warp.numpy())
+        elif which == "track":
             spec, kw = gen._generator_spec, {}
             if isinstance(spec, _StageGenerator):
                 # A Stage generator (repulsive since PR12) is built once per binding: the
@@ -435,17 +454,18 @@ def test_facade_inputs_and_mask_validation(which):
     assert _all_bytes(out, fields + ("generation",)) == snap
 
 
-def test_generation_field_is_optional_and_cloned():
+def test_generation_field_is_required_and_cloned():
     gen = TrackGenerator(_track_cfg(), _rng(3))
     gen.generate(advance=True, mask=_i32([0, 0, 1, 0]))
     snap = gen._track.clone()
     assert snap.generation is not gen._track.generation
     np.testing.assert_array_equal(snap.generation.numpy(), [0, 0, 1, 0])
-    hand_built = dataclasses.replace(gen._track, generation=None)
-    assert hand_built.clone().generation is None
+    with pytest.raises(ValueError, match=r"Track\.generation is None"):
+        dataclasses.replace(gen._track, generation=None)
     gseq = GateGenerator(_gate_cfg(), _rng(3))._gate_sequence
     assert gseq.clone().generation is not None
-    assert dataclasses.replace(gseq, generation=None).clone().generation is None
+    with pytest.raises(ValueError, match=r"GateSequence\.generation is None"):
+        dataclasses.replace(gseq, generation=None)
 
 
 def test_advance_paths_do_not_allocate(monkeypatch):
@@ -872,21 +892,6 @@ def test_runner_bounds_its_keyed_self_graphs(monkeypatch):
     assert [g for g, _ in fake.launched][-2:] == [r.graph_for((True, 0x10)), r.graph]
 
 
-def test_legacy_runner_self_graphs_only_its_default_body(monkeypatch):
-    """A legacy-plugin producer self-captures on Warp's SHARED current stream, once: a
-    keyed body runs eagerly there instead (a second capture would reopen the window in
-    which other calls on that stream must serialize)."""
-    fake = FakeCuda(monkeypatch)
-    r = GraphRunner("cuda:0", capturable=True, legacy_stream=True, name="legacy")
-    plain, keyed = _Body(), _Body()
-    r.prepare(plain)
-    r.run(plain)
-    assert r.graph is not None and len(fake.captures) == 1
-    for _ in range(2):
-        r.run(keyed, key=(True, 0x40))
-    assert len(keyed.ctxs) == 2 and all(c.stream is fake.current for c in keyed.ctxs)
-    assert len(fake.captures) == 1 and r.graph_keys == (None,)
-    assert fake.launched == [(r.graph, fake.current)]
 
 
 def test_runner_keyed_capture_requires_prepare(monkeypatch):

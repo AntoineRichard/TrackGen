@@ -60,8 +60,8 @@ half-width), so the Jacobi XPBD solve **under-converges** within its fixed itera
 count, and the road of the jagged result overlaps itself. Relaxing at a width-appropriate
 spacing lets the same solve converge, giving smooth, valid tracks on fewer nodes per
 track (so it is also faster). ``num_points`` is only the dense resolution of the
-generators' output, before the constant-spacing step. ``TrackGenConfig.output_mode``
-accepts ``"constant_spacing"`` only (any other value raises).
+generators' output, before the constant-spacing step. The config path always uses
+constant-spacing output.
 
 ``count[e]`` derivation
 -----------------------
@@ -85,10 +85,14 @@ Spacing defaults and sizing
 :term:`spacing` defaults to ``None``, which couples it to ``0.6 * half_width`` (the
 relax-friendly rule of thumb; ``0.06`` at the default ``half_width = 0.1``): a fixed
 spacing default would be wrong as ``half_width`` varies. Set it explicitly to override.
+``TrackGenConfig`` keeps ``spacing=None``; ``cfg.resolved_spacing`` computes the
+numeric step on each access. ``dataclasses.replace(cfg, half_width=...)`` follows
+the new width in automatic mode and preserves explicit spacing. Building a
+pipeline spec captures the concrete numeric step in its resample stage Params.
 
 **Size** ``N_max >= max(perimeter) / spacing + 1``: a track whose true count exceeds
 ``N_max`` is truncated (its closing segment would span the gap); the scan flags it in
 ``Track.truncated`` and it fails validity (:ref:`pipeline-fail-bits`,
-:ref:`tuning-size`). The fat-band regime of the relaxation benchmarks
-(``half_width=0.5``, ``spacing=0.30``, ``N_max=384``) leaves ample headroom (mean about
-160, max about 270 points per track).
+:ref:`tuning-size`). Measure the largest perimeter at the upper end of your intended size/shape range,
+allow headroom for relaxation and check ``truncated`` after generation. Capacity is a
+storage budget, not a shape simplification target.

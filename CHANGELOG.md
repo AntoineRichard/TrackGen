@@ -1,5 +1,180 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Resolve PR #4 finding #4: `TrackGenConfig.spacing` retains `None` for automatic
+  spacing. Read `resolved_spacing` for the numeric step (`0.6 * half_width`, or
+  the explicit spacing). `dataclasses.replace(cfg, half_width=...)` now follows
+  the new width automatically; explicit spacing remains fixed. Config-to-spec
+  conversion stores concrete numeric spacing. This supersedes the reset-to-`None`
+  guidance and deferred status recorded in earlier candidate notes below.
+
+## 0.3.0rc3 (release candidate, tag `v0.3.0rc3`)
+
+The third candidate repairs Repulsive's growth and full-road obstacle contract,
+then completes the racing documentation with current examples, visual setting
+comparisons, algorithm and solver movies, and native light/dark media. Repulsive
+seeded outputs change; the other generators retain their existing byte references.
+PR4's auto-spacing finding #4 remains deferred pending the user's decision.
+This candidate requires downstream racing validation before a final release.
+
+### Repulsive repair
+
+- Require the entire finished road band to clear every sampled filled disc and
+  stay inside its circular wall after resampling, relaxation and inflation.
+  Preserve internal barrier metadata and require the final check in custom
+  pipelines. Cell convex-hull certificates are conservative for concave/folded
+  strips; discs in the central loop hole remain allowed.
+- Guard swept optimizer/growth/resampling transitions, preserve edges on
+  refinement, correct edge-tangent energy and Sobolev order, and use double
+  precision for energy reductions, length arithmetic and metric operations.
+  Raw validity requires finite feasible target-reaching geometry; optional
+  freezing requires genuine small movement and projected stationarity. A valid
+  budget-limited curve need not be converged.
+- Remove `repulsive_w_len` and `repulsive_deactivate_obstacles` without
+  compatibility. Require `alpha > 1`, `alpha + 2 <= beta < 2 * alpha + 1` and
+  positive `repulsive_tau`. Lower default growth bounds from 4.5–5.5 to 2.0–3.0.
+  Repulsive `size` now participates in unscaled width reservation and can change
+  raw obstacle layout and curve shape.
+- Repulsive seeded outputs change; other generators' outputs and all RNG salts
+  and draw order stay unchanged. Public result fields and poison/keep policy
+  stay unchanged. Repulsive programs add `repulsive_disc` (bit 8) and
+  `repulsive_wall` (bit 9) failure reasons. Inspect validity and `fail_mask`;
+  aggressive tuning can fail after the shared tail. See the
+  [migration guide](docs/library-readiness/archive/upgrading/from-0.2.rst).
+
+## 0.3.0rc2 (release candidate, tag `v0.3.0rc2`)
+
+The second candidate addresses review findings #1–#3 and #5–#14 from PR #4.
+Generator outputs and existing byte goldens are unchanged from rc1. See the
+[0.2 to 0.3 migration guide](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc2/docs/upgrading/from-0.2.rst)
+for the current API replacements.
+
+- Repair the track-gallery, Fourier-ablation and PDF-report tools; remove ignored
+  regeneration options and identify historical report measurements.
+- Share RNG initialization between the randomizer and plugin examples; remove
+  unused pipeline composition, self-drawn parameter machinery and obsolete test filters.
+- Restore the Taubin math symbols and complete GraphRunner execution contracts.
+- Add a default-lane CPU statistics gate against an exact rc1 reference for all
+  built-in generators, elevation and random gate ordering, with statistical tolerances.
+- Auto-derived config spacing retains its existing behavior: when replacing
+  `half_width`, also pass `spacing=None` to derive it again. Review finding #4 remains
+  deferred pending the user's decision on that public config contract.
+
+The candidate awaits downstream racing-repository validation. Final 0.3.0 still
+requires the user's explicit approval.
+
+- Remove `keying=` from `ops.sample_counts` / `sample_grid_points`: salts are
+  hashed uint32 namespaces, and draws differ from 0.2 for the same salt. Built-in
+  generator outputs remain identical to rc1; they already used the hashed path.
+
+- Remove `registry.describe(...).accepts_ctx`: every generator receives `ctx`;
+  conformance reports no longer repeat this invariant flag.
+
+## 0.3.0rc1 (release candidate, tag `v0.3.0rc1`)
+
+The first release candidate for 0.3 includes the legacy API removals, hashed built-in
+RNG streams without a reproduction mode, poison defaults, frozen configurations,
+required result storage, and the updated documentation from dev1-dev4. See the
+[0.2 to 0.3 migration guide](https://github.com/AntoineRichard/TrackGen/blob/v0.3.0rc1/docs/upgrading/from-0.2.rst)
+for every break and its replacement. Package metadata and `track_gen.__version__`
+both report `0.3.0rc1`.
+
+Final release requires validation in the downstream racing repositories and the
+user's explicit approval.
+
+## 0.3.0.dev4 (documentation milestone, `v3` branch)
+
+Document the complete 0.2 → 0.3 migration in `docs/upgrading/from-0.2.rst`, covering
+all removals, changed RNG streams, poison defaults, frozen config/subclass recipes
+and complete result storage. Current guides and executed examples use the active
+contracts; pre-switch figures and tuning measurements are labeled historical.
+The rc and downstream racing-repository validation remain pending before 0.3.0.
+
+## 0.3.0.dev3 (defaults and contracts milestone, `v3` branch)
+
+- Default `on_invalid="poison"` everywhere: Track/Gate configs, `BatchSpec`, presets,
+  Program construction, and `/2` dictionaries that omit the policy. Invalid envs
+  have `count=0`, NaN geometry and padded attributes; failure diagnostics and
+  generation remain readable. Set `on_invalid="keep"` explicitly to inspect failed
+  geometry. Runtime utilities retain their invalid-env sentinels.
+- Freeze `TrackGenConfig` and `GateGenConfig`. Use `dataclasses.replace` for changes
+  and decorate config subclasses with `frozen=True`. To recouple point spacing after
+  changing half-width, use `replace(cfg, half_width=..., spacing=None)`.
+- Require Track's `truncated`, `generation`, `fail_mask`, `half_width` and `layout`,
+  and GateSequence's `generation`, `fail_mask` and `layout`. All their concrete array
+  fields and layouts reject `None`, including through validation and `out=`. Use
+  `Track.alloc(Layout(...))` / `GateSequence.alloc(...)` for complete manual storage.
+  Metadata mappings still default empty; Centerline and capability-source layout
+  inference are retained. A no-offset Track retains a required NaN half-width array.
+- Retain the static `edgy` host transform and all other surviving geometry arithmetic;
+  this milestone changes invalid-result defaults and data contracts, not RNG streams.
+
+## 0.3.0.dev2 (RNG milestone, `v3` branch)
+
+Built-in RNG streams now use hashed salts. Track and gate geometry changes for the
+same seed; rebaseline generated-output goldens and cached datasets once. No legacy
+RNG config field, compatibility path or byte-identical reproduction mode is provided.
+The migration guide is `docs/upgrading/from-0.2.rst`.
+
+- Add public `track_gen.ops.rng`: device `init` / `init_at` and host twins
+  `key_host`, `init_host` / `init_at_host`, with formulas frozen for plugin API 1.
+- Switch all six track generators, all five gate generators, `order.random_pairs`
+  and uniform/random-walk/noise elevation to fixed named salts. Names do not depend
+  on Stage IDs; gate generators share their matching track generator's streams.
+  Effective seeds, epochs, `PerEnvSeededRNG` and `randomize.uniform` are unchanged.
+- Add keyword-only `keying="hashed"` to public ops samplers. Their default remains
+  `keying="linear"`, preserving draws for existing plugin callers.
+- Replace the old-keying byte comparison with a distribution gate covering every
+  built-in track/gate generator, nonflat elevation and random-pair ordering. All 133
+  distributions across 19 cases passed with 8192 envs per case (two blocks of 4096)
+  on the same GPU. The largest absolute yield delta was 0.00146484375 (about 0.1465
+  percentage points). It checks validity, counts, length, compactness, curvature and
+  elevation; byte goldens are rebaselined separately.
+- A `Course` capacity derived from newly sampled geometry may change. Pass explicit
+  `max_checkpoints=` to preserve the desired checkpoint buffer capacity.
+
+This milestone changes valid geometry. The following milestone changes defaults and
+contracts; historical figures have not all been remeasured for the new seeds.
+
+## 0.3.0.dev1 (`v3` branch)
+
+The removal milestone of the 0.3 cleanup. Surviving configurations retain their
+geometry and RNG keying. The hashed RNG switch, poison defaults, frozen configs and
+required result fields follow in separate milestones. The complete migration guide
+is `docs/upgrading/from-0.2.rst`.
+
+### Breaking removals
+
+- Remove the `_src` registry modules/views, helper re-exports and module hooks;
+  use `track_gen.plugin.registry` and `track_gen.ops`.
+- Remove frozen `generate_*_warp`, `*_alloc_scratch`, `apply_z_profile*` and scalar
+  sampling helpers, with their scalar/style kernels. Use generator facades or presets.
+- Remove `GateGeneratorSpec`, its adapter, staging alias and legacy gate ordering
+  helpers. Gate plugins are Stages.
+- Retain `GeneratorSpec` as the documented simple track-plugin path: static
+  generators need only an allocator and a generate callable, using the same pipeline
+  and conformance kit. Its generate callable must accept `ctx=`. Remove the
+  `accepts_ctx` constructor flag and the context-free five-argument adapter, with
+  `LegacyPluginStreamError`, legacy-stream introspection/options and the shared
+  legacy capture lock.
+- Remove `style_sampling` and its three range fields from configs and Bezier Params;
+  use `randomize=`. Remove the five built-in Stage-class `.params` aliases; use `.Params`.
+  Runtime `gen.params` and `GeneratorSpec(params=...)` remain supported.
+- Remove the 21 unused track config fields (oracle energy/tangent-point/smoothing,
+  regeneration, old Fourier and dead relaxation knobs), `output_mode`, and the five
+  inert gate config parity fields. Removed keys now fail rather than being ignored.
+- Remove inert `validity.gate_default.gate_width` / `check_crossing` params;
+  set width on `gate_frames.default`. Nonzero bars remain checked per env.
+- Remove `set_capturing`, `Course.set_capturing`, `_CAPTURING`, the ignored private
+  `capturing=` arguments, `CourseLine.track`, and `tools.Progress(checkpoints=)`.
+  Use launch contexts, `CourseLine.centerline` and `Progress(source=)`.
+- Refuse `track_gen.pipeline/1` dictionaries; load and re-save with 0.2 as `/2` first.
+
+No compatibility shims, tombstones, warning cycles or reproduction modes are added.
+
 ## 0.2.0 (2026-10-24, tag `v0.2.0`)
 
 The first release of the 0.2 line: everything in 0.2.0.dev0 to 0.2.0.dev6 below (the

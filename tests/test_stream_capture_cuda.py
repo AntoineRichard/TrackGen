@@ -20,8 +20,8 @@ pytestmark = pytest.mark.cuda
 import warp as wp  # noqa: E402
 
 from track_gen import GateGenConfig, PerEnvSeededRNG, TrackGenConfig  # noqa: E402
-from track_gen._src import gate_generator_registry, generator_registry  # noqa: E402
-from track_gen._src import warp_pipeline  # noqa: E402
+from track_gen.plugin import registry  # noqa: E402
+from tests._reference_generators import warp_pipeline  # noqa: E402
 from track_gen._src.gate_generator import GateGenerator  # noqa: E402
 from track_gen._src.track_generator import TrackGenerator  # noqa: E402
 from track_gen.course import Course, CourseConfig  # noqa: E402
@@ -30,7 +30,7 @@ from track_gen.exec import LaunchContext  # noqa: E402
 DEV = "cuda:0"
 E = 8
 _TRACK_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen", "length",
-                 "valid", "count", "winding")
+                 "valid", "count", "winding", "generation", "fail_mask")
 _GATE_FIELDS = ("position", "tangent", "left", "right", "valid", "count")
 
 
@@ -49,7 +49,7 @@ def _poison(arr):
 # Pipelines recorded on a side stream through an explicit LaunchContext.
 # ---------------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("generator", generator_registry.available())
+@pytest.mark.parametrize("generator", registry.available("generator"))
 def test_track_pipeline_records_on_side_stream(generator):
     cfg = TrackGenConfig(generator=generator, device=DEV, num_envs=E)
     gen = TrackGenerator(cfg, PerEnvSeededRNG(seeds=11, num_envs=E, device=DEV))
@@ -59,13 +59,10 @@ def test_track_pipeline_records_on_side_stream(generator):
 
     s = wp.Stream(DEV)
     ctx = LaunchContext(DEV, s)
-    wp.copy(gen._seed_buf, gen._rng.seeds_warp)
-    wp.synchronize()
-
     def run():
-        warp_pipeline._run_pipeline(gen._config, gen._seed_buf, out=gen._track,
-                                    scratch=gen._scratch,
-                                    generator_spec=gen._generator_spec, ctx=ctx)
+        # The current Program carries seed preparation, generator metadata and the
+        # mandatory final validity/commit policy onto the caller's stream.
+        gen.program.enqueue(ctx)
 
     run()                                   # warm-up on s (module load outside capture)
     wp.synchronize()
@@ -81,7 +78,7 @@ def test_track_pipeline_records_on_side_stream(generator):
                                       getattr(ref, f).numpy(), err_msg=f)
 
 
-@pytest.mark.parametrize("generator", gate_generator_registry.available())
+@pytest.mark.parametrize("generator", registry.available("gate_generator"))
 def test_gate_pipeline_records_on_side_stream(generator):
     cfg = GateGenConfig(generator=generator, device=DEV, num_envs=E, gate_width=0.05)
     gen = GateGenerator(cfg, PerEnvSeededRNG(seeds=11, num_envs=E, device=DEV))

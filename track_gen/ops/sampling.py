@@ -1,18 +1,7 @@
-"""Per-env random sampling with explicit RNG keying (flat per-env layout).
+"""Per-env random sampling with hashed RNG streams (flat per-env layout).
 
-RNG keying (kept byte-identical to the built-in generators): each env's stream is
-``wp.rand_init(seeds[e] * salt + offset)`` evaluated in int32 wrap-around arithmetic.
-Pick a ``(salt, offset)`` pair no other stream of your generator uses. The built-in
-pairs are listed in the writing-a-generator guide; in particular:
-
-========================  ===========  ==========================
-stream                    salt         offset
-========================  ===========  ==========================
-bezier corner count       6151         ``attempt`` (0 built in)
-bezier corner positions   9781         ``attempt`` (0 built in)
-hull point count          5119         1
-hull point positions      7919         1
-========================  ===========  ==========================
+Each env uses :func:`track_gen.ops.rng.init_at` with a uint32 namespace salt
+and an int32 stream index. Pick distinct salts for distinct streams.
 
 Every op takes a :class:`~track_gen.exec.LaunchContext` first, launches only through
 it, never host-synchronizes and never allocates.
@@ -26,6 +15,7 @@ import warp as wp
 from .check import _check_1d, _check_float, _check_int, _check_min, check_array
 from .constants import _MIN_COUNT_LO, SIZE_BOUNDS
 from .fill import _fill_i32_k
+from .rng import init_at
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..exec.context import LaunchContext
@@ -33,16 +23,16 @@ if TYPE_CHECKING:  # pragma: no cover
 __all__ = ["grid_cells", "sample_counts", "sample_grid_points"]
 
 
-# ---------------------------------------------------------------------------------------
-# Kernels (track_gen/_src/warp_generate.py _corner_count_sample_k / _corner_sample_k /
-# _corner_sample_style_k at 1077b18, with the literal keying `seeds[e] * 9781 + attempt`
-# parametrised as `seeds[e] * salt + offset`; same int32 ops, same draw order).
-# ---------------------------------------------------------------------------------------
+# Per-env count and jittered-grid kernels; every stream uses rng.init_at.
+_C_SIZE_LO = wp.constant(wp.float32(SIZE_BOUNDS[0]))
+_C_SIZE_HI = wp.constant(wp.float32(SIZE_BOUNDS[1]))
+_C_COUNT_LO = wp.constant(int(_MIN_COUNT_LO))
+
 
 @wp.kernel
-def _sample_counts_k(
+def _sample_counts_h_k(
     seeds: wp.array(dtype=wp.int32),
-    salt: int,
+    salt: wp.uint32,
     offset: int,
     lo: int,
     hi: int,
@@ -52,16 +42,16 @@ def _sample_counts_k(
     # integer count in [lo, hi] via floor(randf * span), span = hi - lo + 1, then a
     # clamp to hi folds the measure-zero randf == 1.0 edge back in range.
     e = wp.tid()
-    state = wp.rand_init(seeds[e] * salt + offset)
+    state = init_at(seeds[e], salt, offset)
     span = hi - lo + 1
     count = lo + int(wp.randf(state) * float(span))
     out[e] = wp.min(count, hi)
 
 
 @wp.kernel
-def _sample_grid_points_k(
+def _sample_grid_points_h_k(
     seeds: wp.array(dtype=wp.int32),
-    salt: int,
+    salt: wp.uint32,
     offset: int,
     num_cells: int,
     nc2: int,
@@ -77,7 +67,7 @@ def _sample_grid_points_k(
     # it collides with the cell of an EARLIER point of this env; the history lives in
     # used[e*P + 0 .. e*P + c] (pre-filled with -1).
     e = wp.tid()
-    state = wp.rand_init(seeds[e] * salt + offset)
+    state = init_at(seeds[e], salt, offset)
     base = e * P
     for c in range(P):
         cell = wp.min(int(wp.randf(state) * float(nc2)), nc2 - 1)
@@ -102,9 +92,9 @@ def _sample_grid_points_k(
 
 
 @wp.kernel
-def _sample_grid_points_scaled_k(
+def _sample_grid_points_scaled_h_k(
     seeds: wp.array(dtype=wp.int32),
-    salt: int,
+    salt: wp.uint32,
     offset: int,
     num_cells: int,
     nc2: int,
@@ -114,10 +104,10 @@ def _sample_grid_points_scaled_k(
     used: wp.array(dtype=wp.int32),
     out: wp.array(dtype=wp.vec2f),
 ):
-    # Per-env-scale variant of _sample_grid_points_k: identical except `scale` is read
+    # Per-env-scale variant of _sample_grid_points_h_k: identical except `scale` is read
     # per env (scale[e]); for a uniform array equal to the scalar it is bit-identical.
     e = wp.tid()
-    state = wp.rand_init(seeds[e] * salt + offset)
+    state = init_at(seeds[e], salt, offset)
     base = e * P
     sc = scale[e]
     for c in range(P):
@@ -140,46 +130,31 @@ def _sample_grid_points_scaled_k(
                                  (y * cell_size + ny) * sc)
 
 
-# ---------------------------------------------------------------------------------------
-# Array-reading twins (roadmap PR13d): the scalar kernels above with ONE per-env value
-# read from an [E] array and clamped by comparisons (a NaN passes), then the scalar body
-# verbatim. _sample_counts_dyn_k reads ``lo`` per env (the bezier / hull ``min_num_points``,
-# clamped to [2, hi]); the sized grid twins multiply each point LAST by the env's ``size``
-# (clamped to SIZE_BOUNDS): ``((x * cell_size + nx) * scale) * size``. The product feeds
-# no add / sub, so nvcc's FMA contraction is unchanged and ``size == 1`` is bit-exact
-# (``x * 1.0f`` is exact without flush-to-zero).
-# ---------------------------------------------------------------------------------------
-
-_C_SIZE_LO = wp.constant(wp.float32(SIZE_BOUNDS[0]))
-_C_SIZE_HI = wp.constant(wp.float32(SIZE_BOUNDS[1]))
-_C_COUNT_LO = wp.constant(int(_MIN_COUNT_LO))
-
-
 @wp.kernel
-def _sample_counts_dyn_k(
+def _sample_counts_dyn_h_k(
     seeds: wp.array(dtype=wp.int32),
-    salt: int,
+    salt: wp.uint32,
     offset: int,
     lo_e: wp.array(dtype=wp.int32),
     hi: int,
     out: wp.array(dtype=wp.int32),
 ):
-    # _sample_counts_k with lo read per env (min_num_points), clamped to [2, hi] by
+    # _sample_counts_h_k with lo read per env (min_num_points), clamped to [2, hi] by
     # comparisons, then the scalar body verbatim.
     e = wp.tid()
     lo = lo_e[e]
     lo = wp.where(lo < _C_COUNT_LO, _C_COUNT_LO, lo)
     lo = wp.where(lo > hi, hi, lo)
-    state = wp.rand_init(seeds[e] * salt + offset)
+    state = init_at(seeds[e], salt, offset)
     span = hi - lo + 1
     count = lo + int(wp.randf(state) * float(span))
     out[e] = wp.min(count, hi)
 
 
 @wp.kernel
-def _sample_grid_points_sized_k(
+def _sample_grid_points_sized_h_k(
     seeds: wp.array(dtype=wp.int32),
-    salt: int,
+    salt: wp.uint32,
     offset: int,
     num_cells: int,
     nc2: int,
@@ -190,12 +165,12 @@ def _sample_grid_points_sized_k(
     out: wp.array(dtype=wp.vec2f),
     size_e: wp.array(dtype=wp.float32),
 ):
-    # _sample_grid_points_k with a per-env size applied LAST: ((x*cs + nx) * scale) * size.
+    # _sample_grid_points_h_k with a per-env size applied LAST: ((x*cs + nx) * scale) * size.
     e = wp.tid()
     size = size_e[e]
     size = wp.where(size < _C_SIZE_LO, _C_SIZE_LO, size)
     size = wp.where(size > _C_SIZE_HI, _C_SIZE_HI, size)
-    state = wp.rand_init(seeds[e] * salt + offset)
+    state = init_at(seeds[e], salt, offset)
     base = e * P
     for c in range(P):
         cell = wp.min(int(wp.randf(state) * float(nc2)), nc2 - 1)
@@ -220,9 +195,9 @@ def _sample_grid_points_sized_k(
 
 
 @wp.kernel
-def _sample_grid_points_scaled_sized_k(
+def _sample_grid_points_scaled_sized_h_k(
     seeds: wp.array(dtype=wp.int32),
-    salt: int,
+    salt: wp.uint32,
     offset: int,
     num_cells: int,
     nc2: int,
@@ -233,13 +208,12 @@ def _sample_grid_points_scaled_sized_k(
     out: wp.array(dtype=wp.vec2f),
     size_e: wp.array(dtype=wp.float32),
 ):
-    # _sample_grid_points_scaled_k with a per-env size applied LAST (bezier's
-    # style_sampling scale draw times the dynamic size).
+    # _sample_grid_points_scaled_h_k with per-env scale and size applied LAST.
     e = wp.tid()
     size = size_e[e]
     size = wp.where(size < _C_SIZE_LO, _C_SIZE_LO, size)
     size = wp.where(size > _C_SIZE_HI, _C_SIZE_HI, size)
-    state = wp.rand_init(seeds[e] * salt + offset)
+    state = init_at(seeds[e], salt, offset)
     base = e * P
     sc = scale[e]
     for c in range(P):
@@ -262,8 +236,9 @@ def _sample_grid_points_scaled_sized_k(
                                  ((y * cell_size + ny) * sc) * size)
 
 
+
 # ---------------------------------------------------------------------------------------
-# Host helper + private launchers (no validation; the legacy _src wrappers call these).
+# Host helper + private launchers (no validation; built-in stages call these).
 # ---------------------------------------------------------------------------------------
 
 def grid_cells(min_point_distance: float) -> "tuple[int, float]":
@@ -286,24 +261,21 @@ def grid_cells(min_point_distance: float) -> "tuple[int, float]":
 
 
 def _sample_counts_launch(ctx, seeds, salt, offset, lo, hi, out) -> None:
-    # lo: an int, or (roadmap PR13d: the bezier / hull per-env min_num_points) an [E]
-    # int32 array, read by _sample_counts_dyn_k (clamped to [2, hi] at use).
+    # lo is static or an [E] per-env min_num_points array, clamped to [2, hi] at use.
     if isinstance(lo, wp.array):
-        ctx.launch(_sample_counts_dyn_k, out.shape[0],
-                   [seeds, int(salt), int(offset), lo, int(hi), out])
+        ctx.launch(_sample_counts_dyn_h_k, out.shape[0],
+                   [seeds, wp.uint32(salt), int(offset), lo, int(hi), out])
         return
-    ctx.launch(_sample_counts_k, out.shape[0],
-               [seeds, int(salt), int(offset), int(lo), int(hi), out])
+    ctx.launch(_sample_counts_h_k, out.shape[0],
+               [seeds, wp.uint32(salt), int(offset), int(lo), int(hi), out])
 
 
 def _sample_grid_points_launch(ctx, seeds, salt, offset, P, num_cells, cell_size, scale,
                                used, out, per_env=None, size=None) -> None:
-    # per_env selects the per-env-scale kernel; by default it follows the type of
-    # `scale`. The legacy wrapper passes it explicitly because it historically accepted
-    # any array-like [E] scale (e.g. a numpy float32 array), which Warp's launch takes.
-    # size (roadmap PR13d): an [E] float32 per-env size applied last (the sized twins);
-    # None runs the unchanged kernels.
+    # per_env can be explicit for internal callers accepting array-like [E] scales.
+    # size is an optional [E] multiplier applied last by the sized kernels.
     E = seeds.shape[0]
+    salt_arg = wp.uint32(salt)
     num_cells = int(num_cells)
     nc2 = num_cells * num_cells
     if per_env is None:
@@ -311,21 +283,21 @@ def _sample_grid_points_launch(ctx, seeds, salt, offset, P, num_cells, cell_size
     ctx.launch(_fill_i32_k, E * P, [used, -1])
     if size is not None:
         if per_env:
-            ctx.launch(_sample_grid_points_scaled_sized_k, E,
-                       [seeds, int(salt), int(offset), num_cells, nc2, float(cell_size),
+            ctx.launch(_sample_grid_points_scaled_sized_h_k, E,
+                       [seeds, salt_arg, int(offset), num_cells, nc2, float(cell_size),
                         scale, P, used, out, size])
         else:
-            ctx.launch(_sample_grid_points_sized_k, E,
-                       [seeds, int(salt), int(offset), num_cells, nc2, float(cell_size),
+            ctx.launch(_sample_grid_points_sized_h_k, E,
+                       [seeds, salt_arg, int(offset), num_cells, nc2, float(cell_size),
                         float(scale), P, used, out, size])
         return
     if per_env:
-        ctx.launch(_sample_grid_points_scaled_k, E,
-                   [seeds, int(salt), int(offset), num_cells, nc2, float(cell_size),
+        ctx.launch(_sample_grid_points_scaled_h_k, E,
+                   [seeds, salt_arg, int(offset), num_cells, nc2, float(cell_size),
                     scale, P, used, out])
     else:
-        ctx.launch(_sample_grid_points_k, E,
-                   [seeds, int(salt), int(offset), num_cells, nc2, float(cell_size),
+        ctx.launch(_sample_grid_points_h_k, E,
+                   [seeds, salt_arg, int(offset), num_cells, nc2, float(cell_size),
                     float(scale), P, used, out])
 
 
@@ -338,25 +310,25 @@ def sample_counts(ctx: "LaunchContext", seeds: "wp.array", salt: int, offset: in
     """One uniformly drawn integer in ``[lo, hi]`` per env.
 
     ``out[e] = min(lo + int(randf * (hi - lo + 1)), hi)`` with one ``randf`` from
-    ``wp.rand_init(seeds[e] * salt + offset)`` (int32 wrap-around). Deterministic
-    per ``(seed, salt, offset)``. One launch (``E`` threads); no allocation, no host
-    sync.
+    :func:`track_gen.ops.rng.init_at` with the env's seed, ``salt`` and ``offset``.
+    Deterministic per ``(seed, salt, offset)``. One launch (``E`` threads);
+    no allocation, no host sync.
 
     Args:
         ctx: the :class:`~track_gen.exec.LaunchContext` to launch on.
         seeds: ``[E]`` ``int32`` per-env seeds; ``E`` is ``seeds.shape[0]``.
-        salt: int32 stream multiplier.
-        offset: int32 stream offset.
+        salt: uint32 namespace salt.
+        offset: int32 stream index.
         lo: smallest value (int32).
         hi: largest value (int32, ``>= lo``).
         out: ``[E]`` ``int32`` output.
 
     Raises:
         ValueError: a wrong type, shape, dtype or device, ``lo > hi`` or a value out
-            of int32 range (host-side, before any launch).
+            of its integer range (before any launch).
     """
     dev = ctx.device
-    salt = _check_int("salt", salt)
+    salt = _check_int("salt", salt, 0, 2 ** 32 - 1)
     offset = _check_int("offset", offset)
     lo = _check_int("lo", lo)
     hi = _check_int("hi", hi)
@@ -375,7 +347,7 @@ def sample_grid_points(ctx: "LaunchContext", seeds: "wp.array", salt: int, offse
                        size: "wp.array | None" = None) -> None:
     """``num`` jittered grid points per env, on distinct cells where possible.
 
-    Per env, from ``wp.rand_init(seeds[e] * salt + offset)`` (int32 wrap-around):
+    Per env, from :func:`track_gen.ops.rng.init_at` with ``(seed, salt, offset)``:
     for each point ``c < num`` draw a cell ``min(int(randf * num_cells**2),
     num_cells**2 - 1)``, redrawing (up to 8 times) while it equals the cell of an
     earlier point of the env; then draw ``nx, ny = randf - 0.5`` and write
@@ -401,8 +373,8 @@ def sample_grid_points(ctx: "LaunchContext", seeds: "wp.array", salt: int, offse
     Args:
         ctx: the :class:`~track_gen.exec.LaunchContext` to launch on.
         seeds: ``[E]`` ``int32`` per-env seeds; ``E`` is ``seeds.shape[0]``.
-        salt: int32 stream multiplier.
-        offset: int32 stream offset.
+        salt: uint32 namespace salt.
+        offset: int32 stream index.
         num: points per env (``>= 1``).
         num_cells: grid cells per side (``>= 1``).
         cell_size: cell side length.
@@ -418,7 +390,7 @@ def sample_grid_points(ctx: "LaunchContext", seeds: "wp.array", salt: int, offse
             before any launch).
     """
     dev = ctx.device
-    salt = _check_int("salt", salt)
+    salt = _check_int("salt", salt, 0, 2 ** 32 - 1)
     offset = _check_int("offset", offset)
     num = _check_int("num", num, 1)
     num_cells = _check_int("num_cells", num_cells, 1, 46340)   # num_cells**2 fits int32

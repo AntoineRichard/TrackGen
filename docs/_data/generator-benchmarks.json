@@ -1,0 +1,3483 @@
+{
+  "benchmark_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68",
+  "benchmark_runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+  "final_road_validity_measured": false,
+  "library_revision": "fbf1a3b6efbc41665bc7606370b286142000b46c",
+  "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+  "library_tag": "v0.3.0rc3",
+  "machines": {
+    "mac_cpu": {
+      "batch_size": 64,
+      "hardware": {
+        "architecture": "arm64",
+        "compute_capability": null,
+        "cpu": "Apple M5 Pro",
+        "gpu": null,
+        "gpu_memory_bytes": null,
+        "logical_cpus": 18,
+        "ram_bytes": 51539607552
+      },
+      "label": "Mac M5 Pro CPU",
+      "software": {
+        "cuda_driver": null,
+        "cuda_toolkit": null,
+        "kernel_cache": "as found; process construction excluded",
+        "numpy": "2.5.4",
+        "os": "Darwin",
+        "os_release": "25.6.0",
+        "python": "3.12.14",
+        "trackgen": "0.3.0rc3",
+        "warp": "1.18.0"
+      },
+      "timing_mode": "cpu_eager"
+    },
+    "spark_gb10": {
+      "batch_size": 4096,
+      "hardware": {
+        "architecture": "aarch64",
+        "compute_capability": 121,
+        "cpu": "aarch64",
+        "gpu": "NVIDIA GB10",
+        "gpu_memory_bytes": 128520015872,
+        "logical_cpus": 20,
+        "ram_bytes": 128520015872
+      },
+      "label": "Spark GB10",
+      "software": {
+        "cuda_driver": [
+          13,
+          0
+        ],
+        "cuda_toolkit": [
+          13,
+          4
+        ],
+        "kernel_cache": "as found; process construction excluded",
+        "numpy": "2.5.4",
+        "os": "Linux",
+        "os_release": "6.17.0-1021-nvidia",
+        "python": "3.12.3",
+        "trackgen": "0.3.0rc3",
+        "warp": "1.18.0"
+      },
+      "timing_mode": "cuda_graph"
+    },
+    "workstation_rtx5090": {
+      "batch_size": 4096,
+      "hardware": {
+        "architecture": "x86_64",
+        "compute_capability": 120,
+        "cpu": "Intel(R) Core(TM) i9-14900K",
+        "gpu": "NVIDIA GeForce RTX 5090",
+        "gpu_memory_bytes": 33702674432,
+        "logical_cpus": 32,
+        "ram_bytes": 134728986624
+      },
+      "label": "RTX 5090",
+      "software": {
+        "cuda_driver": [
+          13,
+          3
+        ],
+        "cuda_toolkit": [
+          13,
+          4
+        ],
+        "kernel_cache": "as found; process construction excluded",
+        "numpy": "2.5.4",
+        "os": "Linux",
+        "os_release": "7.0.0-38-generic",
+        "python": "3.12.13",
+        "trackgen": "0.3.0rc3",
+        "warp": "1.18.0"
+      },
+      "timing_mode": "cuda_graph"
+    }
+  },
+  "measured_on": "2026-10-26",
+  "measurement_period": {
+    "calendar_timezone": "Europe/Zurich",
+    "completed_at_utc": "2026-10-26T10:45:05.923751+00:00",
+    "started_at_utc": "2026-10-26T10:15:23.344084+00:00"
+  },
+  "measurements": {
+    "mac_cpu": {
+      "bezier": {
+        "checks": {
+          "capture_did_not_execute": null,
+          "changed_raw_rows": 64,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 114,
+          "warmup_replay_seconds": 1.0021655019999998
+        },
+        "completed_at_utc": "2026-10-26T10:23:06.101606+00:00",
+        "config": {
+          "device": "cpu",
+          "generator": "bezier",
+          "generator_params": {
+            "edgy": 0.0,
+            "handle_clamp_frac": 0.4,
+            "max_num_points": 13,
+            "min_num_points": 9,
+            "min_point_distance": 0.05,
+            "num_points_per_segment": 30,
+            "rad": 0.4,
+            "size": 1.0
+          },
+          "num_envs": 64,
+          "num_points": 256,
+          "scale": 1.0
+        },
+        "device": "cpu",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "bezier",
+        "hardware": {
+          "architecture": "arm64",
+          "compute_capability": null,
+          "cpu": "Apple M5 Pro",
+          "gpu": null,
+          "gpu_memory_bytes": null,
+          "logical_cpus": 18,
+          "ram_bytes": 51539607552
+        },
+        "label": "Mac M5 Pro CPU",
+        "mode": "cpu_eager",
+        "phases_seconds": {
+          "capture": null,
+          "constructor": 0.2764415,
+          "first_replay": 0.008728375,
+          "initialization": 0.22933466600000002,
+          "warmup": 0.9979309160000001
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cpu_eager",
+          "envs": 64,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "9ef35abac29280b297955992399ef358777306ee1995f27fcba2b4e14f21353b",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 1,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 8.879584
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 2,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 8.876458999999999
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 3,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 8.7235
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 4,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 8.875542
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 5,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 8.911166999999999
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 64,
+          "dtype": "int32",
+          "sha256": "fea7b32778ecbdd7adee1941e98c89cf96bbc762f5f1beb0be24e36a456fbbc5",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": null,
+          "cuda_toolkit": null,
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Darwin",
+          "os_release": "25.6.0",
+          "python": "3.12.14",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:23:04.532846+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 320,
+          "attempted_tracks_per_second": 7210.082308722432,
+          "batch_size": 64,
+          "max_ms": 8.911166999999999,
+          "median_ms": 8.876458999999999,
+          "metric": "wall_ms",
+          "microseconds_per_attempted_track": 138.69467187499998,
+          "min_ms": 8.7235,
+          "sample_count": 5
+        }
+      },
+      "checkpoint": {
+        "checks": {
+          "capture_did_not_execute": null,
+          "changed_raw_rows": 64,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 30,
+          "warmup_replay_seconds": 1.0174869570000002
+        },
+        "completed_at_utc": "2026-10-26T10:23:08.325390+00:00",
+        "config": {
+          "device": "cpu",
+          "generator": "checkpoint",
+          "generator_params": {
+            "checkpoint_angle_jitter": 0.55,
+            "checkpoint_best_of_k": 4,
+            "checkpoint_clip_fallback": false,
+            "checkpoint_count": 12,
+            "checkpoint_lookahead_frac": 0.16,
+            "checkpoint_radius_min_frac": 0.33,
+            "checkpoint_steer_gain": 0.65,
+            "checkpoint_turn_rate": 0.42,
+            "size": 1.0
+          },
+          "num_envs": 64,
+          "num_points": 256,
+          "scale": 1.0
+        },
+        "device": "cpu",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "checkpoint",
+        "hardware": {
+          "architecture": "arm64",
+          "compute_capability": null,
+          "cpu": "Apple M5 Pro",
+          "gpu": null,
+          "gpu_memory_bytes": null,
+          "logical_cpus": 18,
+          "ram_bytes": 51539607552
+        },
+        "label": "Mac M5 Pro CPU",
+        "mode": "cpu_eager",
+        "phases_seconds": {
+          "capture": null,
+          "constructor": 0.38593237500000005,
+          "first_replay": 0.033688041,
+          "initialization": 0.417557875,
+          "warmup": 0.9884783340000001
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cpu_eager",
+          "envs": 64,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "9ef35abac29280b297955992399ef358777306ee1995f27fcba2b4e14f21353b",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 1,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 33.772749999999995
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 2,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 33.894292
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 3,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 33.904790999999996
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 4,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 33.982541999999995
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 5,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 33.983
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 64,
+          "dtype": "int32",
+          "sha256": "fea7b32778ecbdd7adee1941e98c89cf96bbc762f5f1beb0be24e36a456fbbc5",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": null,
+          "cuda_toolkit": null,
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Darwin",
+          "os_release": "25.6.0",
+          "python": "3.12.14",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:23:06.313869+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 320,
+          "attempted_tracks_per_second": 1887.6388295683641,
+          "batch_size": 64,
+          "max_ms": 33.983,
+          "median_ms": 33.904790999999996,
+          "metric": "wall_ms",
+          "microseconds_per_attempted_track": 529.762359375,
+          "min_ms": 33.772749999999995,
+          "sample_count": 5
+        }
+      },
+      "hull": {
+        "checks": {
+          "capture_did_not_execute": null,
+          "changed_raw_rows": 64,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 96,
+          "warmup_replay_seconds": 1.0006931260000005
+        },
+        "completed_at_utc": "2026-10-26T10:23:09.966144+00:00",
+        "config": {
+          "device": "cpu",
+          "generator": "hull",
+          "generator_params": {
+            "hull_displacement": 0.15,
+            "max_num_points": 13,
+            "min_num_points": 9,
+            "min_point_distance": 0.05,
+            "num_points_per_segment": 30,
+            "size": 1.0
+          },
+          "num_envs": 64,
+          "num_points": 256,
+          "scale": 1.0
+        },
+        "device": "cpu",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "hull",
+        "hardware": {
+          "architecture": "arm64",
+          "compute_capability": null,
+          "cpu": "Apple M5 Pro",
+          "gpu": null,
+          "gpu_memory_bytes": null,
+          "logical_cpus": 18,
+          "ram_bytes": 51539607552
+        },
+        "label": "Mac M5 Pro CPU",
+        "mode": "cpu_eager",
+        "phases_seconds": {
+          "capture": null,
+          "constructor": 0.20764416700000002,
+          "first_replay": 0.010504542,
+          "initialization": 0.18217770900000002,
+          "warmup": 0.9948449580000002
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cpu_eager",
+          "envs": 64,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "9ef35abac29280b297955992399ef358777306ee1995f27fcba2b4e14f21353b",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 1,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 10.551834
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 2,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 10.175208999999999
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 3,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 10.046042
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 4,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 10.420874999999999
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 5,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 10.219958
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 64,
+          "dtype": "int32",
+          "sha256": "fea7b32778ecbdd7adee1941e98c89cf96bbc762f5f1beb0be24e36a456fbbc5",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": null,
+          "cuda_toolkit": null,
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Darwin",
+          "os_release": "25.6.0",
+          "python": "3.12.14",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:23:08.507955+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 320,
+          "attempted_tracks_per_second": 6262.256655066489,
+          "batch_size": 64,
+          "max_ms": 10.551834,
+          "median_ms": 10.219958,
+          "metric": "wall_ms",
+          "microseconds_per_attempted_track": 159.68684375,
+          "min_ms": 10.046042,
+          "sample_count": 5
+        }
+      },
+      "polar": {
+        "checks": {
+          "capture_did_not_execute": null,
+          "changed_raw_rows": 64,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 724,
+          "warmup_replay_seconds": 1.0009708409999996
+        },
+        "completed_at_utc": "2026-10-26T10:23:11.488047+00:00",
+        "config": {
+          "device": "cpu",
+          "generator": "polar",
+          "generator_params": {
+            "num_points_per_segment": 30,
+            "polar_angular_jitter": 0.3,
+            "polar_num_knots": 12,
+            "polar_radial_jitter": 0.6,
+            "size": 1.0
+          },
+          "num_envs": 64,
+          "num_points": 256,
+          "scale": 1.0
+        },
+        "device": "cpu",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "polar",
+        "hardware": {
+          "architecture": "arm64",
+          "compute_capability": null,
+          "cpu": "Apple M5 Pro",
+          "gpu": null,
+          "gpu_memory_bytes": null,
+          "logical_cpus": 18,
+          "ram_bytes": 51539607552
+        },
+        "label": "Mac M5 Pro CPU",
+        "mode": "cpu_eager",
+        "phases_seconds": {
+          "capture": null,
+          "constructor": 0.14746425000000002,
+          "first_replay": 0.0016015,
+          "initialization": 0.188230542,
+          "warmup": 1.003250708
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cpu_eager",
+          "envs": 64,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "9ef35abac29280b297955992399ef358777306ee1995f27fcba2b4e14f21353b",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 1,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 1.38225
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 2,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 1.367
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 3,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 1.3773339999999998
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 4,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 1.373792
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 5,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 1.359875
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 64,
+          "dtype": "int32",
+          "sha256": "fea7b32778ecbdd7adee1941e98c89cf96bbc762f5f1beb0be24e36a456fbbc5",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": null,
+          "cuda_toolkit": null,
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Darwin",
+          "os_release": "25.6.0",
+          "python": "3.12.14",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:23:10.129892+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 320,
+          "attempted_tracks_per_second": 46586.382800307474,
+          "batch_size": 64,
+          "max_ms": 1.38225,
+          "median_ms": 1.373792,
+          "metric": "wall_ms",
+          "microseconds_per_attempted_track": 21.4655,
+          "min_ms": 1.359875,
+          "sample_count": 5
+        }
+      },
+      "repulsive": {
+        "checks": {
+          "capture_did_not_execute": null,
+          "changed_raw_rows": 64,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 3,
+          "warmup_replay_seconds": 445.15176091700005
+        },
+        "completed_at_utc": "2026-10-26T10:45:05.923751+00:00",
+        "config": {
+          "device": "cpu",
+          "generator": "repulsive",
+          "generator_params": {
+            "repulsive_alpha": 3.0,
+            "repulsive_beta": 6.0,
+            "repulsive_domain_frac": 0.35,
+            "repulsive_domain_init_ratio": 4.0,
+            "repulsive_grow_mult_max": 3.0,
+            "repulsive_grow_mult_min": 2.0,
+            "repulsive_obstacle_count_max": 12,
+            "repulsive_obstacle_count_min": 8,
+            "repulsive_obstacle_radius_max_frac": 0.045,
+            "repulsive_obstacle_radius_min_frac": 0.02,
+            "repulsive_ratchet_rate": 0.012,
+            "repulsive_resample_every": 25,
+            "repulsive_settle_iters": 40,
+            "repulsive_stages": [
+              64,
+              128,
+              256
+            ],
+            "repulsive_stall_area_tol": 0.05,
+            "repulsive_stall_window": 16,
+            "repulsive_tau": 0.4,
+            "size": 1.0
+          },
+          "num_envs": 64,
+          "num_points": 256,
+          "repulsive_half_width": 0.03,
+          "scale": 1.0
+        },
+        "device": "cpu",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "repulsive",
+        "hardware": {
+          "architecture": "arm64",
+          "compute_capability": null,
+          "cpu": "Apple M5 Pro",
+          "gpu": null,
+          "gpu_memory_bytes": null,
+          "logical_cpus": 18,
+          "ram_bytes": 51539607552
+        },
+        "label": "Mac M5 Pro CPU",
+        "mode": "cpu_eager",
+        "phases_seconds": {
+          "capture": null,
+          "constructor": 143.46349708300002,
+          "first_replay": 148.53420175000002,
+          "initialization": 0.18145612500000002,
+          "warmup": 296.623282833
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cpu_eager",
+          "envs": 64,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "9ef35abac29280b297955992399ef358777306ee1995f27fcba2b4e14f21353b",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 1,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 63,
+            "wall_ms": 143843.964542
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 2,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 63,
+            "wall_ms": 144279.92124999998
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 3,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 143604.96866699998
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 4,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 145687.57037499998
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 5,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 146334.759625
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 64,
+          "dtype": "int32",
+          "sha256": "fea7b32778ecbdd7adee1941e98c89cf96bbc762f5f1beb0be24e36a456fbbc5",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": null,
+          "cuda_toolkit": null,
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Darwin",
+          "os_release": "25.6.0",
+          "python": "3.12.14",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:23:13.337025+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 320,
+          "attempted_tracks_per_second": 0.44358216614981694,
+          "batch_size": 64,
+          "max_ms": 146334.759625,
+          "median_ms": 144279.92124999998,
+          "metric": "wall_ms",
+          "microseconds_per_attempted_track": 2254373.7695312495,
+          "min_ms": 143604.96866699998,
+          "sample_count": 5
+        }
+      },
+      "voronoi": {
+        "checks": {
+          "capture_did_not_execute": null,
+          "changed_raw_rows": 64,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 63,
+          "warmup_replay_seconds": 1.003936996
+        },
+        "completed_at_utc": "2026-10-26T10:23:13.147738+00:00",
+        "config": {
+          "device": "cpu",
+          "generator": "voronoi",
+          "generator_params": {
+            "num_points_per_segment": 30,
+            "size": 1.0,
+            "voronoi_angular_jitter": 0.08,
+            "voronoi_control_points": 18,
+            "voronoi_num_sites": 256,
+            "voronoi_radial_variation": 0.62,
+            "voronoi_site_layout": "void_ring"
+          },
+          "num_envs": 64,
+          "num_points": 256,
+          "scale": 1.0
+        },
+        "device": "cpu",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "voronoi",
+        "hardware": {
+          "architecture": "arm64",
+          "compute_capability": null,
+          "cpu": "Apple M5 Pro",
+          "gpu": null,
+          "gpu_memory_bytes": null,
+          "logical_cpus": 18,
+          "ram_bytes": 51539607552
+        },
+        "label": "Mac M5 Pro CPU",
+        "mode": "cpu_eager",
+        "phases_seconds": {
+          "capture": null,
+          "constructor": 0.18345225,
+          "first_replay": 0.01579975,
+          "initialization": 0.180987792,
+          "warmup": 0.992402958
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cpu_eager",
+          "envs": 64,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "9ef35abac29280b297955992399ef358777306ee1995f27fcba2b4e14f21353b",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 1,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 15.890417
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 2,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 15.907124999999999
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 3,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 15.814874999999999
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 4,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 15.879916999999999
+          },
+          {
+            "attempted_count": 64,
+            "device_ms": null,
+            "epoch": 5,
+            "finite_raw_count": 64,
+            "generator_accepted_count": 64,
+            "wall_ms": 15.853083
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 64,
+          "dtype": "int32",
+          "sha256": "fea7b32778ecbdd7adee1941e98c89cf96bbc762f5f1beb0be24e36a456fbbc5",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": null,
+          "cuda_toolkit": null,
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Darwin",
+          "os_release": "25.6.0",
+          "python": "3.12.14",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:23:11.678661+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 320,
+          "attempted_tracks_per_second": 4030.247765148899,
+          "batch_size": 64,
+          "max_ms": 15.907124999999999,
+          "median_ms": 15.879916999999999,
+          "metric": "wall_ms",
+          "microseconds_per_attempted_track": 248.123703125,
+          "min_ms": 15.814874999999999,
+          "sample_count": 5
+        }
+      }
+    },
+    "spark_gb10": {
+      "bezier": {
+        "checks": {
+          "capture_did_not_execute": true,
+          "changed_raw_rows": 4096,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 406,
+          "warmup_replay_seconds": 1.000793976
+        },
+        "completed_at_utc": "2026-10-26T10:15:25.870961+00:00",
+        "config": {
+          "device": "cuda:0",
+          "generator": "bezier",
+          "generator_params": {
+            "edgy": 0.0,
+            "handle_clamp_frac": 0.4,
+            "max_num_points": 13,
+            "min_num_points": 9,
+            "min_point_distance": 0.05,
+            "num_points_per_segment": 30,
+            "rad": 0.4,
+            "size": 1.0
+          },
+          "num_envs": 4096,
+          "num_points": 256,
+          "scale": 1.0
+        },
+        "device": "cuda:0",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "bezier",
+        "hardware": {
+          "architecture": "aarch64",
+          "compute_capability": 121,
+          "cpu": "aarch64",
+          "gpu": "NVIDIA GB10",
+          "gpu_memory_bytes": 128520015872,
+          "logical_cpus": 20,
+          "ram_bytes": 128520015872
+        },
+        "label": "Spark GB10",
+        "mode": "cuda_graph",
+        "phases_seconds": {
+          "capture": 0.0005015400000000001,
+          "constructor": 0.225268296,
+          "first_replay": 0.002796275,
+          "initialization": 0.794366718,
+          "warmup": 1.097507272
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cuda_graph",
+          "envs": 4096,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "f4bde5427d5244cbb8f416ae247685fdde274ecdfc5b4121abd16c5b3964de6e",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 4096,
+            "device_ms": 2.437119960784912,
+            "epoch": 1,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 2.447168
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 2.455296039581299,
+            "epoch": 2,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 2.46536
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 2.5894720554351807,
+            "epoch": 3,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 2.59773
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 2.4329919815063477,
+            "epoch": 4,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 2.441041
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 2.434079885482788,
+            "epoch": 5,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 2.441761
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 4096,
+          "dtype": "int32",
+          "sha256": "6b0751ba5e64fc9c13ddfb44778fa7d6a1f7d7aa9d6a5e38a1f0a1502c3fb9e3",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": [
+            13,
+            0
+          ],
+          "cuda_toolkit": [
+            13,
+            4
+          ],
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Linux",
+          "os_release": "6.17.0-1021-nvidia",
+          "python": "3.12.3",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:15:23.462496+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 20480,
+          "attempted_tracks_per_second": 1680672.2959508402,
+          "batch_size": 4096,
+          "max_ms": 2.5894720554351807,
+          "median_ms": 2.437119960784912,
+          "metric": "device_ms",
+          "microseconds_per_attempted_track": 0.5949999904260039,
+          "min_ms": 2.4329919815063477,
+          "sample_count": 5
+        }
+      },
+      "checkpoint": {
+        "checks": {
+          "capture_did_not_execute": true,
+          "changed_raw_rows": 4096,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 133,
+          "warmup_replay_seconds": 1.0055143440000003
+        },
+        "completed_at_utc": "2026-10-26T10:15:28.725680+00:00",
+        "config": {
+          "device": "cuda:0",
+          "generator": "checkpoint",
+          "generator_params": {
+            "checkpoint_angle_jitter": 0.55,
+            "checkpoint_best_of_k": 4,
+            "checkpoint_clip_fallback": false,
+            "checkpoint_count": 12,
+            "checkpoint_lookahead_frac": 0.16,
+            "checkpoint_radius_min_frac": 0.33,
+            "checkpoint_steer_gain": 0.65,
+            "checkpoint_turn_rate": 0.42,
+            "size": 1.0
+          },
+          "num_envs": 4096,
+          "num_points": 256,
+          "scale": 1.0
+        },
+        "device": "cuda:0",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "checkpoint",
+        "hardware": {
+          "architecture": "aarch64",
+          "compute_capability": 121,
+          "cpu": "aarch64",
+          "gpu": "NVIDIA GB10",
+          "gpu_memory_bytes": 128520015872,
+          "logical_cpus": 20,
+          "ram_bytes": 128520015872
+        },
+        "label": "Spark GB10",
+        "mode": "cuda_graph",
+        "phases_seconds": {
+          "capture": 0.000438467,
+          "constructor": 0.223104602,
+          "first_replay": 0.007871845,
+          "initialization": 0.8287034480000001,
+          "warmup": 1.1306006180000001
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cuda_graph",
+          "envs": 4096,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "f4bde5427d5244cbb8f416ae247685fdde274ecdfc5b4121abd16c5b3964de6e",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 4096,
+            "device_ms": 7.9404802322387695,
+            "epoch": 1,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 7.951014
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 7.430816173553467,
+            "epoch": 2,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 7.444338999999999
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 7.9202561378479,
+            "epoch": 3,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 7.936182
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 7.464320182800293,
+            "epoch": 4,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 7.498595
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 7.422207832336426,
+            "epoch": 5,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 7.430707
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 4096,
+          "dtype": "int32",
+          "sha256": "6b0751ba5e64fc9c13ddfb44778fa7d6a1f7d7aa9d6a5e38a1f0a1502c3fb9e3",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": [
+            13,
+            0
+          ],
+          "cuda_toolkit": [
+            13,
+            4
+          ],
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Linux",
+          "os_release": "6.17.0-1021-nvidia",
+          "python": "3.12.3",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:15:26.186064+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 20480,
+          "attempted_tracks_per_second": 548743.8774984806,
+          "batch_size": 4096,
+          "max_ms": 7.9404802322387695,
+          "median_ms": 7.464320182800293,
+          "metric": "device_ms",
+          "microseconds_per_attempted_track": 1.8223437946289778,
+          "min_ms": 7.422207832336426,
+          "sample_count": 5
+        }
+      },
+      "hull": {
+        "checks": {
+          "capture_did_not_execute": true,
+          "changed_raw_rows": 4096,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 269,
+          "warmup_replay_seconds": 1.002033054000001
+        },
+        "completed_at_utc": "2026-10-26T10:15:31.532205+00:00",
+        "config": {
+          "device": "cuda:0",
+          "generator": "hull",
+          "generator_params": {
+            "hull_displacement": 0.15,
+            "max_num_points": 13,
+            "min_num_points": 9,
+            "min_point_distance": 0.05,
+            "num_points_per_segment": 30,
+            "size": 1.0
+          },
+          "num_envs": 4096,
+          "num_points": 256,
+          "scale": 1.0
+        },
+        "device": "cuda:0",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "hull",
+        "hardware": {
+          "architecture": "aarch64",
+          "compute_capability": 121,
+          "cpu": "aarch64",
+          "gpu": "NVIDIA GB10",
+          "gpu_memory_bytes": 128520015872,
+          "logical_cpus": 20,
+          "ram_bytes": 128520015872
+        },
+        "label": "Spark GB10",
+        "mode": "cuda_graph",
+        "phases_seconds": {
+          "capture": 0.0005427720000000001,
+          "constructor": 0.23642005300000002,
+          "first_replay": 0.004356398,
+          "initialization": 0.810629071,
+          "warmup": 1.105708882
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cuda_graph",
+          "envs": 4096,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "f4bde5427d5244cbb8f416ae247685fdde274ecdfc5b4121abd16c5b3964de6e",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 4096,
+            "device_ms": 3.651103973388672,
+            "epoch": 1,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 3.6610489999999998
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 3.665343999862671,
+            "epoch": 2,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 3.676393
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 3.6498239040374756,
+            "epoch": 3,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 3.658217
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 3.6516799926757812,
+            "epoch": 4,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 3.660136
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 3.6584320068359375,
+            "epoch": 5,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 3.6653529999999996
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 4096,
+          "dtype": "int32",
+          "sha256": "6b0751ba5e64fc9c13ddfb44778fa7d6a1f7d7aa9d6a5e38a1f0a1502c3fb9e3",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": [
+            13,
+            0
+          ],
+          "cuda_toolkit": [
+            13,
+            4
+          ],
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Linux",
+          "os_release": "6.17.0-1021-nvidia",
+          "python": "3.12.3",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:15:29.063320+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 20480,
+          "attempted_tracks_per_second": 1121675.5050320392,
+          "batch_size": 4096,
+          "max_ms": 3.665343999862671,
+          "median_ms": 3.6516799926757812,
+          "metric": "device_ms",
+          "microseconds_per_attempted_track": 0.8915234357118607,
+          "min_ms": 3.6498239040374756,
+          "sample_count": 5
+        }
+      },
+      "polar": {
+        "checks": {
+          "capture_did_not_execute": true,
+          "changed_raw_rows": 4096,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 634,
+          "warmup_replay_seconds": 1.0001157519999995
+        },
+        "completed_at_utc": "2026-10-26T10:15:34.244782+00:00",
+        "config": {
+          "device": "cuda:0",
+          "generator": "polar",
+          "generator_params": {
+            "num_points_per_segment": 30,
+            "polar_angular_jitter": 0.3,
+            "polar_num_knots": 12,
+            "polar_radial_jitter": 0.6,
+            "size": 1.0
+          },
+          "num_envs": 4096,
+          "num_points": 256,
+          "scale": 1.0
+        },
+        "device": "cuda:0",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "polar",
+        "hardware": {
+          "architecture": "aarch64",
+          "compute_capability": 121,
+          "cpu": "aarch64",
+          "gpu": "NVIDIA GB10",
+          "gpu_memory_bytes": 128520015872,
+          "logical_cpus": 20,
+          "ram_bytes": 128520015872
+        },
+        "label": "Spark GB10",
+        "mode": "cuda_graph",
+        "phases_seconds": {
+          "capture": 0.00034013,
+          "constructor": 0.21235451400000002,
+          "first_replay": 0.0019107010000000001,
+          "initialization": 0.7948021160000001,
+          "warmup": 1.0985871870000001
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cuda_graph",
+          "envs": 4096,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "f4bde5427d5244cbb8f416ae247685fdde274ecdfc5b4121abd16c5b3964de6e",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 4096,
+            "device_ms": 1.5761280059814453,
+            "epoch": 1,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 1.5862829999999999
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 1.585055947303772,
+            "epoch": 2,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 1.5959139999999998
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 1.6353919506072998,
+            "epoch": 3,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 1.642475
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 1.579360008239746,
+            "epoch": 4,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 1.586971
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 1.57532799243927,
+            "epoch": 5,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 1.582411
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 4096,
+          "dtype": "int32",
+          "sha256": "6b0751ba5e64fc9c13ddfb44778fa7d6a1f7d7aa9d6a5e38a1f0a1502c3fb9e3",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": [
+            13,
+            0
+          ],
+          "cuda_toolkit": [
+            13,
+            4
+          ],
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Linux",
+          "os_release": "6.17.0-1021-nvidia",
+          "python": "3.12.3",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:15:31.857044+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 20480,
+          "attempted_tracks_per_second": 2593455.5634121317,
+          "batch_size": 4096,
+          "max_ms": 1.6353919506072998,
+          "median_ms": 1.579360008239746,
+          "metric": "device_ms",
+          "microseconds_per_attempted_track": 0.38558593951165676,
+          "min_ms": 1.57532799243927,
+          "sample_count": 5
+        }
+      },
+      "repulsive": {
+        "checks": {
+          "capture_did_not_execute": true,
+          "changed_raw_rows": 4093,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 3,
+          "warmup_replay_seconds": 111.70647440700002
+        },
+        "completed_at_utc": "2026-10-26T10:21:20.037889+00:00",
+        "config": {
+          "device": "cuda:0",
+          "generator": "repulsive",
+          "generator_params": {
+            "repulsive_alpha": 3.0,
+            "repulsive_beta": 6.0,
+            "repulsive_domain_frac": 0.35,
+            "repulsive_domain_init_ratio": 4.0,
+            "repulsive_grow_mult_max": 3.0,
+            "repulsive_grow_mult_min": 2.0,
+            "repulsive_obstacle_count_max": 12,
+            "repulsive_obstacle_count_min": 8,
+            "repulsive_obstacle_radius_max_frac": 0.045,
+            "repulsive_obstacle_radius_min_frac": 0.02,
+            "repulsive_ratchet_rate": 0.012,
+            "repulsive_resample_every": 25,
+            "repulsive_settle_iters": 40,
+            "repulsive_stages": [
+              64,
+              128,
+              256
+            ],
+            "repulsive_stall_area_tol": 0.05,
+            "repulsive_stall_window": 16,
+            "repulsive_tau": 0.4,
+            "size": 1.0
+          },
+          "num_envs": 4096,
+          "num_points": 256,
+          "repulsive_half_width": 0.03,
+          "scale": 1.0
+        },
+        "device": "cuda:0",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "repulsive",
+        "hardware": {
+          "architecture": "aarch64",
+          "compute_capability": 121,
+          "cpu": "aarch64",
+          "gpu": "NVIDIA GB10",
+          "gpu_memory_bytes": 128520015872,
+          "logical_cpus": 20,
+          "ram_bytes": 128520015872
+        },
+        "label": "Spark GB10",
+        "mode": "cuda_graph",
+        "phases_seconds": {
+          "capture": 0.652248216,
+          "constructor": 36.314760503,
+          "first_replay": 36.554416198000006,
+          "initialization": 0.803865571,
+          "warmup": 75.326762696
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cuda_graph",
+          "envs": 4096,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "f4bde5427d5244cbb8f416ae247685fdde274ecdfc5b4121abd16c5b3964de6e",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 4096,
+            "device_ms": 38761.2265625,
+            "epoch": 1,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4047,
+            "wall_ms": 38761.511482
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 38184.36328125,
+            "epoch": 2,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4048,
+            "wall_ms": 38184.677923999996
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 39013.81640625,
+            "epoch": 3,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4041,
+            "wall_ms": 39014.112791
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 38354.6875,
+            "epoch": 4,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4036,
+            "wall_ms": 38354.972311
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 38415.1328125,
+            "epoch": 5,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4049,
+            "wall_ms": 38415.425756
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 4096,
+          "dtype": "int32",
+          "sha256": "6b0751ba5e64fc9c13ddfb44778fa7d6a1f7d7aa9d6a5e38a1f0a1502c3fb9e3",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": [
+            13,
+            0
+          ],
+          "cuda_toolkit": [
+            13,
+            4
+          ],
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Linux",
+          "os_release": "6.17.0-1021-nvidia",
+          "python": "3.12.3",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:15:37.341523+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 20480,
+          "attempted_tracks_per_second": 106.62464763540247,
+          "batch_size": 4096,
+          "max_ms": 39013.81640625,
+          "median_ms": 38415.1328125,
+          "metric": "device_ms",
+          "microseconds_per_attempted_track": 9378.694534301758,
+          "min_ms": 38184.36328125,
+          "sample_count": 5
+        }
+      },
+      "voronoi": {
+        "checks": {
+          "capture_did_not_execute": true,
+          "changed_raw_rows": 4096,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 121,
+          "warmup_replay_seconds": 1.005655742
+        },
+        "completed_at_utc": "2026-10-26T10:15:37.054842+00:00",
+        "config": {
+          "device": "cuda:0",
+          "generator": "voronoi",
+          "generator_params": {
+            "num_points_per_segment": 30,
+            "size": 1.0,
+            "voronoi_angular_jitter": 0.08,
+            "voronoi_control_points": 18,
+            "voronoi_num_sites": 256,
+            "voronoi_radial_variation": 0.62,
+            "voronoi_site_layout": "void_ring"
+          },
+          "num_envs": 4096,
+          "num_points": 256,
+          "scale": 1.0
+        },
+        "device": "cuda:0",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "voronoi",
+        "hardware": {
+          "architecture": "aarch64",
+          "compute_capability": 121,
+          "cpu": "aarch64",
+          "gpu": "NVIDIA GB10",
+          "gpu_memory_bytes": 128520015872,
+          "logical_cpus": 20,
+          "ram_bytes": 128520015872
+        },
+        "label": "Spark GB10",
+        "mode": "cuda_graph",
+        "phases_seconds": {
+          "capture": 0.00043907500000000003,
+          "constructor": 0.21587108200000002,
+          "first_replay": 0.008952637000000001,
+          "initialization": 0.823278406,
+          "warmup": 1.0966906150000002
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cuda_graph",
+          "envs": 4096,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "f4bde5427d5244cbb8f416ae247685fdde274ecdfc5b4121abd16c5b3964de6e",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 4096,
+            "device_ms": 8.027647972106934,
+            "epoch": 1,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 8.037719
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 8.24953556060791,
+            "epoch": 2,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 8.260488
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 8.210783958435059,
+            "epoch": 3,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 8.218104
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 8.207648277282715,
+            "epoch": 4,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 8.215335999999999
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 8.20963191986084,
+            "epoch": 5,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 8.217063999999999
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 4096,
+          "dtype": "int32",
+          "sha256": "6b0751ba5e64fc9c13ddfb44778fa7d6a1f7d7aa9d6a5e38a1f0a1502c3fb9e3",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": [
+            13,
+            0
+          ],
+          "cuda_toolkit": [
+            13,
+            4
+          ],
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Linux",
+          "os_release": "6.17.0-1021-nvidia",
+          "python": "3.12.3",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:15:34.595017+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 20480,
+          "attempted_tracks_per_second": 498926.1443123787,
+          "batch_size": 4096,
+          "max_ms": 8.24953556060791,
+          "median_ms": 8.20963191986084,
+          "metric": "device_ms",
+          "microseconds_per_attempted_track": 2.0043046679347754,
+          "min_ms": 8.027647972106934,
+          "sample_count": 5
+        }
+      }
+    },
+    "workstation_rtx5090": {
+      "bezier": {
+        "checks": {
+          "capture_did_not_execute": true,
+          "changed_raw_rows": 4096,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 1058,
+          "warmup_replay_seconds": 1.0002346790000003
+        },
+        "completed_at_utc": "2026-10-26T10:15:25.087133+00:00",
+        "config": {
+          "device": "cuda:0",
+          "generator": "bezier",
+          "generator_params": {
+            "edgy": 0.0,
+            "handle_clamp_frac": 0.4,
+            "max_num_points": 13,
+            "min_num_points": 9,
+            "min_point_distance": 0.05,
+            "num_points_per_segment": 30,
+            "rad": 0.4,
+            "size": 1.0
+          },
+          "num_envs": 4096,
+          "num_points": 256,
+          "scale": 1.0
+        },
+        "device": "cuda:0",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "bezier",
+        "hardware": {
+          "architecture": "x86_64",
+          "compute_capability": 120,
+          "cpu": "Intel(R) Core(TM) i9-14900K",
+          "gpu": "NVIDIA GeForce RTX 5090",
+          "gpu_memory_bytes": 33702674432,
+          "logical_cpus": 32,
+          "ram_bytes": 134728986624
+        },
+        "label": "RTX 5090",
+        "mode": "cuda_graph",
+        "phases_seconds": {
+          "capture": 0.00042545800000000003,
+          "constructor": 0.142088066,
+          "first_replay": 0.0011659790000000001,
+          "initialization": 0.463427191,
+          "warmup": 1.037094193
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cuda_graph",
+          "envs": 4096,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "f4bde5427d5244cbb8f416ae247685fdde274ecdfc5b4121abd16c5b3964de6e",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 4096,
+            "device_ms": 0.9158080220222473,
+            "epoch": 1,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 0.924963
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 0.9132800102233887,
+            "epoch": 2,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 0.925515
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 0.9123200178146362,
+            "epoch": 3,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 0.923384
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 0.912992000579834,
+            "epoch": 4,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 0.922321
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 0.9078080058097839,
+            "epoch": 5,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 0.916885
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 4096,
+          "dtype": "int32",
+          "sha256": "6b0751ba5e64fc9c13ddfb44778fa7d6a1f7d7aa9d6a5e38a1f0a1502c3fb9e3",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": [
+            13,
+            3
+          ],
+          "cuda_toolkit": [
+            13,
+            4
+          ],
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Linux",
+          "os_release": "7.0.0-38-generic",
+          "python": "3.12.13",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:15:23.344084+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 20480,
+          "attempted_tracks_per_second": 4486348.179829245,
+          "batch_size": 4096,
+          "max_ms": 0.9158080220222473,
+          "median_ms": 0.912992000579834,
+          "metric": "device_ms",
+          "microseconds_per_attempted_track": 0.22289843764156103,
+          "min_ms": 0.9078080058097839,
+          "sample_count": 5
+        }
+      },
+      "checkpoint": {
+        "checks": {
+          "capture_did_not_execute": true,
+          "changed_raw_rows": 4096,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 430,
+          "warmup_replay_seconds": 1.0022141619999996
+        },
+        "completed_at_utc": "2026-10-26T10:15:27.119345+00:00",
+        "config": {
+          "device": "cuda:0",
+          "generator": "checkpoint",
+          "generator_params": {
+            "checkpoint_angle_jitter": 0.55,
+            "checkpoint_best_of_k": 4,
+            "checkpoint_clip_fallback": false,
+            "checkpoint_count": 12,
+            "checkpoint_lookahead_frac": 0.16,
+            "checkpoint_radius_min_frac": 0.33,
+            "checkpoint_steer_gain": 0.65,
+            "checkpoint_turn_rate": 0.42,
+            "size": 1.0
+          },
+          "num_envs": 4096,
+          "num_points": 256,
+          "scale": 1.0
+        },
+        "device": "cuda:0",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "checkpoint",
+        "hardware": {
+          "architecture": "x86_64",
+          "compute_capability": 120,
+          "cpu": "Intel(R) Core(TM) i9-14900K",
+          "gpu": "NVIDIA GeForce RTX 5090",
+          "gpu_memory_bytes": 33702674432,
+          "logical_cpus": 32,
+          "ram_bytes": 134728986624
+        },
+        "label": "RTX 5090",
+        "mode": "cuda_graph",
+        "phases_seconds": {
+          "capture": 0.0006624970000000001,
+          "constructor": 0.130468677,
+          "first_replay": 0.002661376,
+          "initialization": 0.47783796800000006,
+          "warmup": 1.039067357
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cuda_graph",
+          "envs": 4096,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "f4bde5427d5244cbb8f416ae247685fdde274ecdfc5b4121abd16c5b3964de6e",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 4096,
+            "device_ms": 2.2489280700683594,
+            "epoch": 1,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 2.258501
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 2.244352102279663,
+            "epoch": 2,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 2.25494
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 2.244960069656372,
+            "epoch": 3,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 2.253965
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 2.2465920448303223,
+            "epoch": 4,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 2.254968
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 2.2504000663757324,
+            "epoch": 5,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 2.2592019999999997
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 4096,
+          "dtype": "int32",
+          "sha256": "6b0751ba5e64fc9c13ddfb44778fa7d6a1f7d7aa9d6a5e38a1f0a1502c3fb9e3",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": [
+            13,
+            3
+          ],
+          "cuda_toolkit": [
+            13,
+            4
+          ],
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Linux",
+          "os_release": "7.0.0-38-generic",
+          "python": "3.12.13",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:15:25.356621+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 20480,
+          "attempted_tracks_per_second": 1823205.9574079714,
+          "batch_size": 4096,
+          "max_ms": 2.2504000663757324,
+          "median_ms": 2.2465920448303223,
+          "metric": "device_ms",
+          "microseconds_per_attempted_track": 0.5484843859449029,
+          "min_ms": 2.244352102279663,
+          "sample_count": 5
+        }
+      },
+      "hull": {
+        "checks": {
+          "capture_did_not_execute": true,
+          "changed_raw_rows": 4096,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 680,
+          "warmup_replay_seconds": 1.0002493489999984
+        },
+        "completed_at_utc": "2026-10-26T10:15:29.127606+00:00",
+        "config": {
+          "device": "cuda:0",
+          "generator": "hull",
+          "generator_params": {
+            "hull_displacement": 0.15,
+            "max_num_points": 13,
+            "min_num_points": 9,
+            "min_point_distance": 0.05,
+            "num_points_per_segment": 30,
+            "size": 1.0
+          },
+          "num_envs": 4096,
+          "num_points": 256,
+          "scale": 1.0
+        },
+        "device": "cuda:0",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "hull",
+        "hardware": {
+          "architecture": "x86_64",
+          "compute_capability": 120,
+          "cpu": "Intel(R) Core(TM) i9-14900K",
+          "gpu": "NVIDIA GeForce RTX 5090",
+          "gpu_memory_bytes": 33702674432,
+          "logical_cpus": 32,
+          "ram_bytes": 134728986624
+        },
+        "label": "RTX 5090",
+        "mode": "cuda_graph",
+        "phases_seconds": {
+          "capture": 0.000487285,
+          "constructor": 0.139699134,
+          "first_replay": 0.001747426,
+          "initialization": 0.482468096,
+          "warmup": 1.035315072
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cuda_graph",
+          "envs": 4096,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "f4bde5427d5244cbb8f416ae247685fdde274ecdfc5b4121abd16c5b3964de6e",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 4096,
+            "device_ms": 1.4217599630355835,
+            "epoch": 1,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 1.431195
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 1.4214719533920288,
+            "epoch": 2,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 1.4333989999999999
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 1.4196799993515015,
+            "epoch": 3,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 1.430245
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 1.4190399646759033,
+            "epoch": 4,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 1.4287569999999998
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 1.4190399646759033,
+            "epoch": 5,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 1.428655
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 4096,
+          "dtype": "int32",
+          "sha256": "6b0751ba5e64fc9c13ddfb44778fa7d6a1f7d7aa9d6a5e38a1f0a1502c3fb9e3",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": [
+            13,
+            3
+          ],
+          "cuda_toolkit": [
+            13,
+            4
+          ],
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Linux",
+          "os_release": "7.0.0-38-generic",
+          "python": "3.12.13",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:15:27.365038+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 20480,
+          "attempted_tracks_per_second": 2885157.219846036,
+          "batch_size": 4096,
+          "max_ms": 1.4217599630355835,
+          "median_ms": 1.4196799993515015,
+          "metric": "device_ms",
+          "microseconds_per_attempted_track": 0.34660156234167516,
+          "min_ms": 1.4190399646759033,
+          "sample_count": 5
+        }
+      },
+      "polar": {
+        "checks": {
+          "capture_did_not_execute": true,
+          "changed_raw_rows": 4096,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 1308,
+          "warmup_replay_seconds": 1.0002966149999992
+        },
+        "completed_at_utc": "2026-10-26T10:15:31.141997+00:00",
+        "config": {
+          "device": "cuda:0",
+          "generator": "polar",
+          "generator_params": {
+            "num_points_per_segment": 30,
+            "polar_angular_jitter": 0.3,
+            "polar_num_knots": 12,
+            "polar_radial_jitter": 0.6,
+            "size": 1.0
+          },
+          "num_envs": 4096,
+          "num_points": 256,
+          "scale": 1.0
+        },
+        "device": "cuda:0",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "polar",
+        "hardware": {
+          "architecture": "x86_64",
+          "compute_capability": 120,
+          "cpu": "Intel(R) Core(TM) i9-14900K",
+          "gpu": "NVIDIA GeForce RTX 5090",
+          "gpu_memory_bytes": 33702674432,
+          "logical_cpus": 32,
+          "ram_bytes": 134728986624
+        },
+        "label": "RTX 5090",
+        "mode": "cuda_graph",
+        "phases_seconds": {
+          "capture": 0.00033658200000000004,
+          "constructor": 0.131804959,
+          "first_replay": 0.0009683010000000001,
+          "initialization": 0.484310226,
+          "warmup": 1.036788969
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cuda_graph",
+          "envs": 4096,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "f4bde5427d5244cbb8f416ae247685fdde274ecdfc5b4121abd16c5b3964de6e",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 4096,
+            "device_ms": 0.737280011177063,
+            "epoch": 1,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 0.745138
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 0.7377920150756836,
+            "epoch": 2,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 0.748269
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 0.7400959730148315,
+            "epoch": 3,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 0.749653
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 0.7387199997901917,
+            "epoch": 4,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 0.747575
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 0.7380480170249939,
+            "epoch": 5,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 0.746892
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 4096,
+          "dtype": "int32",
+          "sha256": "6b0751ba5e64fc9c13ddfb44778fa7d6a1f7d7aa9d6a5e38a1f0a1502c3fb9e3",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": [
+            13,
+            3
+          ],
+          "cuda_toolkit": [
+            13,
+            4
+          ],
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Linux",
+          "os_release": "7.0.0-38-generic",
+          "python": "3.12.13",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:15:29.388653+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 20480,
+          "attempted_tracks_per_second": 5549774.412389336,
+          "batch_size": 4096,
+          "max_ms": 0.7400959730148315,
+          "median_ms": 0.7380480170249939,
+          "metric": "device_ms",
+          "microseconds_per_attempted_track": 0.18018750415649265,
+          "min_ms": 0.737280011177063,
+          "sample_count": 5
+        }
+      },
+      "repulsive": {
+        "checks": {
+          "capture_did_not_execute": true,
+          "changed_raw_rows": 4093,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 3,
+          "warmup_replay_seconds": 34.74246841
+        },
+        "completed_at_utc": "2026-10-26T10:17:18.745646+00:00",
+        "config": {
+          "device": "cuda:0",
+          "generator": "repulsive",
+          "generator_params": {
+            "repulsive_alpha": 3.0,
+            "repulsive_beta": 6.0,
+            "repulsive_domain_frac": 0.35,
+            "repulsive_domain_init_ratio": 4.0,
+            "repulsive_grow_mult_max": 3.0,
+            "repulsive_grow_mult_min": 2.0,
+            "repulsive_obstacle_count_max": 12,
+            "repulsive_obstacle_count_min": 8,
+            "repulsive_obstacle_radius_max_frac": 0.045,
+            "repulsive_obstacle_radius_min_frac": 0.02,
+            "repulsive_ratchet_rate": 0.012,
+            "repulsive_resample_every": 25,
+            "repulsive_settle_iters": 40,
+            "repulsive_stages": [
+              64,
+              128,
+              256
+            ],
+            "repulsive_stall_area_tol": 0.05,
+            "repulsive_stall_window": 16,
+            "repulsive_tau": 0.4,
+            "size": 1.0
+          },
+          "num_envs": 4096,
+          "num_points": 256,
+          "repulsive_half_width": 0.03,
+          "scale": 1.0
+        },
+        "device": "cuda:0",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "repulsive",
+        "hardware": {
+          "architecture": "x86_64",
+          "compute_capability": 120,
+          "cpu": "Intel(R) Core(TM) i9-14900K",
+          "gpu": "NVIDIA GeForce RTX 5090",
+          "gpu_memory_bytes": 33702674432,
+          "logical_cpus": 32,
+          "ram_bytes": 134728986624
+        },
+        "label": "RTX 5090",
+        "mode": "cuda_graph",
+        "phases_seconds": {
+          "capture": 0.544067519,
+          "constructor": 11.697525007000001,
+          "first_replay": 11.676344668,
+          "initialization": 0.47877590600000003,
+          "warmup": 23.111845250000002
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cuda_graph",
+          "envs": 4096,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "f4bde5427d5244cbb8f416ae247685fdde274ecdfc5b4121abd16c5b3964de6e",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 4096,
+            "device_ms": 11570.541015625,
+            "epoch": 1,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4047,
+            "wall_ms": 11570.559529
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 11454.244140625,
+            "epoch": 2,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4048,
+            "wall_ms": 11454.262275
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 11664.7880859375,
+            "epoch": 3,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4041,
+            "wall_ms": 11664.803138
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 11625.17578125,
+            "epoch": 4,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4036,
+            "wall_ms": 11625.1894
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 11459.09375,
+            "epoch": 5,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4049,
+            "wall_ms": 11459.104866
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 4096,
+          "dtype": "int32",
+          "sha256": "6b0751ba5e64fc9c13ddfb44778fa7d6a1f7d7aa9d6a5e38a1f0a1502c3fb9e3",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": [
+            13,
+            3
+          ],
+          "cuda_toolkit": [
+            13,
+            4
+          ],
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Linux",
+          "os_release": "7.0.0-38-generic",
+          "python": "3.12.13",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:15:33.366351+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 20480,
+          "attempted_tracks_per_second": 354.00246146387724,
+          "batch_size": 4096,
+          "max_ms": 11664.7880859375,
+          "median_ms": 11570.541015625,
+          "metric": "device_ms",
+          "microseconds_per_attempted_track": 2824.8391151428223,
+          "min_ms": 11454.244140625,
+          "sample_count": 5
+        }
+      },
+      "voronoi": {
+        "checks": {
+          "capture_did_not_execute": true,
+          "changed_raw_rows": 4096,
+          "epoch_and_effective_seed": true,
+          "proof_calls": 3,
+          "raw_storage_overwritten": true,
+          "warmup_calls": 208,
+          "warmup_replay_seconds": 1.0006104490000005
+        },
+        "completed_at_utc": "2026-10-26T10:15:33.127483+00:00",
+        "config": {
+          "device": "cuda:0",
+          "generator": "voronoi",
+          "generator_params": {
+            "num_points_per_segment": 30,
+            "size": 1.0,
+            "voronoi_angular_jitter": 0.08,
+            "voronoi_control_points": 18,
+            "voronoi_num_sites": 256,
+            "voronoi_radial_variation": 0.62,
+            "voronoi_site_layout": "void_ring"
+          },
+          "num_envs": 4096,
+          "num_points": 256,
+          "scale": 1.0
+        },
+        "device": "cuda:0",
+        "epochs": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "generator": "voronoi",
+        "hardware": {
+          "architecture": "x86_64",
+          "compute_capability": 120,
+          "cpu": "Intel(R) Core(TM) i9-14900K",
+          "gpu": "NVIDIA GeForce RTX 5090",
+          "gpu_memory_bytes": 33702674432,
+          "logical_cpus": 32,
+          "ram_bytes": 134728986624
+        },
+        "label": "RTX 5090",
+        "mode": "cuda_graph",
+        "phases_seconds": {
+          "capture": 0.000543004,
+          "constructor": 0.130404446,
+          "first_replay": 0.005121355,
+          "initialization": 0.493958143,
+          "warmup": 1.033567938
+        },
+        "protocol": {
+          "advance": true,
+          "cpu_timer": "completed-call perf_counter_ns",
+          "cuda_timer": "Warp events around ScopedCapture graph replay",
+          "device_mode": "cuda_graph",
+          "envs": 4096,
+          "excluded": [
+            "initialization",
+            "constructor",
+            "capture",
+            "first_replay",
+            "warmup",
+            "shared constant-spacing resampling",
+            "XPBD and smoothing tails",
+            "width and frames",
+            "road borders",
+            "elevation",
+            "final validity",
+            "result lift and commit"
+          ],
+          "final_road_validity_measured": false,
+          "generator": {
+            "num_points": 256,
+            "repulsive_half_width": 0.03,
+            "scale": 1.0,
+            "size": 1.0
+          },
+          "geometry_proof": "changing finite raw rows with intrinsic generator flag=1",
+          "included": [
+            "seed advance and effective seed",
+            "generator parameter latch",
+            "bound generator stage and its internal operations"
+          ],
+          "mask": null,
+          "min_warmup_calls": 3,
+          "min_warmup_seconds": 1.0,
+          "pipeline": "generator_only",
+          "repeats": 5,
+          "seeds": "explicit int32 arange(E)",
+          "timed_epochs": "1..repeats",
+          "version": 2,
+          "wall_timer": "completed-call perf_counter_ns",
+          "warmup_seconds": 1.0
+        },
+        "provenance": {
+          "library_sha256": "870c4354fc257ff2e2db072d765b064d56f0e8128e77e1a68da12c25bed3f78c",
+          "protocol_sha256": "f4bde5427d5244cbb8f416ae247685fdde274ecdfc5b4121abd16c5b3964de6e",
+          "runner_sha256": "b6c3bb4f266741f10f6a61f23e5958b4d8fade28ad43cfee40e98fadb3deab6a",
+          "source_revision": "c920101ed61ed02a96fe248ceab2a10e5eba8c68"
+        },
+        "samples": [
+          {
+            "attempted_count": 4096,
+            "device_ms": 4.3824639320373535,
+            "epoch": 1,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 4.393664
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 4.6150078773498535,
+            "epoch": 2,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 4.626357
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 4.614048004150391,
+            "epoch": 3,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 4.6249579999999995
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 4.632991790771484,
+            "epoch": 4,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 4.643184
+          },
+          {
+            "attempted_count": 4096,
+            "device_ms": 4.625823974609375,
+            "epoch": 5,
+            "finite_raw_count": 4096,
+            "generator_accepted_count": 4096,
+            "wall_ms": 4.635390999999999
+          }
+        ],
+        "schema_version": 2,
+        "seeds": {
+          "count": 4096,
+          "dtype": "int32",
+          "sha256": "6b0751ba5e64fc9c13ddfb44778fa7d6a1f7d7aa9d6a5e38a1f0a1502c3fb9e3",
+          "start": 0
+        },
+        "software": {
+          "cuda_driver": [
+            13,
+            3
+          ],
+          "cuda_toolkit": [
+            13,
+            4
+          ],
+          "kernel_cache": "as found; process construction excluded",
+          "numpy": "2.5.4",
+          "os": "Linux",
+          "os_release": "7.0.0-38-generic",
+          "python": "3.12.13",
+          "trackgen": "0.3.0rc3",
+          "warp": "1.18.0"
+        },
+        "started_at_utc": "2026-10-26T10:15:31.344322+00:00",
+        "status": "ok",
+        "summary": {
+          "attempted_count": 20480,
+          "attempted_tracks_per_second": 887539.1134439642,
+          "batch_size": 4096,
+          "max_ms": 4.632991790771484,
+          "median_ms": 4.6150078773498535,
+          "metric": "device_ms",
+          "microseconds_per_attempted_track": 1.1267109075561166,
+          "min_ms": 4.3824639320373535,
+          "sample_count": 5
+        }
+      }
+    }
+  },
+  "raw_record_sha256": {
+    "mac_cpu": {
+      "bezier": "a526e45b33189253daad07897e553925920d21979cb9e176f9415ec23d8ca0f4",
+      "checkpoint": "2c5b70ff78320f904781aa5d8398fc1c09757e35b9d04632abdf9b417baaa178",
+      "hull": "ff335c34bd401129f2f27fe5a6f80e36b5529fc883f26db90595b4dccd20c57a",
+      "polar": "37c998220416781427830100180a33e720b1142f6c90560b571a5f769fa45c24",
+      "repulsive": "b075a656c9b945c5e6a01ebc0718ccacb8915b842c36f82443441d4a1b06f96d",
+      "voronoi": "3b976ed5a34e115c08a39fdf97e233bdddfcd44421b9810681e8dedbd1608bda"
+    },
+    "spark_gb10": {
+      "bezier": "5f797bf76109ad5d1fc715b6b1395a2c903a2fcfc898338e9546534b72b65f39",
+      "checkpoint": "1ead2602a25d49f3fa1fcf0c82255a6a8c4e97de627385aeaf044c7447efa2e3",
+      "hull": "ef6dc38c4a6d7bd490d35718685bd4e60734103e58829be18ac98e0d392189c6",
+      "polar": "9ef74ccd35603ca2a8d45d103b4283ab572c11fa1c2d83b34f9a220674675c9d",
+      "repulsive": "e353cb748f94974d416f2cd70605d9c4b793c650c9856be806b00a4ea6c40cd0",
+      "voronoi": "987af684d52b802236ab12d28016477afbe5bfb1f2bd04432b1a6f28aff60de5"
+    },
+    "workstation_rtx5090": {
+      "bezier": "e88af73c9d08f4a560f2a8d008f9c97be5755e5b2c86a11002a449b423094dc4",
+      "checkpoint": "ce327b50f07955c1748f687cc2ec5397460cd33b4830c6da777f1ebfd959742b",
+      "hull": "00b6de7a655e23afa0a83d2e4a9a8ac0eeae478e3bf7847025ec222b11a059c0",
+      "polar": "46d19efe705c88554794cd240e72db857657cd0f2d1509e0ad7e04abf6429a57",
+      "repulsive": "45c78697c2c10be97de5035f3e4e49dc434b4376bad781b765c1792db9a6f799",
+      "voronoi": "ab63165639f25703559b485030a657d60cb1e0c79737675c6fc5c05dc7247348"
+    }
+  },
+  "schema_version": 2,
+  "scope": "generator_only",
+  "supplemental_hardware": {
+    "collected_at_utc": "2026-10-26T10:23:04.040021+00:00",
+    "metadata_sources": {
+      "nvidia_smi": "Queried before and after production; installed driver versions matched.",
+      "record_hardware_gpu_memory_bytes": "CUDA-visible total memory returned by Warp; distinct from NVIDIA-SMI memory reporting.",
+      "record_software_cuda_driver": "CUDA driver API compatibility version returned by Warp; not the installed NVIDIA driver package version."
+    },
+    "nvidia_smi": {
+      "spark_gb10": {
+        "installed_driver_version": "580.159.03",
+        "name": "NVIDIA GB10",
+        "reported_total_memory_mib": null
+      },
+      "workstation_rtx5090": {
+        "installed_driver_version": "610.57.04",
+        "name": "NVIDIA GeForce RTX 5090",
+        "reported_total_memory_mib": 32607
+      }
+    }
+  }
+}

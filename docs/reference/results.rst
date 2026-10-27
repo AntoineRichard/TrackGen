@@ -36,8 +36,10 @@ Tracks and gate sequences
    the bit table is :data:`~track_gen.pipeline.BUILTIN_FAIL_BITS` plus the pipeline's
    plugin checks (see :ref:`pipeline-fail-bits`). ``half_width`` is the band's per-point
    half-width, and ``attributes`` the per-point attributes the pipeline exports (see
-   :ref:`pipeline-attributes`). ``layout`` is ``None`` on a ``Track`` built by hand
-   (:ref:`results-layout`).
+   :ref:`pipeline-attributes`). All arrays and ``layout`` are required, including
+   ``truncated``, ``generation``, ``fail_mask`` and ``half_width``; explicit ``None``
+   raises ``ValueError``. Use ``Track.alloc(Layout(...))`` for manual storage
+   (:ref:`results-layout`). Metadata mappings default empty.
 
 .. autoclass:: track_gen.results.GateSequence
    :no-members:
@@ -54,9 +56,13 @@ Tracks and gate sequences
 
    ``fail_mask`` and ``fail_bits`` say why an env is invalid: the bit table is
    :data:`~track_gen.pipeline.GATE_FAIL_BITS` plus the pipeline's plugin checks (see
-   :ref:`pipeline-gate-fail-bits`). ``fail_mask`` is ``None`` on a ``GateSequence`` built
-   elsewhere; when it is set, ``valid[e] == (fail_mask[e] == 0)``. ``attributes`` holds
+   :ref:`pipeline-gate-fail-bits`). All arrays and ``layout`` are required, including
+   ``generation`` and ``fail_mask``; explicit ``None`` raises ``ValueError``.
+   A generated sequence has ``valid[e] == (fail_mask[e] == 0)``. ``attributes`` holds
    the per-gate attributes the pipeline exports (see :ref:`pipeline-gate-plugin-channels`).
+
+Centerline retains optional ``generation`` and layout inference. Capability sources
+also retain inference from the members a consumer reads (:ref:`results-check-source`).
 
 .. autoclass:: track_gen.results.Centerline
    :no-members:

@@ -1,5 +1,10 @@
 # TrackGen
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/_static/media-dark/trackgen-circuit-wordmark.svg">
+  <img src="docs/_static/brand/trackgen-circuit-wordmark.svg" alt="TrackGen" width="420" height="96">
+</picture>
+
 **GPU-batched race tracks, gate courses, and the runtime signals to race
 them — pure [NVIDIA Warp](https://github.com/NVIDIA/warp), CUDA-graph
 native.**
@@ -10,8 +15,9 @@ native.**
 ![Warp](https://img.shields.io/badge/warp--lang-%E2%89%A5%201.18-76b900)
 
 > [!NOTE]
-> **Coming from 0.1?** Read [Upgrading from 0.1](https://antoinerichard.github.io/TrackGen/upgrading/from-0.1.html):
-> most 0.1 code keeps running, but some results change without an error.
+> **These examples target the `v0.3.0rc3` release candidate.**
+> Check `valid` and `fail_mask` before using generated geometry. Invalid rows
+> are poisoned by default.
 
 Given a batch of per-environment seeds, TrackGen generates `E` closed-loop
 tracks (or gate sequences) in parallel — and then keeps working at sim
@@ -23,7 +29,10 @@ seeds[E] ─► generator ─► resample ─► XPBD relax ─► road band ─
             bezier · checkpoint · hull · polar · voronoi · repulsive     valid[E]   checkpoints · progress · collision
 ```
 
-![Representative centerline outputs by generator](docs/assets/readme-generator-strip.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/_static/media-dark/generators-gallery.png">
+  <img src="docs/assets/racing/generators-gallery.png" alt="Current finished roads and centerlines from all six generators, with selected valid examples and equal coordinate scale.">
+</picture>
 
 ## What's in the box
 
@@ -33,7 +42,7 @@ seeds[E] ─► generator ─► resample ─► XPBD relax ─► road band ─
 | **Pipelines as data** | Each generator runs a pipeline of stages described by a spec: start from a preset, swap or add stages, save and reload it | [Generating](https://antoinerichard.github.io/TrackGen/user-guide/generating.html) |
 | **Relaxation & inflation** | XPBD-relaxed centerlines inflated into constant-width road bands — index-aligned outer/center/inner borders with tangent/normal frames | [How it works](https://antoinerichard.github.io/TrackGen/how-it-works/inflation.html) |
 | **Gate sequences** | Batched gate courses with gate poses and collision-solved spacing | [Tutorial](https://antoinerichard.github.io/TrackGen/tutorials/gate-sequences.html) |
-| **Checked results** | Every env is checked (self-crossings, thickness, truncation, ...): `valid[e]` and fail bits on every result | [Invalid envs](https://antoinerichard.github.io/TrackGen/user-guide/results.html#invalid-envs) |
+| **Checked results** | Every env is checked (self-crossings, thickness, truncation, ...): `valid[e]` and fail bits on every result | [Invalid envs](https://antoinerichard.github.io/TrackGen/reference/result-contracts.html#invalid-envs) |
 | **Out-of-bounds collision** | Oriented boxes vs the drivable band — exact segment scan or baked SDF — plus disc obstacles (gate posts, cones) | [Collision](https://antoinerichard.github.io/TrackGen/utilities/collision.html) |
 | **Boundary props** | Cone lines and wall pieces along any boundary, seam-free, for instanced rendering | [Props](https://antoinerichard.github.io/TrackGen/utilities/props.html) |
 | **Checkpoints & progress** | Ordered goals from gates *or* subsampled centerlines; pass/lap events and `dist_to_next` rewards | [Progress](https://antoinerichard.github.io/TrackGen/utilities/progress.html) |
@@ -41,7 +50,10 @@ seeds[E] ─► generator ─► resample ─► XPBD relax ─► road band ─
 | **The Course** | One object: `Course.track(...)` → `bind()` → `step()` / `reset(mask)` / `regenerate(mask=...)`, recordable into your CUDA graph | [Courses](https://antoinerichard.github.io/TrackGen/utilities/course.html) |
 | **Plugins** | Your own generators, stages and runtime components, found through an entry point and checked by a conformance kit | [Extending](https://antoinerichard.github.io/TrackGen/contributing/writing-a-generator.html) |
 
-![Runtime utilities on one generated track](docs/assets/utilities-overview.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/_static/media-dark/utilities-overview.png">
+  <img src="docs/assets/utilities-overview.png" alt="Runtime utilities on one generated track.">
+</picture>
 
 ## Install
 
@@ -50,12 +62,12 @@ Python ≥ 3.10; `numpy` and `warp-lang` ≥ 1.18 are the only runtime deps. The
 wheels); the `cpu` device runs anywhere.
 
 ```bash
-uv add "git+https://github.com/AntoineRichard/TrackGen.git@v0.2.0"                    # a release (recommended)
-pip install "track_gen @ git+https://github.com/AntoineRichard/TrackGen.git@v0.2.0"   # or with pip
-uv add "git+https://github.com/AntoineRichard/TrackGen.git@main"                      # or the latest main
+uv add "git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc3"                     # the release candidate
+pip install "track_gen @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc3"    # or with pip
+uv add "track_gen[ui] @ git+https://github.com/AntoineRichard/TrackGen.git@v0.3.0rc3"      # with the UI extra
 ```
 
-From a checkout: `uv venv --python 3.12 && uv pip install -e ".[dev]"`.
+From a checkout of `v0.3.0rc3`: `uv venv --python 3.12 && uv pip install -e ".[dev]"`.
 Extras: `dev` (tests, torch, matplotlib) · `ui` (Gradio parameter explorer)
 · `docs` (Sphinx). Details:
 [installation](https://antoinerichard.github.io/TrackGen/getting-started/installation.html).
@@ -75,6 +87,13 @@ track = gen.generate()                       # a Track: flat [E * N_max] vec3f p
 center = track.center.numpy().reshape(E, -1, 3)   # count[e] real points per env, then NaN
 valid = track.valid.numpy()                  # [E]: 0 for an env that failed a check
 ```
+
+Invalid envs have `count=0` and NaN geometry by default. Check `valid` before using
+points; set `on_invalid="keep"` explicitly on a preset or config to inspect failed
+geometry. Configs are frozen values: use `dataclasses.replace` for static changes
+and `gen.params` for dynamic curricula. `TrackGenConfig.spacing=None` stays
+automatic; read `cfg.resolved_spacing` for the numeric step. Replacing
+`half_width` updates automatic spacing, while explicit spacing stays fixed.
 
 …or let one object run the sim-time side — checkpoints, progress,
 out-of-bounds checks, per-env regeneration:
@@ -104,7 +123,7 @@ if done.any():                               # a host read: only when an episode
 An env whose course failed a check (`valid[e] == 0`) reads `oob = 1` and
 frozen progress: gate rewards and observations on `res.valid` and give it a
 new course
-([invalid envs](https://antoinerichard.github.io/TrackGen/user-guide/results.html#invalid-envs)).
+([invalid envs](https://antoinerichard.github.io/TrackGen/reference/result-contracts.html#invalid-envs)).
 On the `cpu` device (or with a generator that has a step that runs on the
 host), `regenerate(mask=...)` runs a full generation even with an all-zero
 mask, hence the `if`. On `cuda` it replays the course's own CUDA graph, which
@@ -121,7 +140,7 @@ More: [quickstart](https://antoinerichard.github.io/TrackGen/getting-started/qui
 | | |
 |---|---|
 | [Getting started](https://antoinerichard.github.io/TrackGen/getting-started/quickstart.html) | install, quickstart, concepts and terms, parameter explorer |
-| [Upgrading from 0.1](https://antoinerichard.github.io/TrackGen/upgrading/from-0.1.html) | what changed, what to check, how to port |
+| [Release notes](CHANGELOG.md) | candidate changes and retained migration records |
 | [Generating tracks and gates](https://antoinerichard.github.io/TrackGen/user-guide/generating.html) | presets, specs, params, seeds; [results](https://antoinerichard.github.io/TrackGen/user-guide/results.html); [curricula](https://antoinerichard.github.io/TrackGen/user-guide/curricula.html); [choosing a generator](https://antoinerichard.github.io/TrackGen/tutorials/choosing-a-generator.html) |
 | [Generators](https://antoinerichard.github.io/TrackGen/generators/overview.html) | the six families, quality benchmarks |
 | [Courses, simulators and RL](https://antoinerichard.github.io/TrackGen/utilities/course.html) | courses, [CUDA graphs in a sim](https://antoinerichard.github.io/TrackGen/tutorials/cuda-graph-in-a-sim.html), [RL auto-reset](https://antoinerichard.github.io/TrackGen/user-guide/rl-auto-reset.html), [runtime utilities](https://antoinerichard.github.io/TrackGen/utilities/overview.html) |

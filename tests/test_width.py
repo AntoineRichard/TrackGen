@@ -230,13 +230,14 @@ def _assert_band(track, label):
 
 
 def test_track_half_width_is_the_band_at_constant_and_variable_width():
-    const = _gen(_track(half_width=0.09))._track
+    const = _gen(_track(half_width=0.09, on_invalid="keep"))._track
     count = const.count.numpy()
+    assert (count > 0).all()
     hw = _rows(const.half_width)
     for e in range(E):
         np.testing.assert_array_equal(hw[e, :count[e]], np.float32(0.09))
     _assert_band(const, "constant")
-    gen = _gen(_track(width="acme.wave"))
+    gen = _gen(_track(width="acme.wave", on_invalid="keep"))
     var = gen._track
     _assert_band(var, "variable")
     w = _rows(gen.program.tap("cl.half_width"))
@@ -549,96 +550,14 @@ def test_dev3_specs_get_targeted_messages():
 # The track_gen.pipeline/1 migration
 # ---------------------------------------------------------------------------------------
 
-def _v1(spec, half_width) -> dict:
-    """``spec`` as format /1 wrote it (0.2.0.dev3, and v2 before PR13a for the
-    relaxed_stations gate specs of PR11): the width stage after the uniform
-    resample (when there is one), half_width in relax.xpbd / offset / validity params,
-    and no width stage in a relaxed_stations gate spec."""
-    d = json.loads(json.dumps(spec.to_dict()))
-    d["format"] = "track_gen.pipeline/1"
-    stages = d["stages"]
-    widths = [s for s in stages if s["kind"] == "width"]
-    rest = [s for s in stages if s["kind"] != "width"]
-    kinds = [s["kind"] for s in rest]
-    if "frames" in kinds:                       # a track: width after the uniform
-        rest.insert(kinds.index("frames"), widths[0])
-    for s in rest:
-        if (s["kind"], s["name"]) in (("relax", "xpbd"), ("offset", "default"),
-                                      ("validity", "default")):
-            s["params"] = {**(s["params"] or {}), "half_width": half_width}
-    d["stages"] = rest
-    return d
 
 
-@pytest.mark.parametrize("make", [
-    lambda: _track(half_width=0.09),
-    lambda: _track(relax=None),
-    lambda: presets.gates(num_envs=4, device=DEV, generator="bezier",
-                          source="relaxed_stations", gates=10, half_width=0.09),
-], ids=["default", "relax-less", "relaxed_stations"])
-def test_a_dev3_spec_migrates_and_builds_the_same_outputs(make):
-    spec = make()
-    hw = 0.09 if any(r.kind == "width" and dict(r.params or {}).get("half_width") == 0.09
-                     for r in spec.stages) else 0.1
-    old = _v1(spec, hw)
-    with pytest.warns(DeprecationWarning, match=r"track_gen.pipeline/1 \(0.2.0.dev3\) "
-                                                r"migrated to track_gen.pipeline/2"):
-        back = PipelineSpec.from_dict(old)
-    assert back.ids == spec.ids
-    assert back.to_dict()["format"] == "track_gen.pipeline/2"
-    n = spec.batch.num_envs
-    a = build(spec, seeds=PerEnvSeededRNG(seeds=5, num_envs=n, device=DEV)).run(sync=True)
-    b = build(back, seeds=PerEnvSeededRNG(seeds=5, num_envs=n, device=DEV)).run(sync=True)
-    fields = ("center", "outer", "valid", "count", "fail_mask") if spec.batch.max_gates \
-        is None else ("position", "tangent", "valid", "count", "fail_mask")
-    for f in fields:
-        assert _bytes(getattr(a, f)) == _bytes(getattr(b, f)), f
 
 
-def test_a_dev3_spec_with_disagreeing_half_widths_is_refused():
-    old = _v1(_track(), 0.1)
-    for s in old["stages"]:
-        if s["kind"] == "validity":
-            s["params"]["half_width"] = 0.2
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        with pytest.raises(ValueError, match=r"stage 'validity' \(validity.default\) sets "
-                                             r"half_width=0.2 but the width is 0.1"):
-            PipelineSpec.from_dict(old)
-    with pytest.raises(ValueError, match="unsupported pipeline format 'x'"):
-        PipelineSpec.from_dict({**old, "format": "x"})
 
 
-def test_a_dev3_spec_with_a_plugin_width_migrates_with_an_output_warning():
-    """A dev3 dict whose width stage is a plugin migrates (the stage moves before relax)
-    but its outputs change: the warning says so, naming the stage."""
-    spec = _track(width=("acme.wave", {"hw_mean": 0.1, "hw_amp": 0.02}))
-    old = _v1(spec, 0.1)
-    with pytest.warns(DeprecationWarning, match=r"the width stage\(s\) \['width.acme.wave'\] "
-                                                r"now run before relax .* the outputs differ "
-                                                r"from 0.2.0.dev3"):
-        back = PipelineSpec.from_dict(old)
-    assert back.ids == spec.ids
-    build(back, seeds=1)
-    # width.constant: no output warning
-    with pytest.warns(DeprecationWarning) as rec:
-        PipelineSpec.from_dict(_v1(_track(), 0.1))
-    assert all("outputs differ" not in str(w.message) for w in rec)
 
 
-def test_a_dev3_width_after_frames_is_refused_by_the_migration():
-    """dev3 documented a width stage reading cl.kappa after frames; with relax.xpbd and no
-    width before it the migration cannot place a width.constant without a second writer
-    of cl.half_width, so it names the stage."""
-    old = _v1(_track(width=("acme.wave", {"hw_mean": 0.1, "hw_amp": 0.02})), 0.1)
-    stages = old["stages"]
-    w = next(s for s in stages if s["kind"] == "width")
-    stages.remove(w)
-    stages.insert([s["kind"] for s in stages].index("frames") + 1, w)
-    with pytest.raises(ValueError, match=r"width stage 'width' \(width.acme.wave\) runs "
-                                         r"after frames; .* make 'width' a rewrite of "
-                                         r"cl.half_width"):
-        PipelineSpec.from_dict(old)
 
 
 # ---------------------------------------------------------------------------------------
@@ -659,13 +578,13 @@ def test_legacy_offset_and_inflate_without_hw_out_allocate_nothing():
     p = gen.program
     center, count = p.tap("cl.xy", after="relax"), p.tap("cl.count")
     ctx = LaunchContext.for_call(DEV)
-    warp_pipeline.inflate_warp(center, gen._config, out=out, valid=p.tap("gen.valid"),
+    warp_pipeline._inflate_warp(center, gen._config, out=out, valid=p.tap("gen.valid"),
                                count=count, scratch=scratch, seeds=gen._seed_buf,
                                truncated=out.truncated, ctx=ctx)
     with no_allocation():
         warp_pipeline.offset(stag.ctr2, stag.nrm2, 0.1, stag.out2, stag.inn2, stag.area_a,
                              stag.area_b, count, ctx=ctx)
-        warp_pipeline.inflate_warp(center, gen._config, out=out, valid=p.tap("gen.valid"),
+        warp_pipeline._inflate_warp(center, gen._config, out=out, valid=p.tap("gen.valid"),
                                    count=count, scratch=scratch, seeds=gen._seed_buf,
                                    truncated=out.truncated, ctx=ctx)
     # The PR9 composition binds the offset's half-width as its Track's.

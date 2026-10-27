@@ -7,7 +7,7 @@ generator's capacity), ``"cl"`` is ``[E * N_max]``, ``"anchors"`` is ``[E * A]``
 the ``capacity()["gates"]`` of the stage that writes the anchors: a gate generator or a
 ``stations`` stage) and ``"gates"`` is ``[E * max_gates]`` (``BatchSpec.max_gates``).
 ``interp`` records how a per-point
-channel is carried through a resample (roadmap PR13a: ``raw.z`` / ``raw.half_width``
+channel is carried through a resample (``raw.z`` / ``raw.half_width``
 and the generators' ``raw.<package>.<name>`` attributes are carried to the centerline,
 see :data:`CARRIED_CATALOGUE`). Besides these channels, a plugin may read and write its
 own namespaced channels ``<domain>.<package>.<name>`` (:data:`PLUGIN_CHANNEL`; the
@@ -28,6 +28,8 @@ from types import MappingProxyType
 from typing import Mapping
 
 import warp as wp
+
+from .._src.repulsive_clearance import RepulsiveBarriers
 
 __all__ = ["BUILTIN_FAIL_BITS", "CARRIED_CATALOGUE", "CHANNELS", "Channel", "DOMAINS",
            "ELEVATION_GATE_CHANNELS", "FAIL", "GATE_FAIL_BITS", "INTERPS", "PERS",
@@ -107,6 +109,8 @@ CHANNELS: Mapping[str, Channel] = MappingProxyType({
                                             "generator provides (carried to "
                                             "cl.half_width).", "linear"),
     "gen.valid": _c("env", wp.int32, "The generator's per-env flag (0/1)."),
+    "gen.repulsive.barriers": _c("env", RepulsiveBarriers,
+                                  "Private analytic Repulsive barriers and output transform."),
     "cl.xy": _c("cl", wp.vec2f, "The centerline (constant-spacing, relaxed, uniform)."),
     "cl.count": _c("env", wp.int32, "Real points per env; NaN padding after."),
     "cl.truncated": _c("env", wp.int32, "1 where N_max cut the loop."),

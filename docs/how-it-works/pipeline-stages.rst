@@ -11,8 +11,7 @@ describes that machinery for tracks: the stage kinds, how ``build()`` plans a sp
 commit, per-point attributes, taps and the :ref:`parameter latch <pipeline-latch>`.
 :ref:`generating` shows the user-facing side (presets, specs, Params); :ref:`gate-pipeline`
 lists what differs for gates; :doc:`cuda-graph` covers how a Program is recorded and
-replayed. Code written against an earlier development release of the pipeline API:
-:ref:`upgrading-preview` lists what changed.
+replayed.
 
 .. _pipeline-stage-kinds:
 
@@ -116,9 +115,9 @@ checks the spec before it allocates or launches anything, then allocates once:
    ``config.generator``. The other stages come from TrackGen's built-in catalogue.
 3. **Params.** Each stage's params are coerced to its :term:`Params` class and validated (the
    built-ins with the messages ``TrackGenConfig`` / ``GateGenConfig`` use for the same
-   fields). Every stage that has a ``half_width``, ``gate_width`` or ``gate_radius``
-   field must agree on its value (for ``gate_width``, a dynamic per-env field of
-   ``gate_frames.default``, on its initial value): for ``half_width``
+   fields). Stages with a shared ``half_width`` or ``gate_radius`` must agree on its
+   value. Bar width is owned by the dynamic ``gate_frames.default.gate_width`` field;
+   gate validity reads the resulting bars rather than a duplicate setting. For ``half_width``
    that binds ``width.constant`` and
    the plugin stages that keep such a field (the nominal width; the per-point width is
    ``cl.half_width``). In a gate pipeline each stage's ``Layout`` is derived from its
@@ -141,7 +140,7 @@ checks the spec before it allocates or launches anything, then allocates once:
    (:ref:`Planner rules for gate pipelines <pipeline-gate-plan-rules>`). Each randomizer is checked against its target
    (:ref:`Per-env draws <pipeline-randomize>`).
 5. **Capture class and segments.** Each stage's capture class comes from its
-   ``capture_class(params)`` (a legacy ``GeneratorSpec`` / ``GateGeneratorSpec``:
+   ``capture_class(params)`` (a ``GeneratorSpec``:
    ``STATIC``, or ``HOST`` with ``capturable=False``). The Program's is the highest
    (``STATIC`` < ``BOUNDED`` < ``HOST``), and the stages are grouped into segments of
    equal host-ness (see `Capture classes and segments`_). With
@@ -198,9 +197,7 @@ That covers the built-ins and Stage generators. A ``GeneratorSpec`` plugin that 
 config fields outside its Params class needs ``TrackGenerator`` with a config. A gate
 generator is bound the same way from a ``GateGenConfig`` derived from the spec
 (``num_envs``, ``device``, ``max_gates``, ``scale``, its params, and ``min_gates``,
-``gate_ordering`` and the gate scalars from the stages that hold them); a legacy
-``GateGeneratorSpec`` that reads other config fields needs ``GateGenerator`` with a
-config.
+``gate_ordering`` and the gate scalars from the stages that hold them).
 
 ``build`` accepts both kinds of spec: the ``Program`` it returns has a ``Track`` or a
 ``GateSequence`` as its ``result``.
@@ -256,8 +253,7 @@ The ``Program``
   ``host_stage_ids`` and ``segments`` (see `Capture classes and segments`_).
 - ``prepared`` (whether the warm-up has run), ``device``, ``default_stream`` (the stream
   a call runs on when it passes no ``stream=`` and no ambient scope applies), ``runner``
-  (its ``GraphRunner``) and ``legacy_stream`` (``True`` for a generator on the legacy
-  plugin ABI, which launches on Warp's current stream: :ref:`cuda-graph-host`).
+  (its ``GraphRunner``).
 
 .. _pipeline-segments:
 
@@ -278,7 +274,7 @@ body. ``Program.segments`` is a tuple of ``Segment`` (``track_gen.pipeline.Segme
 - ``stage_ids``, its slot ids in pipeline order;
 - ``host``, ``True`` for a ``HOST`` segment.
 
-A legacy ``GeneratorSpec(capturable=False)`` gives ``(HOST: generator) + (STATIC: the
+A ``GeneratorSpec(capturable=False)`` gives ``(HOST: generator) + (STATIC: the
 rest)``; a ``HOST`` relax stage between capturable stages gives three segments. Outside a
 capture on ``cuda`` the Program records every capturable segment into a graph of its own
 and runs the ``HOST`` ones eagerly between the graph launches (:ref:`cuda-graph-host`).
@@ -303,11 +299,7 @@ run the ``HOST`` segments eagerly.
 - Mixing ``advance`` / ``mask`` between the segments of a generation, running them out
   of order, or skipping one is not checked (a replayed segment runs no Python, so the
   Program cannot see its arguments) and leaves the output undefined.
-- A legacy-ABI generator (``Program.legacy_stream``) lives in segment ``0`` and launches
-  on Warp's current stream: when ``ctx``'s stream is another one, ``enqueue`` and
-  ``enqueue_segment(0, ...)`` raise ``LegacyPluginStreamError`` if ``ctx`` is capturing,
-  and otherwise run on the current stream, ordered after and before ``ctx``'s stream with
-  events.
+
 
 The checks run on the host before any launch, in this order: ``run`` validates ``mask``
 and ``advance`` (``ValueError``; ``enqueue`` and ``enqueue_segment`` leave that to their
@@ -329,7 +321,7 @@ before anything is allocated:
    #   flow, so they run eagerly and refuse a caller's capture): use STATIC / BOUNDED
    #   stages or drop require_caller_capturable
 
-A legacy ``GeneratorSpec(capturable=False)`` is named ``'generator' (generator 'acme.old',
+A ``GeneratorSpec(capturable=False)`` is named ``'generator' (generator 'acme.old',
 GeneratorSpec capturable=False)``.
 
 Channels
@@ -1000,9 +992,15 @@ check, else derived by the commit.
    * - 7
      - ``truncation``
      - ``N_max`` cut the loop (``Track.truncated``)
-   * - 8-15
+   * - 8
+     - ``repulsive_disc``
+     - Repulsive programs only: the finished band fails sampled-disc clearance
+   * - 9
+     - ``repulsive_wall``
+     - Repulsive programs only: the finished band leaves the circular domain
+   * - 10-15
      - reserved
-     - TrackGen's future built-in checks
+     - Reserved built-in check range
    * - 16-30
      - plugin checks
      - assigned by ``StageBuilder.fail_bit()``, in pipeline order
@@ -1014,7 +1012,11 @@ check, else derived by the commit.
 which also writes its own 0/1 flag ``track.valid``. An env with ``count == 0`` gets bit 1
 plus bits 0 and 7 when they apply. ``track_gen.pipeline.BUILTIN_FAIL_BITS`` is the
 name-to-bit table above (a read-only mapping); a name is listed even when its check is
-off (bits 5 and 6), and is then never set.
+off (bits 5 and 6), and is then never set. Repulsive programs additionally
+reserve names for bits 8 and 9 in ``Program.fail_bits`` and ``Track.fail_bits``;
+the generic ``BUILTIN_FAIL_BITS`` mapping stays at bits 0–7. Its mandatory
+post-tail check covers each road cell's convex hull and full wall containment
+(:ref:`geometry-validity`). Other programs do not add these two failure reasons.
 
 A validity plugin calls ``b.fail_bit(name=None)`` in its ``build`` for each independent
 check it runs and gets bits 16, 17, ... in pipeline order; the name (default: the stage
@@ -1035,9 +1037,10 @@ TrackGen's own checks.
    track = gen.generate()
    too_curvy = (track.fail_mask.numpy() >> 16) & 1
 
-``Track.fail_mask`` is ``None`` and ``Track.fail_bits`` empty on a ``Track`` built
-elsewhere (the standalone ``inflate_warp`` path, for example). When ``fail_mask`` is set,
-``valid[e] == (fail_mask[e] == 0)`` for every env.
+``Track.fail_mask`` is a required array. A generated Track has
+``valid[e] == (fail_mask[e] == 0)`` for every env. Manually allocated storage begins
+with zero count, validity and fail mask, and an empty ``fail_bits`` mapping; the
+mapping is populated when a pipeline writes it.
 
 .. _pipeline-commit:
 
@@ -1090,9 +1093,9 @@ what the commit does with an :term:`invalid env`, one whose ``fail_mask`` is not
 
    * - value
      - an invalid env leaves the commit with
-   * - ``"keep"`` (default)
+   * - ``"keep"`` (explicit opt-in)
      - its computed geometry, and ``valid = 0``.
-   * - ``"poison"``
+   * - ``"poison"`` (default)
      - ``count = 0``; ``outer``, ``center``, ``inner``, ``tangent``, ``normal`` all
        ``(NaN, NaN, NaN)`` and ``arclen`` and ``half_width`` NaN on every slot; every
        attribute its padding (NaN, or ``-1`` for ``int32``) on every slot;
@@ -1108,8 +1111,8 @@ that env ``TrackLocalizer`` returns a NaN ``s`` and ``segment = -1``,
 under both policies, and a masked generation poisons only
 the masked envs (the others are restored). The utilities answer an
 invalid env the same way under both policies (:ref:`utilities-invalid-envs`); keep gating
-rewards and observations on ``valid``. ``"poison"`` is planned to become the default at
-1.0.
+rewards and observations on ``valid``. Poison is the default for configs, presets,
+``BatchSpec`` and missing policies in saved ``/2`` batches.
 
 **Cost.** The commit launches only when it has work to do:
 
@@ -1119,12 +1122,11 @@ rewards and observations on ``valid``. ``"poison"`` is planned to become the def
 
    * - generation
      - launches added
-   * - unmasked, ``on_invalid="keep"``, ``validity.default`` the last check (the
-       default pipelines)
-     - none (156 launches for a default ``bezier`` generation, the four latches of
+   * - unmasked, explicit ``on_invalid="keep"``, ``validity.default`` the last check
+     - none (156 launches for a default ``bezier`` generation with explicit keep, the four latches of
        ``min_num_points``, ``rad``, ``handle_clamp_frac`` and ``size`` included:
        `Parameter latch`_)
-   * - unmasked, with a check after ``validity.default``
+   * - unmasked, explicit keep, with a check after ``validity.default``
      - one (``valid`` derived, ``E`` threads)
    * - unmasked, ``on_invalid="poison"``
      - one (the commit, ``E * N_max`` threads)
@@ -1141,9 +1143,9 @@ per env: about 107 MB at ``E = 4096``, ``N_max = 384``, allocated once at build 
 every Program, whether or not it ever runs a masked generation. The ``Track`` and every
 working buffer keep their addresses forever.
 
-``Program.on_invalid`` reports the policy. ``TrackGenConfig`` has no ``on_invalid``
-field: build the spec with ``presets.track(..., on_invalid="poison")``, or edit a spec's
-batch (both are frozen dataclasses):
+``Program.on_invalid`` reports the policy. Both config classes expose
+``on_invalid="poison"``. Set it to ``"keep"`` explicitly for failed-geometry diagnostics,
+or replace a spec's frozen batch:
 
 .. code-block:: python
 
@@ -1152,10 +1154,11 @@ batch (both are frozen dataclasses):
    from track_gen import TrackGenConfig
    from track_gen.pipeline import legacy
 
-   config = TrackGenConfig(num_envs=64, device="cpu")
+   config = TrackGenConfig(num_envs=64, device="cpu", on_invalid="keep")
    spec = legacy.to_pipeline_spec(config)
    spec = dataclasses.replace(spec, batch=dataclasses.replace(spec.batch,
                                                               on_invalid="poison"))
+   assert config.on_invalid == "keep" and spec.batch.on_invalid == "poison"
 
 .. _pipeline-attributes:
 
@@ -1165,8 +1168,9 @@ Per-point attributes in the result
 ``Track.half_width`` is the band's half-width per point, ``[E * N_max]`` ``float32``:
 the value on the real points, NaN on the padding (the constant on every real point at
 constant width). It is ``offset.default``'s ``track.half_width``, so the band and the
-field agree: ``|outer - center| == half_width`` on every real point. It is ``None`` on a
-``Track`` built by hand.
+field agree: ``|outer - center| == half_width`` on every real point. It is required
+on manually built Tracks too; a pipeline with no road offset keeps an allocated
+NaN half-width array where no width is available.
 
 ``Track.attributes`` maps a key to the final version of each per-point plugin channel
 exported with ``export=``; the key is the channel's name without its domain prefix:
@@ -1287,8 +1291,7 @@ declares ``per="env"`` is latched the same way. Three consequences:
   and segments`_).
 
 A *drawn* field does not go through the latch: the stage that draws it (a
-``randomize.uniform`` stage, or ``bezier``'s deprecated ``style_sampling`` for a knob with
-a range) writes the one array the target reads, during the generation. So the runtime
+``randomize.uniform`` stage) writes the one array the target reads, during the generation. So the runtime
 arrays come in two kinds:
 
 .. list-table::
@@ -1310,7 +1313,7 @@ arrays come in two kinds:
 
 ``Program.input_info`` (``gen.input_info``) says which inputs are latched, and
 ``StageParams.drawn`` (``gen.params[stage].drawn``) maps each drawn field to the id of the
-stage that draws it (the stage's own id for a ``style_sampling`` draw).
+stage that draws it.
 
 **Randomizers.** ``randomize.uniform`` is a ``STATIC`` stage of a closed kind. Its Params,
 ``RandomizeUniformParams``, hold ``stage`` and ``field`` (static: the target) and ``lo``
@@ -1343,31 +1346,30 @@ bounds, narrowed per instance (``min_num_points``: ``(2, max_num_points)``, whic
 also enforces), so the value a built-in kernel used is
 ``clamp(in_effect(field), *bounds(field))``. Used as written, without a clamp:
 ``width.from_channel``'s ``scale`` / ``lo`` / ``hi`` (it clamps its output), a
-randomizer's ``lo`` / ``hi`` (it clamps its draw), and ``style_sampling``'s draws.
-``bezier`` passes its bounds to its kernel as arguments, which is how the last exception
-works. The scalar-argument kernels stay, unchanged, for the legacy entry points
-(``generate_*_warp``, ``apply_z_profile*``, the ``sample_*`` helpers).
+randomizer's ``lo`` / ``hi`` (it clamps its draw).
 
 **Size.** ``size`` multiplies where ``scale`` already acts, after it: the corner grid
 ``((x * cell_size + jitter) * scale) * size[e]``, or the normalization target
 ``target * size[e]`` before its division. Neither product feeds an addition, so a size of
 ``1`` is bit-exact on CPU and CUDA (no fused multiply-add is created or removed; a CPU
-test locks the generated CUDA source of each kernel pair). ``repulsive``'s final copy
-multiplies only finite values (``where(size == 1 or not finite, v, w * size)``, with ``w``
-the finite-gated value): a size-1 copy keeps every finite value bit for bit, and a
-non-finite point is copied unscaled at every size (a NaN bit for bit, payload included).
-Under ``style_sampling``, ``size`` composes with the ``scale_range`` draw
-(``scale[e] * size[e]``).
+test locks the generated CUDA source of each kernel pair).
 
-**Corner count.** ``_sample_counts_dyn_k`` loads env ``e``'s ``min_num_points``, clamps
+Repulsive also uses the effective size to reserve known absolute road width in
+unscaled coordinates and to place its obstacles. Its raw layout, shape and
+feasible updates can therefore change with size. Its final copy scales finite
+coordinates, and its analytic barrier metadata uses the same effective clamp in
+``[0.1, 10]``. A NaN size remains invalid. The identity behavior of the final copy
+at size 1 does not imply pure scaling of an independently generated raw curve;
+see :ref:`repulsive-dynamic`.
+
+**Corner count.** ``_sample_counts_dyn_h_k`` loads env ``e``'s ``min_num_points``, clamps
 it to ``[2, max_num_points]`` and draws the count as the scalar kernel does.
 
 **Cross-field rules.** At build, every stage whose Params class defines the private
 ``_check_draws`` hook is checked, drawn or not: crossing ``z_min`` / ``z_max``
 randomizers raise ``PlanError``; an inert elevation window, a ``rad`` drawn above its
 clamp, a ``generator.size`` range (or construction value) that would truncate the nominal
-longest loop at the pipeline's ``n_max``, and a ``generator.size`` randomizer combined
-with ``style_sampling``'s ``scale_range`` emit a ``UserWarning``. :ref:`tuning-per-env`
+longest loop at the pipeline's ``n_max`` emit a ``UserWarning``. :ref:`tuning-per-env`
 and :ref:`tuning-size` give the rules from the user's side.
 
 **Launches.** One latch launch per latched dynamic field per generation, right after the
@@ -1378,7 +1380,7 @@ per generation: its draw, and the latches of its ``lo`` and ``hi``, minus the la
 target field no longer needs. In a launch trace, each kernel that reads a knob from an
 array keeps the position, dimensions, arrays and other scalars of its scalar-argument
 twin; its knob scalars become arrays (``_assemble_dyn_k`` also takes the four bound
-scalars; ``_sample_counts_dyn_k`` and ``_finalize_frame_dyn_k`` take the array in place
+scalars; ``_sample_counts_dyn_h_k`` and ``_finalize_frame_dyn_k`` take the array in place
 of ``lo`` and ``gate_width``), the size kernels append the ``[E]`` size array, and
 ``repulsive``'s final copy is the ``_copy_sized_k`` launch.
 
@@ -1390,76 +1392,54 @@ of ``lo`` and ``gate_width``), the size kernels append the ``[E]`` size array, a
      - launches
      - of which latches
    * - default track (``bezier``, flat)
-     - 156
+     - 157
      - 4
    * - ``hull`` / ``polar`` / ``voronoi`` / ``checkpoint``
-     - 154 / 146 / 154 / 150
+     - 155 / 147 / 155 / 151
      - 3 / 3 / 3 / 4
    * - ``bezier`` + elevation ``uniform`` / ``random_walk`` / ``noise``
-     - 162 / 163 / 161
+     - 163 / 164 / 162
      - 6 / 7 / 7
    * - ``bezier`` + ``randomize={"generator.rad": (lo, hi)}``
-     - 158
+     - 159
      - 5 (and the draw)
    * - gates: ``bezier`` / ``hull`` (the default gate pipeline)
-     - 16
+     - 17
      - 2 (``size``, ``gate_width``)
    * - gates: ``polar`` / ``checkpoint`` / ``voronoi``
-     - 18 / 18 / 19
+     - 19 / 19 / 20
      - 4 (two ring knobs, ``normalize.size``, ``gate_width``)
    * - gates: ``bezier`` + elevation ``uniform`` / ``random_walk`` / ``noise``
-     - 19 / 20 / 20
+     - 20 / 21 / 21
      - 4 / 5 / 5
    * - gates: ``source="stations"`` (``bezier``, 12 gates)
-     - 32
+     - 33
      - 5 (the track generator's four, ``gate_width``)
+
+These counts include the default poison commit; explicit ``on_invalid="keep"``
+removes that launch when the default validity check is last. They were remeasured
+on the CPU pipeline.
 
 A masked generation runs the same latches as ``_latch_masked_*`` launches after the
 advance and the masked effective seed, and the hold comes right after them (index 6 of a
 default track generation, 4 of a default gate generation).
 
-Not open yet
-------------
+Current limits
+--------------
 
-What the pipeline does not do in this release:
+The pipeline supports closed loops. Capacity, buffer-shaping counts and execution
+structure are static. Only declared dynamic fields change per environment without
+rebuilding; uniform randomizers target dynamic float32 fields.
 
-- **More dynamic built-in knobs**: ``edgy``; a dynamic corner-count upper bound (the
-  corner axis only narrows toward ``max_num_points``); per-env knot, anchor, checkpoint
-  and gate counts (they size buffers). Other distributions than uniform, ``int32`` and
-  categorical draws, and a public sampler API for plugins. A ``size=`` on further public
-  ops (``ops.closed_catmull_rom``).
-- **Results and inputs**: open topology (``closed=False``) in any stage or utility, and a
-  ``closed`` argument to the kernels; ``build(inputs=)`` binding caller arrays as a
-  Program's inputs; ``declare()`` for gate generators; gate ingestion (a ``GateSequence``
-  from caller arrays); ``Track.capabilities()``; a ready-made mixed-batch producer (a
-  ``Course`` drives any object with the ``track_gen.pipeline.Producer`` surface, so a
-  mixed batch of ``out=`` views can be wrapped by hand: :ref:`producer-protocol`).
-- **Channels**: carries by plugin stations stages (a public ``StageBuilder.carried()``);
-  carried channels written by a stage rather than the generator (``interp=`` on stage
-  writes); an order that publishes its permutation, so attributes reach the gates through
-  any order; ``ops.arc_resample(tables=)``; a public constant declaration for width
-  stages; an arc-fraction attribute policy; renaming on ``export=``; per-env attributes;
-  ``GateGenConfig.spacing_metric``; an elevation on the raw loop (``"xyz"`` with
-  ``source="stations"`` needs a ``z`` provider); a dynamic ``width.constant``.
-- **Gates**: composite generators, provided attributes other than ``z`` from
-  ``stations`` (``tangent``, ``half_size``, ``roll``), ``roll`` on
-  ``gate_frames.default``, ``preferred`` hints of track generators for the gate stages
-  (they declare ``"relax"`` only), split gate checks, and a ``GateGenConfig.on_invalid``
-  field.
-- Opening ``resample``, ``frames``, ``offset`` and ``lift`` to plugins; split built-in
-  checks (``validity.turning``, ...); an aliasing in-place write form; a
-  ``TrackGenConfig.on_invalid`` field; a segmented ``Course`` (over a generator with a
-  ``HOST`` stage, ``Course.regenerate()`` runs eagerly).
+Plugin extension kinds are generator, gate generator, relaxation, width, elevation,
+validity, ordering and stations. The remaining structural stages are built in.
+Provided gate attributes require index-preserving raw order. A ``Course`` with a host
+stage regenerates eagerly rather than recording that host work into a CUDA graph.
+See :ref:`stage-capture-classes` and :ref:`generator-provides` for these contracts.
 
 Reference compositions
 ----------------------
 
-The scalar track composition (``warp_pipeline._run_pipeline``, ``inflate_warp``,
-``_inflate_warp_alloc``) stays importable: ``TrackGenerator`` does not call it, and the
-tests use it as the byte-identity reference of the default pipelines. ``gen._scratch`` is
-a view of the Program's buffers kept for the same reason; new code reads
-``gen.program.tap``. The gate pipeline has no such composition (the tests keep a frozen
-copy as its reference) and ``GateGenerator`` has no ``_scratch``: read
-``gen.program.tap``. The deprecated ``warp_gate`` helpers that legacy gate plugins call
-(``alloc_order_scratch``, ``order_points``, ``finish_ordered_gates``, ``_GateStaging``)
-stay until 1.0; the library does not call them (:ref:`plugin-abis`).
+The tests keep independent numeric reference compositions for parity checks. New
+code reads intermediate pipeline values through ``gen.program.tap``; private scratch
+views and kernels are not extension interfaces.

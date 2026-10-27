@@ -26,6 +26,12 @@ for a runtime component (see :ref:`kit-check-component`). TrackGen's own test su
 the same checks over every built-in generator and stage, so a plugin is held to the
 standard the built-ins meet. The kit's functions are listed in :ref:`reference-testing`.
 
+Generator and stage diagnostics default to explicit ``on_invalid="keep"`` so checks
+can inspect failed geometry; an explicit policy in their ``config`` override is
+honored. Component diagnostics force keep for every producer form so their own
+invalid-env checks can compare retained and poisoned cases. These diagnostic choices
+do not change the public poison default.
+
 The kit checks the contract, not the quality of the tracks: yield, shape variety and
 speed are measured by ``benchmarks/compare_generators.py`` (see
 :ref:`how-a-generator-is-judged`), and your generator's own properties need tests of
@@ -154,8 +160,7 @@ broke.
    * - ``output.count``
      - ``0 <= count[e] <= N_max`` for every env, and ``count[e] >= 3`` for valid ones.
      - As for ``output.padding``. A gate generator: a count outside its ``capacity()``
-       written into ``anchors.count`` (a legacy spec: outside ``[0, max_gates]``, into
-       ``out.count``).
+       written into ``anchors.count``.
    * - ``output.closed``
      - Each valid env's raw loop closes (the gap from its last point back to its first
        is at most 3 times its median step, or 1.5 times its longest step, so a straight
@@ -291,8 +296,8 @@ broke.
        one: ``stream=None`` (what a CPU ``LaunchContext`` passes) or a launch through a
        context other than the call's ``ctx`` is caught by ``capture.caller`` on CUDA.
      - Launching with ``wp.launch`` instead of ``ctx.launch``; ``arr.zero_()``;
-       ``out.assign(tmp)`` instead of ``ctx.copy(out, tmp)``; a legacy spec with
-       ``accepts_ctx=False`` (see :ref:`generator-streams`).
+       ``out.assign(tmp)`` instead of ``ctx.copy(out, tmp)``
+       (see :ref:`generator-streams`).
    * - ``hot_path.capture`` (CPU)
      - Two ``generate()`` calls open, end or launch no CUDA graph
        (``wp.ScopedCapture``, ``capture_begin`` / ``capture_end`` /
@@ -337,7 +342,7 @@ data: ``hot_path.topology`` and ``hot_path.buffers`` are reported as skipped ("w
 HOST stage(s) [...] run eagerly every call"). ``hot_path.host_sync`` and
 ``hot_path.allocation`` still run: the ``ctx.host()`` operations pass (counted in
 ``details["host_ops"]``), while a direct ``.numpy()``, a ``wp.synchronize*()`` or a
-per-call allocation in the stage fails. A legacy ``GeneratorSpec`` registered with
+per-call allocation in the stage fails. A ``GeneratorSpec`` registered with
 ``capturable=False`` cannot use ``ctx.host()``, so its ``hot_path.host_sync`` and
 ``hot_path.allocation`` are skipped too ("waived: capturable=False"). ``hot_path.stream``
 and ``hot_path.capture`` always apply (see :ref:`generator-capture-opt-out`). On CUDA,
@@ -425,20 +430,17 @@ Gate generators
 
 ``check_gate_generator`` takes the same arguments (``config`` holds ``GateGenConfig``
 fields) and runs the same checks on the ``GateSequence``, listed in
-``CHECKS["gate_generator"]``. It checks anchors Stages (:ref:`gate-generator-stage`) and
-legacy ``GateGeneratorSpec`` objects alike (a legacy spec emits its
-``DeprecationWarning``). The raw output is the generator's anchors, checked before
+``CHECKS["gate_generator"]``. It checks anchors Stages (:ref:`gate-generator-stage`).
+The raw output is the generator's anchors, checked before
 ``count[e]``: ``tap("anchors.xy")``, ``[E*A]`` ``wp.vec2f`` with ``A`` the generator's
-``capacity()["gates"]`` (a legacy spec: the ``[E*G]`` staging buffer, ``G`` =
-``config.max_gates``). ``output.count`` asks for ``0 <= count[e] <= max_gates`` for every
+``capacity()["gates"]``. ``output.count`` asks for ``0 <= count[e] <= max_gates`` for every
 env and ``count[e] >= min_gates`` for valid ones, and for a Stage also
 ``capacity()["min_gates"] <= anchors.count[e] <= capacity()["gates"]`` for every env;
 ``output.accepted`` (the gate pipeline accepts at least one env) replaces
 ``output.closed``. Without a ``gate_ordering`` in ``config``, the kit uses the
 generator's default order, as ``GateGenConfig(gate_ordering=None)`` does: its
 ``preferred["order"]`` when it accepts it, else ``"ccw"`` when it accepts it, else the
-first order it accepts (a legacy spec: ``"ccw"`` if supported, else the first of its
-``supported_orderings``). With the gate generator guide's ``acme.scatter``
+first order it accepts. With the gate generator guide's ``acme.scatter``
 (:ref:`writing-a-gate-generator`):
 
 .. snippet: group=gates requires=contributing/writing-a-gate-generator#scatter
@@ -475,7 +477,7 @@ the gate kinds, in the default gate pipeline of ``presets.gates``, built through
 
 With the stages of :ref:`writing-a-stage` and :ref:`writing-an-ordering` registered:
 
-.. snippet: group=stages requires=contributing/writing-a-stage#testing
+.. snippet: group=stages requires=reference/stage-contracts#testing
 
 .. code-block:: python
 

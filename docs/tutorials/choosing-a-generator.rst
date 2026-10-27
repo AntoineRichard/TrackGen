@@ -1,195 +1,134 @@
 .. _choosing-a-generator:
 
-Choosing a Centerline Generator
-===============================
+Choose a course family
+======================
 
-This is the decision guide: a few questions, and the generator they point to. The
-catalogue, :ref:`generators-overview`, has the facts per family (how each one builds its
-loops, its per-env knobs, the shared contract and the cost table); each generator has a
-deep-dive page.
+Start with ``bezier`` for corner and handle control, ``polar`` for radial/angle
+control, or ``checkpoint`` for a steered target-following shape. Add ``hull`` and
+``voronoi`` when their anchor construction gives the variation you need. Try
+``repulsive`` when folded layouts justify iterative growth during resets.
 
-TrackGen ships six procedural centerline generators and ``external``, which ingests
-centerlines you load. Select one by name in the :term:`preset`:
-``presets.track(generator="hull")``
-(``presets.gates(generator=...)`` for gates, ``TrackGenConfig.generator`` in a config).
-Every generator is deterministic in its :term:`seed` and configuration on each device, works on
-``cpu`` and ``cuda``, and can be recorded into a CUDA graph; the choice is about the
-*shape* of the tracks and, for ``repulsive``, the generation cost.
-
-.. figure:: ../assets/readme-generator-strip.png
-   :alt: One sample centerline from each of the six procedural generators: bezier,
-         checkpoint, hull, polar, voronoi and repulsive.
+.. figure:: ../assets/racing/generators-gallery.png
+   :alt: Six current finished road examples at a common coordinate scale.
    :align: center
 
-   One sample per generator, at the defaults.
+   One selected valid output per family. The individual :doc:`/generators/overview`
+   guides show raw centerlines, several seeds, controls and failure cases.
 
-What shape do you want?
------------------------
+Choose for the task
+-------------------
 
-.. list-table::
+.. list-table:: Practical starting points
    :header-rows: 1
-   :widths: 18 42 40
+   :widths: 34 28 38
 
-   * - Generator
-     - What it looks like
-     - Pick it when
-   * - ``"bezier"`` (default)
-     - Star-shaped corner families joined by smooth cubic curves: sharp hairpins and
-       long sweepers.
-     - You want general-purpose racing tracks and the widest set of knobs (corner
-       count, handle radius, edginess). The starting point for most workflows.
-   * - ``"hull"``
-     - Radial lobes, pinches and straights.
-     - You want more variety of straights and pinches than ``bezier``'s corner families.
-   * - ``"polar"``
-     - Smooth, centered, nearly convex loops.
-     - You want consistent, roundish, easy tracks (a low relaxation burden; the best
-       yield with wide gate bars).
-   * - ``"voronoi"``
-     - Compact, irregular loops shaped by a field of sites.
-     - You want layout diversity distinct from the corner families (the most compact
-       loops).
-   * - ``"checkpoint"``
-     - Organic, continuously undulating "flowing" loops, in the style of Gymnasium
-       CarRacing.
-     - You want curvy tracks with no straight-and-hairpin character.
-   * - ``"repulsive"``
-     - Dense, foldy serpentines grown around random obstacles.
-     - The shape is worth a generation that costs orders of magnitude more than the
-       others: an iterative optimizer (the cost table of :ref:`generators-overview`).
-       Regenerate rarely, or a slice of envs at a time.
-   * - ``"external"``
-     - Your own centerlines (a dataset, a learned model, a hand-drawn circuit).
-     - You have the geometry already: :ref:`ingesting-centerlines`. It ignores the seed.
+   * - Need
+     - Start with
+     - Then inspect
+   * - General-purpose closed road
+     - :doc:`/generators/bezier`
+     - Corner count, handle saturation and road width
+   * - Midpoint lobes and pinches
+     - :doc:`/generators/hull`
+     - Displacement and raw-to-final changes
+   * - A ring of explicitly jittered knots
+     - :doc:`/generators/polar`
+     - Radial versus angular jitter; final tight bends
+   * - Site-field variation
+     - :doc:`/generators/voronoi`
+     - Site layout, anchor count and crossing fallback
+   * - A target-following steering walk
+     - :doc:`/generators/checkpoint`
+     - Turn rate, lookahead, closure and selected candidate
+   * - A densely folded growth process
+     - :doc:`/generators/repulsive`
+     - Growth states, capacity and regeneration cadence
+   * - A dataset or hand-designed circuit
+     - ``external``
+     - :ref:`ingesting-centerlines` and input channel ownership
 
-:doc:`/generators/benchmarks` gives the measured shape metrics (compactness, length,
-chicanes, curvature) behind these descriptions.
+These are choices of construction and control. Whether a road is drivable for your
+vehicle also depends on width, curvature, validity and your dynamics. Evaluate the
+result with the actual vehicle footprint and speed controller, rather than treating
+a family label as a difficulty score.
 
-Tracks or gates?
-----------------
-
-Five generators have a gate generator (``bezier``, ``hull``, ``polar``, ``voronoi``,
-``checkpoint``): ``presets.gates(generator=...)`` places the gates at their anchors.
-Every track generator, ``repulsive`` and ``external`` included, can also place gates at
-equal arc length along its centerline (``presets.gates(..., source="stations")``,
-:doc:`/tutorials/gate-sequences`). With bars (``gate_width > 0``), ``polar`` keeps the
-most envs valid and ``bezier`` / ``hull`` the fewest: :ref:`gate-width-invalid-fraction`.
-
-How many envs come out invalid?
--------------------------------
-
-At the defaults almost no :term:`env` is :term:`invalid <invalid env>`: 0 % for ``bezier``, ``polar`` and ``voronoi``, 0.4 % for
-``checkpoint``, 1.2 % for ``hull``, 1.6 % for ``repulsive`` (``E = 256``, CPU). Settings
-that thin the course relative to the road or truncate the loop (a large ``size``, a small
-``half_width`` with the default ``n_max``) raise it for every generator:
-:ref:`invalid-envs`.
-
-Do you need per-env knobs or a curriculum?
-------------------------------------------
-
-Every procedural generator has a per-env ``size``, and each of the five sampling
-generators has shape knobs you can draw per env (``randomize=``) or move with a
-curriculum without rebuilding the generator: ``rad`` and ``handle_clamp_frac``
-(``bezier``), ``hull_displacement`` (``hull``), the radial and angular jitters
-(``polar``, ``voronoi``), the radius, angle and turn-rate knobs (``checkpoint``), plus
-``bezier`` / ``hull``'s corner count. ``repulsive`` has only ``size``; ``external`` has
-none (:ref:`generators-per-env`, :doc:`/user-guide/curricula`).
-
-Do you want several generators?
--------------------------------
-
-- **In one batch:** several generators write disjoint env ranges of one shared result,
-  read by one set of utilities and recorded in one graph (:ref:`results-mixed-batches`).
-- **Across runs or workers:** sample a name per run. ``registry.available("generator")``
-  lists every registered generator, installed plugins and ``external`` included; keep the
-  seed-dependent ones:
-
-.. code-block:: python
-
-   from track_gen.plugin import registry
-
-   registry.available("generator")
-   # ['bezier', 'checkpoint', 'external', 'hull', 'polar', 'repulsive', 'voronoi', ...]
-   seeded = [n for n in registry.available("generator")
-             if registry.describe("generator", n).seeded]
-
-.. snippet: after
-
-   assert "external" not in seeded and {"bezier", "repulsive"} <= set(seeded)
-
-``external`` ignores the seed: every env gets the same placeholder circle until you load
-data, so sampling it by accident gives a batch of circles.
-
-How to Set the Generator
-------------------------
-
-Pass the name to the preset (or to the config); it is looked up in the registry when the
-generator is built, and an unknown name raises ``ValueError`` listing the registered
-ones:
+Try the choice
+--------------
 
 .. code-block:: python
 
    from track_gen import TrackGenerator
    from track_gen.pipeline import presets
 
-   E, device = 64, "cuda:0"  # or "cpu"
+   gen = TrackGenerator(presets.track(
+       generator="polar", num_envs=4, device="cpu",
+       generator_params={"polar_radial_jitter": 0.3}), seeds=7)
+   track = gen.generate()
+   print(track.valid.numpy(), track.count.numpy())
 
-   for name in ("bezier", "hull", "polar", "voronoi", "checkpoint"):
-       gen = TrackGenerator(presets.track(num_envs=E, device=device, generator=name),
-                            seeds=0)
-       track = gen.generate()
-       print(f"{name}: {(track.valid.numpy() == 0).mean():.1%} invalid")
+.. snippet: after
 
-   # repulsive: an iterative optimizer, far slower; this example keeps the batch small
-   slow = TrackGenerator(presets.track(num_envs=8, device=device, generator="repulsive"),
-                         seeds=0)
+   assert track.valid.numpy().any()
 
-.. note::
+Keep seeds and the rest of the configuration fixed when comparing a control. Include
+the default and inspect both raw centerline and finished road: resampling, relaxation
+and fallbacks can hide the generator's original change. All guide figures record
+seeds/configurations and sample selection in
+:download:`the renderer manifest <../assets/racing/generators-manifest.json>`.
 
-   The Fourier generator lives in ``track_gen._experimental`` and is **unsupported**: it
-   is not on the Warp pipeline and receives no compatibility guarantees. It is not
-   shipped in the wheel; import it from a source checkout.
+Choose how to place gates
+-------------------------
 
-Generator-Specific Parameters
------------------------------
+Use native anchors when the corners, polar knots, selected sites or radial targets
+are themselves the intended course. Five families have this route; ``repulsive``
+does not. Native anchors bypass the road's spline/steering construction and have a
+smaller control set.
 
-Each generator has its own Params class, its knobs (:ref:`generating-params`). Pass them
-as ``generator_params``:
+Use ``presets.gates(generator="polar", source="stations")`` when gate positions
+should be sampled along the generated source centerline. Use ``relaxed_stations``
+when they should follow the relaxed track. Gate bar width, collision radius,
+elevation and ordering remain separate choices:
+:doc:`/tutorials/gate-sequences`.
 
-.. code-block:: python
+Choose regeneration and curricula
+---------------------------------
 
-   spec = presets.track(num_envs=E, device=device, generator="polar",
-                        generator_params={"polar_num_knots": 9, "polar_radial_jitter": 0.5})
+A dynamic field can vary per env without rebuilding; a static field fixes host work,
+capacity or algorithm structure. :ref:`generators-per-env` lists the current track
+fields, and :doc:`/user-guide/curricula` shows draws and masked updates. ``size``
+changes XY extent while spacing and width stay absolute, so check
+:ref:`tuning-size` before increasing size bounds.
 
-A few examples:
+For frequent resets, measure steady generation at the actual batch size. For
+``repulsive``, consider slower regeneration or smaller per-step environment slices
+and measure the whole batch call: masking retains unselected results but does not
+make every generator stage's work proportional to the selected count. Construction
+also warms a generation; first CUDA graph recording has its own cost.
 
-- ``"bezier"``: ``min_num_points``, ``max_num_points``, ``rad``, ``edgy``,
-  ``handle_clamp_frac``.
-- ``"hull"``: ``hull_displacement`` (the strength of the midpoint lobes and pinches).
-- ``"polar"``: ``polar_num_knots``, ``polar_radial_jitter``, ``polar_angular_jitter``.
-- ``"voronoi"``: ``voronoi_num_sites``, ``voronoi_site_layout``,
-  ``voronoi_control_points``, ``voronoi_radial_variation``.
-- ``"checkpoint"``: ``checkpoint_count``, ``checkpoint_turn_rate``,
-  ``checkpoint_steer_gain``, ``checkpoint_best_of_k``.
-- ``"repulsive"``: ``repulsive_grow_mult_min`` / ``_max``, ``repulsive_domain_frac``,
-  ``repulsive_ratchet_rate``, ``repulsive_obstacle_count_min`` / ``_max`` (and more, see
-  :doc:`/generators/repulsive`).
+Use the :ref:`batch comparison <generator-batch-benchmarks>` to compare generator
+construction across the Mac CPU and two GPU systems. Every CPU family uses 64
+candidates per call; every GPU family uses 4,096. Each produces 256 raw centerline
+samples with its default construction parameters. The table reports warm batch
+latency and attempted centerlines per second; shared resampling, XPBD relaxation,
+road borders and final road validity are outside the measurement. Repulsive's own
+iterative growth remains part of its construction cost.
 
-Every field, with its default and rule, is in :ref:`builtin-generator-params`. In a
-``TrackGenConfig`` the same names are flat fields, and the fields of the generators you
-did not select are ignored, so one config can carry every knob and switch only the
-``generator`` string. :doc:`/configuration/tuning` has per-generator tuning tips.
+CPU uses eager wall time; GPUs use CUDA graph replay and device-event time.
+Throughput depends on batch size, so these measurements do not predict results at a
+common batch size. Measure the complete pipeline separately to budget resets and
+check how many roads meet your requirements. :doc:`/generators/benchmarks` records
+the workload, fixed seeds, advancing epochs and excluded first-use costs.
 
-Deep-Dive References
---------------------
+To mix families, allocate disjoint env ranges into a shared result as described in
+:ref:`results-mixed-batches`, or choose a registered seeded family per worker/run.
+``external`` ingests geometry rather than generating variation from the seed.
 
-Detailed descriptions of each generator's algorithm, knobs, and tradeoffs:
+When a choice fails
+-------------------
 
-- :doc:`/generators/bezier` — Bézier corner-sort deep dive
-- :doc:`/generators/hull` — Hull midpoint-displacement deep dive
-- :doc:`/generators/polar` — Polar spline deep dive
-- :doc:`/generators/voronoi` — Voronoi site-field deep dive
-- :doc:`/generators/checkpoint` — Checkpoint-steering deep dive
-- :doc:`/generators/repulsive` — Repulsive-growth deep dive (the slow, iterative one)
-- :doc:`/generators/benchmarks` — Side-by-side quality, diversity, and speed metrics
-- :doc:`/contributing/writing-a-generator` — write your own generator
+First read ``track.fail_mask`` and distinguish truncation from clearance or
+nonfinite geometry. More capacity can fix truncation; changing a validity threshold
+cannot repair a curve. The default ``on_invalid="poison"`` prevents accidental use
+of failed rows. Use explicit ``keep`` only for diagnostic geometry and continue
+masking on validity. See :doc:`/user-guide/results` and
+:doc:`/relaxation/constraints`.

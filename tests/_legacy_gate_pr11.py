@@ -1,4 +1,4 @@
-"""Frozen reference of the 0.2.0.dev3 (dd181f0) gate pipeline, for the PR11 parity test.
+"""Independent numeric composition of the PR11 gate pipeline, using current RNG streams.
 
 PR11 decomposed ``warp_gate._run_gate_pipeline`` into the stages of a gate
 :class:`~track_gen.pipeline.Program` and deleted the Python glue it ran. This module keeps
@@ -28,7 +28,7 @@ import numpy as np
 import warp as wp
 
 from track_gen import ops
-from track_gen._src import warp_zprofile
+from tests._reference_generators import warp_zprofile
 from track_gen._src.collision_geom import _frame_quat, _safe_normalize3
 from track_gen._src.warp_gate import (
     _lift_positions_k,
@@ -41,7 +41,7 @@ from track_gen.ops import funcs as _funcs
 from track_gen.ops.constants import TARGET_EXTENT
 from track_gen.ops.geometry import _angle_sort_launch, _normalize_extent_launch
 
-_ORDER_SALT = 7919
+_ORDER_SALT = 0x977A7D68
 _proper_segment_intersection = _funcs.segments_cross
 
 FINAL_FIELDS = ("position", "tangent", "forward", "orientation", "half_size", "left",
@@ -274,10 +274,10 @@ def _anchors(ctx, cfg, seeds):
     """The five ``generate_*_gates`` bodies up to ``finish_ordered_gates``: returns
     ``(src, src_stride, count, normalize_extent)``."""
     from track_gen._src import warp_generate, warp_generate_hull as hull
-    from track_gen._src.warp_generate_checkpoint import sample_checkpoint_rings
-    from track_gen._src.warp_generate_polar import (polar_jitters, polar_num_knots,
+    from tests._reference_generators.warp_generate_checkpoint import sample_checkpoint_rings
+    from tests._reference_generators.warp_generate_polar import (polar_jitters, polar_num_knots,
                                                     sample_polar_controls)
-    from track_gen._src.warp_generate_voronoi import (BOX_SIZE, sample_voronoi_sites,
+    from tests._reference_generators.warp_generate_voronoi import (BOX_SIZE, sample_voronoi_sites,
                                                       select_voronoi_anchors,
                                                       voronoi_layout_mode)
 
@@ -341,7 +341,7 @@ def _order_points(ctx, seeds, src, src_stride, count, G, ordering, keys, dst) ->
         _angle_sort_launch(ctx, src, int(src_stride), count, G, keys, dst, 0)
     elif ordering == "random_pairs":
         ctx.launch(_order_random_pairs_k, E,
-                   [seeds, src, int(src_stride), count, G, int(_ORDER_SALT), keys, dst])
+                   [seeds, src, int(src_stride), count, G, wp.uint32(_ORDER_SALT), keys, dst])
     else:
         raise ValueError(f"unsupported gate ordering {ordering!r}")
 
@@ -373,7 +373,7 @@ def _finish(ctx, taps, cfg, seeds, generate_staging):
         warp_zprofile.gate_cum_perim(pos2, count, G, cum, perim, ctx=ctx)
         taps.take("gates.cum", cum)
         taps.take("gates.perim", perim)
-    warp_zprofile.apply_z_profile(cfg, seeds, count, G, cum, perim, z, ctx=ctx)
+    warp_zprofile._apply(cfg, seeds, count, G, cum, perim, z, ctx=ctx)
     taps.take("gates.z", z)
     ctx.launch(_lift_positions_k, int(pos2.shape[0]), [pos2, z, gates.position])
     taps.take("gates.position@lift", gates.position)
@@ -427,8 +427,7 @@ def run_reference(cfg, seeds) -> dict:
 
 
 def run_reference_legacy(cfg, spec, seeds) -> dict:
-    """As :func:`run_reference`, for a legacy ``GateGeneratorSpec`` (its ``generate``
-    writes the staging view in the configured order)."""
+    """The frozen ordered-gate toy reference, independent of its modern Stage."""
     dev = str(cfg.device)
     ctx = LaunchContext.for_call(dev)
     seeds = _seed_array(seeds, dev)
@@ -437,12 +436,10 @@ def run_reference_legacy(cfg, spec, seeds) -> dict:
     pos2 = wp.zeros(E * G, dtype=wp.vec2f, device=dev)
     count = wp.zeros(E, dtype=wp.int32, device=dev)
     staging = types.SimpleNamespace(position=pos2, count=count)
-    scratch = spec.alloc_scratch(cfg)
-    if getattr(spec, "accepts_ctx", False):
-        spec.generate(seeds, cfg, staging, scratch, ctx=ctx)
-    else:
-        with ctx.scope():
-            spec.generate(seeds, cfg, staging, scratch)
+    from tests._plugin_toys import toy_ring_generate
+
+    if spec.name == "toy.ring":
+        toy_ring_generate(seeds, cfg, staging, None, ctx=ctx)
     taps.take("gates.xy@generator", pos2)
     out = dict(_finish(ctx, taps, cfg, seeds, (pos2, count)))
     if spec.name == "tests.zero-count":

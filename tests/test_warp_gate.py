@@ -349,13 +349,6 @@ def test_order_points_raw_ccw_and_random_pairs_are_deterministic():
     assert torch.equal(to_t(out_rand_a), to_t(out_rand_b))
 
 
-def test_sync_is_the_shared_runtime_helper():
-    # Semantics (debug-only, capture-aware) are covered in test_no_host_sync.py.
-    from track_gen._src import runtime
-    assert warp_gate._sync is runtime._sync
-    assert warp_gate._init is runtime._init
-
-
 def test_finalize_with_persistent_buffers_allocates_nothing(monkeypatch):
     """The capturable call form (a persistent ``fallbacks``, no ``fail=``) allocates
     nothing: the fail bits go to ``gates.fail_mask`` (``alloc_gate_sequence``'s)."""

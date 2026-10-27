@@ -14,7 +14,7 @@ Stages of the kinds open to plugins (``relax``, ``width``, ``elevation``, ``vali
 ``carry``, ``gate_relax``, ``gate_arclen``, ``tangents``, ``gate_frames``) from
 TrackGen's built-in catalogue.
 
-Channel carry (roadmap PR13a): the resamples and the built-in stations carry the
+Channel carry: the resamples and the built-in stations carry the
 per-point channels of their source loop to their output points (``raw.<attr>`` ->
 ``cl.<attr>`` -> uniform ``cl.<attr>`` -> ``anchors.<attr>`` -> ``gates.<attr>``). Which
 families each carrier carries is static, computed here from the declared writes and
@@ -22,14 +22,14 @@ reads before any allocation, and appears as the carrier's implicit ports (``~<ch
 in :attr:`Program.channels <track_gen.pipeline.Program.channels>`, the read-before-write
 and second-writer rules and the exports.
 
-Rule 6 (roadmap PR12): the stages are grouped into segments of equal host-ness
+Rule 6: the stages are grouped into segments of equal host-ness
 (``CaptureClass.HOST`` vs ``STATIC`` / ``BOUNDED``, :attr:`Program.segments
 <track_gen.pipeline.Program.segments>`); ``PipelineSpec.require_caller_capturable``
 refuses any HOST stage, host-side. Every stage's ``enqueue`` runs inside its slot context
 (its id and declared capture class: ``ctx.host()`` and the ``ctx.bounded_loop``
 declaration check read it).
 
-One planner, two result kinds (roadmap PR11): ``BatchSpec.max_gates=None`` plans a
+One planner, two result kinds: ``BatchSpec.max_gates=None`` plans a
 track Program (its result a ``Track``), an int a gate Program (a ``GateSequence``). In a
 gate Program each stage runs on one point domain: the centerline generator and any
 stage with a ``cl.*`` port on ``N_max`` points, every other stage on ``max_gates`` gate
@@ -64,10 +64,6 @@ _ON_INVALID = ("keep", "poison")
 _AGREE = {
     "half_width": "the stages with a half_width field share one value: the nominal width "
                   "(the per-point width is cl.half_width)",
-    "gate_width": "one value per pipeline: the initial bar width, where "
-                  "gate_frames.default's per-env width starts (validity.gate_default's "
-                  "copy is inert since 0.2.0.dev5: leave it at its default 0, or remove "
-                  "it; removed in PR16)",
     "gate_radius": "one value per pipeline: gate_relax.spheres separates the gates to "
                    "the distance validity.gate_default checks",
 }
@@ -302,7 +298,7 @@ class _Slot:
     builtin: bool = True        # shipped with track_gen (the registry's own record)
     ports: dict = dataclasses.field(default_factory=dict)   # effective rewiring
     layout: object = None       # the stage's Layout (its point domain)
-    generator: "str | None" = None  # "centerline" | "anchors" | "legacy" | None
+    generator: "str | None" = None  # "centerline" | "anchors" | None
     capacity: "dict | None" = None  # an anchors producer's {"gates": A, "min_gates": k}
     carries: tuple = ()             # the (src, dst) channels a carrier carries
     centerline: bool = False        # a gate Program's stage before the anchors producer
@@ -350,7 +346,7 @@ def _domain_layout(slot_cls, ref: StageRef, ports: dict, *, gate: bool, batch,
     closed = bool(batch.closed)
     if generator in ("centerline",):
         return Layout(E, n_max, dev, closed)
-    if generator in ("anchors", "legacy"):
+    if generator == "anchors":
         return Layout(E, int(batch.max_gates), dev, closed)
     declared = {**dict(slot_cls.reads), **dict(slot_cls.writes)}
     chans = {p: ports.get(p, ch) for p, ch in declared.items()}
@@ -417,7 +413,6 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
     from ..plugin import registry as _default_registry  # noqa: PLC0415
     from ..plugin.params import _check_values, _coerce, _static_view  # noqa: PLC0415
     from ..plugin.stage import _is_stage  # noqa: PLC0415
-    from ..stages.gates import _LegacyGateSlot  # noqa: PLC0415
     from ..stages.track import (ElevationFlat, OffsetDefault, ValidityDefault,  # noqa
                                 Xpbd, _GeneratorSlot)
 
@@ -440,10 +435,8 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
                                 f"{binding.kind.replace('_', ' ')}")
             if ref.kind == _GENERATOR:
                 kind, cls, inst = "centerline", _GeneratorSlot, _GeneratorSlot(binding)
-            elif _is_stage(binding.spec):
-                kind, cls, inst = "anchors", binding.spec, None
             else:
-                kind, cls, inst = "legacy", _LegacyGateSlot, _LegacyGateSlot(binding)
+                kind, cls, inst = "anchors", binding.spec, None
             slot_layout = _domain_layout(cls, ref, {}, gate=gate, batch=batch,
                                          generator=kind)
             bl = binding.layout
@@ -457,7 +450,7 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
                 slot.builtin = bool(reg.describe(_GATE_GENERATOR, ref.name).builtin)
                 slot.capacity = _check_capacity(cls, cls().capacity(
                     _static_view(binding.params), slot_layout))
-            anchored = kind in ("anchors", "legacy")
+            anchored = kind == "anchors"
             slots.append(slot)
             continue
         builtin = True
@@ -504,7 +497,9 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
             raise PlanError(f"{_label(ref)}: z_base={params.z_base!r} sets gate altitudes "
                             f"(gate pipelines); a track's flat altitude is lift.flat's "
                             f"z_base (presets.track(z_base=...))")
-        slot = _Slot(i, sid, ref, cls, None, params, {}, {}, builtin, ports=ports,
+        instance = ValidityDefault(repulsive_barriers=True) if cls is ValidityDefault \
+            and "gen.repulsive.barriers" in binding.writes.values() else None
+        slot = _Slot(i, sid, ref, cls, instance, params, {}, {}, builtin, ports=ports,
                      layout=slot_layout, centerline=centerline)
         if "anchors.xy" in {ports.get(p, ch) for p, ch in dict(cls.writes).items()}:
             slot.capacity = _check_capacity(cls, cls().capacity(_static_view(params),
@@ -516,11 +511,7 @@ def _resolve(spec: PipelineSpec, binding, layout, registry=None) -> "list[_Slot]
 
 
 def _check_agreement(slots) -> None:
-    """Every stage that bakes ``half_width`` / ``gate_radius`` as a host scalar agrees
-    on its value; ``gate_width``: the stages' INITIAL values agree (roadmap PR13d:
-    ``gate_frames.default``'s is the initial per-env width; ``validity.gate_default``'s
-    is inert, so it takes part only when set to a value other than its default 0: a
-    pre-0.2.0.dev5 spec whose two widths disagree)."""
+    """Stages baking a shared half-width or gate radius agree on its value."""
     for field, why in _AGREE.items():
         vals = {}
         for s in slots:
@@ -528,9 +519,6 @@ def _check_agreement(slots) -> None:
             if s.generator is not None or s.params is None or field not in fields:
                 continue
             v = getattr(s.params, field)
-            if field in getattr(type(s.params), "_inert_fields", ()) and \
-                    v == fields[field].default:
-                continue
             vals[s.id] = v
         if len({float(v) for v in vals.values()}) > 1:
             raise PlanError(f"the stages disagree on {field}: {vals} ({why})")
@@ -560,15 +548,6 @@ def _check_gate_plan(spec, slots, registry) -> int:
         if cap > G:
             raise PlanError(f"{_label(s.ref)}: BatchSpec.max_gates={G} is too small for "
                             f"{what}; required max_gates {cap}.")
-    if gen.generator == "legacy":
-        # A legacy spec writes its gates itself: its max_gates(config) callable is its
-        # capacity (0.2.0.dev3's checks).
-        binding = gen.instance.binding
-        A = int(binding.pipeline_spec.max_gates(binding.run_config))
-        if A > G:
-            raise PlanError(f"{_label(gen.ref)}: BatchSpec.max_gates={G} is too small for "
-                            f"gate generator {name!r}; required max_gates {A}.")
-        producers = [gen]
     if producers:
         for s in slots:
             m = getattr(s.params, "min_gates", None) if s.generator is None else None
@@ -582,8 +561,6 @@ def _check_gate_plan(spec, slots, registry) -> int:
                             f"anchors per env (its capacity()['gates']).")
                 raise PlanError(f"{_label(s.ref)}: min_gates={m} is too large for {what}")
     orders = [s for s in slots if s.ref.kind == "order"]
-    if gen.generator == "legacy":
-        A = 0                     # no anchors channel: the legacy spec writes gates.*
     if gen.generator == "anchors":
         supported = _orderings_of(gen.cls, reg)
         preferred = _preferred(gen.cls).get("order")
@@ -604,7 +581,7 @@ def _check_gate_plan(spec, slots, registry) -> int:
                                 f"index, which needs order.raw; stage {o.id!r} is "
                                 f"{o.ref.kind}.{o.ref.name} (it permutes the anchors)")
     # Roadmap PR13d: validity.gate_default checks the bars of every env that has one
-    # (its check_crossing is inert), so posed gates need no check_crossing='always'.
+    # using the actual per-gate half sizes.
     return A
 
 
@@ -971,13 +948,13 @@ def _check_width_placement(slots) -> None:
 # The result kinds (Track / GateSequence)
 # ---------------------------------------------------------------------------------------
 
-# Result fields a pipeline may leave without a writer (then None / the commit's own).
+# Result fields a pipeline may leave without a writer (retained as NaN padding).
 _OPTIONAL_EXPORTS = ("half_width",)
 
 
 def _check_exports(writers) -> None:
-    """Every ``Track`` field has a writer: the ``Track`` reads them all (``half_width``
-    excepted: a pipeline without ``offset.default`` leaves it ``None``)."""
+    """Every Track field has a writer except half_width, whose concrete array stays
+    NaN-filled in a pipeline without an offset."""
     from ..stages.track import TRACK_EXPORTS  # noqa: PLC0415
 
     missing = [f"Track.{field} ({' or '.join(chs)})"
@@ -1049,6 +1026,49 @@ def _check_fail_start(slots, writers) -> None:
             f"split built-in checks")
 
 
+def _check_repulsive_clearance(slots, writers, gate: bool) -> None:
+    """Repulsive's mandatory check reads the final offset geometry and metadata."""
+    from ..stages.track import ValidityDefault, WidthConstant  # noqa: PLC0415
+
+    channel = "gen.repulsive.barriers"
+    if channel not in writers or gate:
+        return
+    checks = [s for s in slots if s.cls is ValidityDefault
+              and s.reads.get("barriers") == channel]
+    if not checks:
+        raise PlanError("Repulsive requires validity.default to check its finished road barriers")
+    check = checks[-1]
+    for port, expected in (("outer", "band.outer2"), ("inner", "band.inner2"),
+                           ("count", "cl.count")):
+        if check.reads.get(port) != expected:
+            raise PlanError(f"Repulsive validity.default must read the final {expected} "
+                            f"through port {port!r}")
+    geometry = {"cl.xy", "cl.count", "cl.half_width", "band.outer2", "band.inner2"}
+    for s in slots[check.index + 1:]:
+        if geometry.intersection(s.writes.values()):
+            raise PlanError(f"Repulsive geometry changes after validity.default in "
+                            f"{_label(s.ref)}; move it before validity")
+    if len(writers[channel]) != 1:
+        raise PlanError("Repulsive barrier metadata must come directly from the generator")
+    # The exported 3D borders must lift the same final 2D cells that were checked.
+    # Rewiring a lift to arbitrary vec2 channels would otherwise bypass the proof.
+    for output, port, expected in (("track.outer", "outer", "band.outer2"),
+                                    ("track.inner", "inner", "band.inner2")):
+        owner = writers.get(output, (None,))[-1]
+        lift = next((s for s in slots if s.id == owner), None)
+        source_owner = writers.get(expected, (None,))[-1]
+        source = next((s for s in slots if s.id == source_owner), None)
+        if lift is None or lift.ref.kind != "lift" or lift.reads.get(port) != expected \
+                or source is None or source.index >= lift.index:
+            raise PlanError(f"Repulsive lift must export the final checked {expected}")
+    # A static hint may reserve known width during growth; the actual band check
+    # remains authoritative after resampling, relaxation, and variable-width stages.
+    widths = [s for s in slots[:check.index] if "cl.half_width" in s.writes.values()
+              and getattr(s.cls, "_carries", None) is None]
+    if widths and widths[-1].cls is WidthConstant:
+        _gen_slot(slots).instance.repulsive_half_width = float(widths[-1].params.half_width)
+
+
 def _check_gate_fail_start(slots, writers) -> None:
     """``valid.fail`` starts at ``validity.gate_default`` in a gate Program."""
     from ..stages.channels import FAIL  # noqa: PLC0415
@@ -1082,33 +1102,30 @@ def _check_flat_lift(slots) -> None:
             z_writers.append(s)
 
 
-def _check_result_out(out, cls, layout, optional) -> None:
-    """``out=``: a ``cls`` (``Track`` / ``GateSequence``) whose every field validates
-    against the Program's ``layout`` (owner ``out``; the optional fields may be ``None``,
-    ``truncated`` is required), and whose stored layout, when set, is that layout
-    (canonical device)."""
+def _check_result_out(out, cls, layout) -> None:
+    """``out=``: every concrete field is required and validates against the Program's
+    layout, including its stored layout (canonical device)."""
     from .._src.types import _validate_against  # noqa: PLC0415
 
     if not isinstance(out, cls):
         raise TypeError(f"out= must be a {cls.__name__} (this pipeline's result), got "
                         f"{type(out).__name__}")
-    need = tuple(f for f, _, _ in cls._SCHEMA if f not in optional)
+    need = tuple(f for f, _, _ in cls._SCHEMA)
     _validate_against(out, need, "out", layout, "this pipeline")
 
 
 def _check_out(out, layout) -> None:
-    """``out=`` of a track Program (``generation``, ``fail_mask`` and ``half_width`` may
-    be ``None``)."""
+    """``out=`` of a track Program, with complete required storage."""
     from .._src.types import Track  # noqa: PLC0415
 
-    _check_result_out(out, Track, layout, ("generation", "fail_mask", "half_width"))
+    _check_result_out(out, Track, layout)
 
 
 def _check_gate_out(out, layout) -> None:
-    """``out=`` of a gate Program (``generation`` and ``fail_mask`` may be ``None``)."""
+    """``out=`` of a gate Program, with complete required storage."""
     from .._src.types import GateSequence  # noqa: PLC0415
 
-    _check_result_out(out, GateSequence, layout, ("generation", "fail_mask"))
+    _check_result_out(out, GateSequence, layout)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1571,31 +1588,15 @@ def _plugin_params(slot) -> bool:
     return not slot.builtin
 
 
-def _self_drawn(slots) -> list:
-    """``[(slot, field, range field)]`` of the dynamic fields a stage draws itself every
-    generation (roadmap PR13c: bezier's ``style_sampling`` ranges,
-    ``Params._self_drawn()``, e.g. ``("rad", "rad_range")``): one unlatched array each,
-    reported in ``StageParams.drawn`` as drawn by the stage's own id."""
-    from ..plugin.params import _self_drawn as drawn_by_itself  # noqa: PLC0415
-
-    out = []
-    for s in slots:
-        if getattr(s.cls, "_param_writer", False):
-            continue
-        out.extend((s, name, rng) for name, rng in drawn_by_itself(s.params).items())
-    return out
-
-
 def _check_param_writers(slots) -> list:
     """The ``randomize.*`` rules (host side, before any allocation): each draws a DYNAMIC
-    float32 field of a later, existing, non-randomizer stage, at most one per field (a
-    field the stage draws itself, bezier's ``style_sampling`` ranges, counts as drawn),
+    float32 field of a later, existing, non-randomizer stage, at most one per field,
     with an initial range inside the field's declared ``lo`` / ``hi`` (compared in
-    float32, roadmap PR13c), and the target's cross-field draw rules
+    float32), and the target's cross-field draw rules
     (``Params._check_draws``: e.g. elevation randomizers whose ``z_min`` / ``z_max``
     can cross; run for every stage that has the hook, randomized or not). Returns
     ``[(writer slot, target slot, field)]``."""
-    from ..plugin.params import _f32, _fields, _self_draw  # noqa: PLC0415
+    from ..plugin.params import _f32, _fields  # noqa: PLC0415
 
     def dynamic_f32(s):
         if s.params is None or getattr(s.cls, "_param_writer", False):
@@ -1614,8 +1615,6 @@ def _check_param_writers(slots) -> list:
         return f" ({h})" if h else ""
     drawable = [f"{s.id}.{f.name}" for s in slots for f in dynamic_f32(s)]
     out, seen = [], {}
-    for t, name, _ in _self_drawn(slots):
-        seen[(t.id, name)] = t.id                # drawn by the stage itself
     for w in writers:
         target_id, name = str(w.params.stage), str(w.params.field)
         t = by_id.get(target_id)
@@ -1650,11 +1649,6 @@ def _check_param_writers(slots) -> list:
             raise PlanError(f"{what} is {fld.dtype.__name__}: randomize.uniform draws "
                             f"float32 fields in 0.x")
         if (t.id, name) in seen:
-            own = _self_draw(t.params, name) if seen[(t.id, name)] == t.id else None
-            if own is not None:
-                how, rng = own
-                raise PlanError(f"{what} is drawn by the generator's {how} ({rng}): set "
-                                f"{rng}=None to randomize it")
             raise PlanError(f"stages {seen[(t.id, name)]!r} and {w.id!r} both draw {what}; "
                             f"at most one randomizer per field")
         seen[(t.id, name)] = w.id
@@ -1671,9 +1665,9 @@ def _check_param_writers(slots) -> list:
 
 def _check_draws(draws, slots) -> None:
     """Each stage's cross-field draw rules (the private Params hook ``_check_draws(
-    params, ranges, randomized)``, roadmap PR13c), for EVERY stage whose Params class
+    params, ranges, randomized)``), for EVERY stage whose Params class
     defines it, drawn or not: ``ranges`` maps every drawn field of the stage (a
-    randomizer's initial ``(lo, hi)``, or a self-drawn field's range; empty when none)
+    randomizer's initial ``(lo, hi)``; empty when none)
     and ``randomized`` names the randomized ones (e.g. the elevation's inert-window
     warning needs the static window and the knob's drawn range alike). A
     ``ValueError`` becomes a ``PlanError`` naming the stage."""
@@ -1686,10 +1680,6 @@ def _check_draws(draws, slots) -> None:
         entry = targets.setdefault(t.id, (t, {}, set()))
         entry[1][fld.name] = (float(w.params.lo), float(w.params.hi))
         entry[2].add(fld.name)
-    for t, name, rng_field in _self_drawn(slots):
-        rng = getattr(t.params, rng_field, None)
-        if t.id in targets and rng is not None:
-            targets[t.id][1][name] = (float(rng[0]), float(rng[1]))
     for t, ranges, randomized in targets.values():
         hook = getattr(type(t.params), "_check_draws", None)
         if hook is None:
@@ -1719,7 +1709,7 @@ def _draw_bounds(slot, drawn_for) -> "dict | None":
 
 
 def _stage_bounds(slot, drawn_for) -> dict:
-    """The per-instance bounds of a stage's StageParams (roadmap PR13d): its Params'
+    """The per-instance bounds of a stage's StageParams: its Params'
     ``_instance_bounds()`` (bezier / hull's ``min_num_points <= max_num_points``) and a
     randomizer's :func:`_draw_bounds`."""
     from ..plugin.params import _instance_bounds  # noqa: PLC0415
@@ -1736,7 +1726,7 @@ _RENORMALIZED_HINT = ("this gate generator is re-normalized by normalize.extent:
 def _stage_hints(slot, slots) -> dict:
     """``field -> hint`` appended to the ``KeyError`` (``StageParams``) and the
     ``PlanError`` (a randomizer) of a per-env use of a field the stage has not as a
-    dynamic one (roadmap PR13d): its Params' ``_field_hints`` (external's ``size``, a
+    dynamic one: its Params' ``_field_hints`` (external's ``size``, a
     point gate generator's ``min_num_points``), and ``size`` of a gate generator without
     one whose gates ``normalize.extent`` re-normalizes. No alias: one key per array."""
     from ..plugin.params import _declares_size, _field_hints  # noqa: PLC0415
@@ -1785,8 +1775,8 @@ def _check_size_truncation(spec, slots, draws) -> None:
     ``(n_max - 1) * spacing / L_nom``, ``L_nom`` the generator's nominal maximum raw
     perimeter at size 1 (the built-ins' private ``_nominal_perimeter(scale, drawn)``:
     repulsive exact from its params, the others the measured longest loop at their
-    default shape knobs, scaled by bezier / hull's corner capacity, hull's displacement
-    and bezier's style ``scale_range``; ``None`` where a shape knob it does not model
+    default shape knobs, scaled by bezier / hull's corner capacity and hull's
+    displacement; ``None`` where a shape knob it does not model
     differs from its default, and for a generator without one: not checked). Truncated
     envs fail validity (fail-closed); ``set()`` curricula and caller-graph writes are
     not checked. A heuristic: a warning, never an error."""
@@ -1874,6 +1864,7 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     if spec.require_caller_capturable:
         _check_caller_capturable(slots, caps, binding)
     writers = _plan_channels(slots, gate)
+    _check_repulsive_clearance(slots, writers, gate)
     if gate:
         _check_provided(slots)
     kind.check_exports(writers)
@@ -1899,8 +1890,9 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     result = out if out is not None else kind.alloc(layout)
     # The final version of each exported channel IS the result's array (no copy).
     sources = _export_sources(writers, kind.exports, kind.own_valid)
-    if out is None and "half_width" in kind.exports and "half_width" not in sources:
-        result.half_width = None          # no offset.default: nothing writes it
+    if "half_width" in kind.exports and "half_width" not in sources:
+        # No offset writes this field: retain concrete storage with absent-band padding.
+        LaunchContext.current(dev).fill(result.half_width, float("nan"))
     bound = {}
     for field, ch in sources.items():
         arr = getattr(result, field, None)
@@ -1932,13 +1924,6 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
         f_lo = -float("inf") if fld.lo is None else float(fld.lo)
         f_hi = float("inf") if fld.hi is None else float(fld.hi)
         drawn_for[w.id] = (arr, f_lo, f_hi)
-    # A field the stage draws itself (roadmap PR13c: bezier's style_sampling ranges): one
-    # [E] array too, written by the stage every generation (unlatched).
-    for t, name, _ in _self_drawn(slots):
-        arr = wp.full(E, float(getattr(t.params, name)), dtype=wp.float32, device=dev)
-        drawn.setdefault(t.id, {})[name] = arr
-        drawn_by.setdefault(t.id, {})[name] = t.id      # drawn by the stage itself
-
     # -- 7: build every stage, in order ------------------------------------------------
     enqueues, pairs, scratch, salts = [], [], {}, {}
     inputs = {"regen_mask": regen_mask}
@@ -1946,7 +1931,7 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     stage_params = {}
     gen_scratch = None
     for s, cap in zip(slots, caps):
-        bound_gen = s.generator in ("centerline", "legacy")
+        bound_gen = s.generator == "centerline"
         params = None if bound_gen else s.params
         mine = drawn.get(s.id, {})
         dynamic = {}
@@ -1962,7 +1947,7 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
                 dynamic[f.name] = (wp.full(E, v, dtype=f.dtype, device=dev),
                                    wp.full(E, v, dtype=f.dtype, device=dev))
         view = None if params is None else _static_view(params)
-        instance = s.instance if bound_gen else s.cls()
+        instance = s.instance if s.instance is not None else s.cls()
         if bound_gen and s.generator == "centerline":
             instance.drawn = dict(mine)
         b = _new_builder(stage=instance, params=view, layout=s.layout, scale=batch.scale,
@@ -2056,16 +2041,14 @@ def _build(spec: PipelineSpec, *, binding, seeds=None, out=None, stream=None,
     commit = None
     fields = kind.fields
     if all(f in sources or f in _OPTIONAL_EXPORTS for f in fields):
-        # The result's arrays; fail_mask: the final valid.fail version (the result's own
-        # unless out= brought none); half_width: the final track.half_width version
-        # (out= may bring none), or a private buffer when nothing writes it.
+        # Required result arrays: fail_mask is the final valid.fail version;
+        # half_width is the final track.half_width, or the result's NaN padding.
         targets = {f: getattr(result, f) for f in fields
                    if f not in ("fail_mask", "half_width")}
         targets["fail_mask"] = plan.current[FAIL]
         if "half_width" in fields:
             hw = plan.current.get("track.half_width")
-            targets["half_width"] = hw if hw is not None else wp.full(
-                E * S, float("nan"), dtype=wp.float32, device=dev)
+            targets["half_width"] = hw if hw is not None else result.half_width
         commit = kind.commit_cls(
             targets=targets, E=E, S=S, device=dev, dummy_mask=regen_mask,
             poison=batch.on_invalid == "poison", derive_valid=sources["valid"] is None,

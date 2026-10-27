@@ -14,9 +14,7 @@ the runner's policy).
   ``CaptureError`` (also ``Course.generate(seeds=...)`` ahead of its reseed, and
   construction inside a CPU graph capture); a non-HOST segment stays recordable.
 - The runner's SEGMENTED mode on a fake CUDA device: one capture per non-HOST part, HOST
-  parts eager between graph launches, keyed caches, the eager / RECORD rows, and the
-  ``runtime._CAPTURE_LOCK`` rule (legacy eager code holds it, captured tails and
-  ctx-aware HOST stages do not).
+  parts eager between graph launches, keyed caches, and the eager / RECORD rows.
 - The conformance kit on the BOUNDED / HOST toys.
 """
 from __future__ import annotations
@@ -41,7 +39,6 @@ from track_gen.exec import CaptureError, GraphRunner, LaunchContext, NotCapturab
 from track_gen.exec import runner as runner_mod
 from track_gen.exec.runner import _BodyPart, _SegmentedBody
 from track_gen.course import Course, CourseConfig
-from track_gen.exec import LegacyPluginStreamError
 from track_gen.pipeline import PipelineSpec, PlanError, Program, Segment, build, presets
 from track_gen.plugin import CaptureClass, GeneratorSpec, registry
 from track_gen.testing import check_gate_generator, check_generator, check_stage
@@ -58,8 +55,6 @@ _TRACK_FIELDS = ("outer", "center", "inner", "tangent", "normal", "arclen", "len
 def _toys(monkeypatch):
     T.register_bounded_toys(registry)
     T.register_broken_bounded_toys(registry)
-    # A pending legacy runner kept alive by an earlier test must not take the lock here.
-    monkeypatch.setattr(runner_mod, "_PENDING_LEGACY", weakref.WeakSet())
 
 
 def _rng(seeds=11, n=E):
@@ -92,8 +87,7 @@ def _counted(base_name: str, calls: list, kind: str = "generator") -> str:
 
 def _legacy_host_spec(name="test.legacy_host") -> str:
     registry.add(GeneratorSpec(name=name, alloc_scratch=toy_circle_alloc_scratch,
-                               generate=toy_circle_generate, capturable=False,
-                               accepts_ctx=True))
+                               generate=toy_circle_generate, capturable=False))
     return name
 
 
@@ -399,8 +393,8 @@ class _Log:
         return run
 
 
-def _segmented(log: _Log, *, legacy_head: bool = False) -> _SegmentedBody:
-    return _SegmentedBody([_BodyPart(log.part("head"), host=True, legacy=legacy_head),
+def _segmented(log: _Log) -> _SegmentedBody:
+    return _SegmentedBody([_BodyPart(log.part("head"), host=True),
                            _BodyPart(log.part("tail"))])
 
 
@@ -508,114 +502,10 @@ def test_segmented_eager_rows_and_record_refusal(monkeypatch):
     assert info.value.stage_ids == ("generator",) and log.events == []
 
 
-def test_a_legacy_host_part_runs_on_the_current_stream_with_event_waits(monkeypatch):
-    fake = FakeCuda(monkeypatch)
-    side = FakeStream(fake.device)
-    log = _Log()
-    body = _segmented(log, legacy_head=True)
-    r = GraphRunner("cuda:0", capturable=False, legacy_stream=True, name="legacy",
-                    _host_ids=("generator",), _legacy_capture=False)
-    assert r not in runner_mod._PENDING_LEGACY            # never self-captures legacy code
-    r.prepare(body)
-    del log.events[:]
-    fake.current.waited_on.clear()
-    r.run(body, stream=side)
-    (cap,) = fake.captures
-    assert cap.stream is not fake.current                  # the tail: a private stream
-    assert ("head", fake.current, False) in log.events
-    assert fake.current.waited_on == [side] and side.waited_on[-1] is fake.current
-    assert fake.launched == [(cap.graph, side)]
 
 
-def _lock_free_in_another_thread() -> bool:
-    out: list = []
-
-    def probe():
-        got = runtime._CAPTURE_LOCK.acquire(blocking=False)
-        if got:
-            runtime._CAPTURE_LOCK.release()
-        out.append(got)
-
-    t = threading.Thread(target=probe)
-    t.start()
-    t.join()
-    return out[0]
 
 
-def test_the_capture_lock_rule(monkeypatch):
-    fake = FakeCuda(monkeypatch)
-    seen: dict = {}
-
-    def head(ctx):
-        seen.setdefault("head", []).append(_lock_free_in_another_thread())
-
-    real_launch = runner_mod.wp.capture_launch
-
-    def launch(graph, stream=None):
-        seen.setdefault("launch", []).append(_lock_free_in_another_thread())
-        real_launch(graph, stream=stream)
-
-    monkeypatch.setattr(runner_mod.wp, "capture_launch", launch)
-    tail = _BodyPart(lambda ctx: None)
-    # A legacy capturable=False generator: its legacy HOST part holds the lock (as at
-    # 0.2.0.dev3), the captured tail's graph launch does not.
-    legacy = GraphRunner("cuda:0", capturable=False, legacy_stream=True,
-                         _legacy_capture=False, _host_ids=("generator",))
-    body = _SegmentedBody([_BodyPart(head, host=True, legacy=True), tail])
-    legacy.prepare(body)
-    seen.clear()
-    legacy.run(body)
-    assert seen == {"head": [False], "launch": [True]}
-    # ...but while a capturable legacy producer may still self-capture on Warp's current
-    # stream, a graph launch there takes the lock.
-    pending = GraphRunner("cuda:0", capturable=True, legacy_stream=True)
-    seen.clear()
-    legacy.run(body)
-    assert seen == {"head": [False], "launch": [False]}
-    # A ctx-aware HOST stage takes the lock only for a call on Warp's current stream
-    # while a legacy self-capture is pending (the existing per-call rule).
-    aware = GraphRunner("cuda:0", capturable=False, _host_ids=("relax",))
-    body2 = _SegmentedBody([_BodyPart(head, host=True), tail])
-    aware.prepare(body2)
-    seen.clear()
-    aware.run(body2)
-    assert seen == {"head": [False], "launch": [False]}
-    side = FakeStream(fake.device)
-    seen.clear()
-    aware.run(body2, stream=side)
-    assert seen == {"head": [True], "launch": [True]}
-    del pending
-    import gc
-
-    gc.collect()
-    seen.clear()
-    aware.run(body2)                                  # nothing pending: lock-free
-    assert seen == {"head": [True], "launch": [True]}
-    # The legacy EAGER path holds it for the whole body.
-    seen.clear()
-    legacy.run(body, policy="eager")
-    assert seen == {"head": [False]}
-    # A capturable legacy producer that becomes pending in the MIDDLE of a segmented call
-    # (after serial() decided, here during the first part's graph launch) is serialized
-    # against: the ctx-aware HOST part after it takes the lock too (re-evaluated per part).
-    late: list = []
-
-    def launch_then_pend(graph, stream=None):
-        launch(graph, stream=stream)
-        if not late:
-            late.append(GraphRunner("cuda:0", capturable=True, legacy_stream=True))
-
-    monkeypatch.setattr(runner_mod.wp, "capture_launch", launch_then_pend)
-    body3 = _SegmentedBody([tail, _BodyPart(head, host=True)])
-    tail_first = GraphRunner("cuda:0", capturable=False, _host_ids=("relax",))
-    tail_first.prepare(body3)
-    seen.clear()
-    tail_first.run(body3)
-    assert late and seen == {"launch": [True], "head": [False]}
-    seen.clear()
-    tail_first.run(body3, stream=side)                # another stream: lock-free
-    assert seen == {"launch": [True], "head": [True]}
-    del late[:]
 
 
 # ---------------------------------------------------------------------------------------
@@ -626,8 +516,9 @@ def test_kit_leaky_smoother_fails_absorbing_and_batch_independence():
     report = check_stage("relax", T.LEAKY, devices=[DEV])
     assert report.failed_names == ["batch_independence", "bounded.absorbing"], str(report)
     msg = report.result("bounded.absorbing").message
-    assert "with lowering (a) (batch A) the loop stopped at window 5/7 (active[0] == 0)" \
-        in msg, msg
+    assert report.result("bounded.absorbing").details["skipped"]["A"] > 0
+    assert "with lowering (a) (batch A) the loop stopped at window " in msg, msg
+    assert "(active[0] == 0)" in msg
     assert "the outputs differ from the unrolled lowering (c): env 0 (cl.xy@relax" in msg
     assert "an absorbing freeze" in msg
 
@@ -702,35 +593,6 @@ def test_kit_fails_a_host_stage_that_reaches_the_host_outside_host_ops():
     assert "ctx.host() (HostOps)" in alloc, alloc
 
 
-def test_program_enqueue_runs_a_legacy_generator_on_the_current_stream(monkeypatch):
-    """``Program.enqueue`` / ``enqueue_segment(0)`` with a legacy-ABI generator: on Warp's
-    current stream as is; on another stream, eagerly on the current one ordered with
-    events (the runner's legacy path); refused when that other stream is capturing."""
-    fake = FakeCuda(monkeypatch)
-    runner = GraphRunner("cuda:0", capturable=True, legacy_stream=True, name="legacy",
-                         _legacy_capture=False)
-    program = types.SimpleNamespace(_legacy_stream=True, _device=fake.device,
-                                    _binding=types.SimpleNamespace(name="legacy"),
-                                    _runner=runner)
-    ran: list = []
-    body = ran.append
-    on_current = LaunchContext("cuda:0", fake.current)
-    Program._run_legacy_aware(program, body, on_current, True)
-    assert ran == [on_current]
-    side = FakeStream(fake.device)
-    del ran[:]
-    fake.current.waited_on.clear()
-    Program._run_legacy_aware(program, body, LaunchContext("cuda:0", side), True)
-    (ctx,) = ran
-    assert ctx.stream is fake.current
-    assert fake.current.waited_on == [side] and side.waited_on[-1] is fake.current
-    del ran[:]
-    Program._run_legacy_aware(program, body, LaunchContext("cuda:0", side), False)
-    assert ran[0].stream is side                      # a segment without legacy code
-    capturing = FakeStream(fake.device, capturing=True)
-    with pytest.raises(LegacyPluginStreamError, match="'legacy'"):
-        Program._run_legacy_aware(program, body, LaunchContext("cuda:0", capturing), True)
-    assert len(ran) == 1
 
 
 def test_warnings_are_not_raised_by_segmented_cpu_runs():

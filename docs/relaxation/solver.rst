@@ -1,196 +1,159 @@
-Track relaxation — the solver
-=============================
+How the track solver runs
+==========================
 
-This page covers how the fixed-iteration solve executes: the Jacobi double-buffering
-that keeps it graph-capturable, the two separation execution modes, and the Chebyshev
-semi-iterative acceleration that makes the default 50 sweeps enough. The
-constraints themselves — separation, spacing, bending — are described in
-:doc:`constraints`.
+Each sweep reads a complete bead-position buffer and writes the three combined
+:doc:`constraint corrections <constraints>` to another. The buffers swap after the
+sweep. This Jacobi scheme gives every bead the same previous state, allowing the whole
+batch to update in parallel. There is no dense ``E*N*N`` position tensor and no
+per-constraint multiplier history.
 
-Jacobi semantics via double buffering
--------------------------------------
+The main budget, cache cadence, acceleration and tail budgets are static. Scratch
+buffers are allocated at construction; launches run through the active ``LaunchContext``.
+Their fixed sequence can be recorded in a CUDA graph. Sequential updates, such as the
+gate solver's Gauss-Seidel loop, can also be captured; their dependency affects
+parallelism rather than making capture impossible.
 
-Every sweep reads one complete position buffer and writes updated positions into a
-second buffer, then the two buffers are swapped. A bead's correction is computed from
-its neighbours' *previous-sweep* positions, never from positions already updated within
-the same sweep. That is **Jacobi** iteration (as opposed to Gauss-Seidel, which would
-consume in-place updates as it goes).
+Which separation pairs are checked
+----------------------------------
 
-Jacobi is the right choice here for two reasons:
+A dense sweep scans nonlocal pairs, with quadratic work in the real point count.
+The default cache holds a directed fixed-size candidate list for each bead:
 
-1. **GPU parallelism.** Every bead's update is independent within a sweep, so the whole
-   batch of ``E * N_max`` beads (:term:`N_max` per :term:`env`) is one flat kernel launch
-   with no ordering constraints and no atomics on the position buffers.
-2. **Graph capture.** The launch sequence is fixed and data-independent (a known number
-   of sweeps, each a fixed set of launches), so the entire solve captures once into a
-   replayable CUDA graph and replays with zero per-call allocation. Gauss-Seidel's
-   sequential dependence would serialize the beads and break the clean capture.
+1. At zero-based sweep 0 and multiples of ``relax_sep_every``, build candidates within
+   ``pair_target*(1+relax_sep_cache_skin)``. At variable width the pair target uses
+   both beads' solver radii.
+2. At every sweep, re-test cached candidates against the actual separation target.
+3. If a list fills, additional candidates are omitted; an internal overflow counter
+   records this. The cache is an execution approximation, not a complete neighbour list.
 
-``xpbd_solve_inplace`` copies the input centerline into ``relaxed`` (``x_cur``), uses
-``xpbd_db`` as the second buffer (``x_hat``), and ping-pongs the two across sweeps. Both
-buffers are pre-allocated in ``RelaxScratch`` by the caller.
+.. list-table::
+   :header-rows: 1
+   :widths: 30 18 52
 
-Separation execution modes
---------------------------
+   * - Static setting
+     - Default / range
+     - Effect and tradeoff
+   * - ``relax_sep_every``
+     - ``20`` sweeps, >= 1
+     - Candidate refresh interval. Shorter intervals find emerging contacts sooner but
+       do more broadphase work.
+   * - ``relax_sep_cache_slots``
+     - ``16`` per bead, >= 0
+     - More slots use more scratch memory and reduce list overflow. Zero disables the
+       cache; indices alone use ``E*N_max*slots*4`` bytes.
+   * - ``relax_sep_cache_skin``
+     - ``0.5``, >= 0
+     - Fractional candidate-radius expansion. Larger skin retains potential contacts
+       across more motion but can fill fixed-size lists sooner.
 
-The non-local separation scan is the dominant cost — it is :math:`O(\text{count}[e]^2)`
-per track when run densely. Two modes trade exactness against cost, selected by the
-``relax_sep_*`` knobs.
-
-Dense / cadenced mode
-~~~~~~~~~~~~~~~~~~~~~~~
-
-``_step_kernel`` scans all non-band neighbours whenever ``step_i % relax_sep_every == 0``;
-spacing and bending still run every sweep. With ``relax_sep_cache_slots == 0`` and
-``relax_sep_every > 1``, this is a naive skip cadence: there is simply no separation
-force between dense scans.
-
-Broadphase-cached mode
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-When ``relax_sep_cache_slots > 0`` **and** ``relax_sep_every > 1``,
-``_build_sep_cache_kernel`` refreshes a fixed-slot directed candidate list every
-``relax_sep_every`` sweeps using radius ``target * (1 + relax_sep_cache_skin)``. Then
-``_step_cached_kernel`` runs **every** sweep, re-testing each cached candidate with the
-exact current ``dist < target`` narrowphase before applying the separation push. The
-cache arrays live in ``RelaxScratch``, including an overflow counter for beads whose
-candidate list exceeded the configured slot count, so the mode stays allocation-free and
-CUDA-graph-capturable.
-
-The default config uses the cached mode (``relax_sep_cache_slots=16``,
-``relax_sep_every=20``, ``relax_sep_cache_skin=0.5``). See :doc:`convergence` for the
-``relax_sep_every`` short-run refresh pitfall.
+Caching is active only when ``slots>0`` and ``every>1``. Otherwise a dense separation
+scan runs at sweep indices divisible by ``every``; spacing and bending run every sweep.
+Thus ``slots=0, every>1`` skips separation between dense scans. ``every=1`` selects
+dense separation every sweep, regardless of allocated cache slots.
 
 Chebyshev acceleration
-----------------------
+-----------------------
 
-The plain Jacobi sweeps can be accelerated with the **Chebyshev semi-iterative method**,
-selected by ``relax_accel="chebyshev"`` (the default). This is the precedent from Macklin
-et al., *"Unified Particle Physics for Real-Time Applications"* (2014), applied to
-position-based-dynamics Jacobi. It cuts the sweeps needed for a given yield by roughly 3x
-(see :doc:`convergence`).
-
-Warmup, then blend
-~~~~~~~~~~~~~~~~~~~
-
-The first ``relax_cheby_start`` (default 8) sweeps run **plain Jacobi**, so the
-separation contact set settles before acceleration engages. From then on, each sweep
-runs the ordinary Jacobi step and then launches a small blend kernel
-(``_accel_blend_kernel``) that combines the fresh Jacobi update with the current and
-previous iterates:
+After the first ``relax_cheby_start=8`` plain sweeps, acceleration blends the Jacobi
+output :math:`\hat{x}` with the current and previous iterates:
 
 .. math::
 
-   x_{\text{new}} = \omega_k\big(\gamma\,(\hat{x} - x_{\text{cur}})
-   + (x_{\text{cur}} - x_{\text{prev}})\big) + x_{\text{prev}},
+   x_{new}=\omega_k\left[\gamma(\hat{x}-x_{cur})+(x_{cur}-x_{prev})\right]+x_{prev}.
 
-where :math:`\hat{x}` is the Jacobi output for this sweep, :math:`\gamma` =
-``relax_cheby_gamma`` (default 0.9) is a constant under-relaxation factor, and
-:math:`\omega_k` is the per-sweep Chebyshev weight from a **host-precomputed** recurrence:
+The spectral-radius estimate :math:`\rho` sets a host-precomputed recurrence, starting
+at the first accelerated sweep:
 
 .. math::
 
-   \omega_1 = 1,\quad \omega_2 = \frac{2}{2 - \rho^2},\quad
-   \omega_{k+1} = \frac{4}{4 - \rho^2\,\omega_k},
+   \omega_1=1,\qquad \omega_2=\frac{2}{2-\rho^2},\qquad
+   \omega_{j+1}=\frac{4}{4-\rho^2\omega_j}.
 
-with :math:`\rho` = ``relax_cheby_rho`` (default 0.98) the spectral-radius estimate of
-the Jacobi iteration. The :math:`\gamma < 1` under-relaxation damps the contact-switching
-noise that raw acceleration would otherwise amplify on the nonsmooth separation contacts.
+The transition aliases the previous iterate to the current one; later sweeps rotate
+three preallocated buffers. Earlier sweeps skip the blend. The schedule depends on the
+sweep index, not the total requested budget; this matters for the actual-prefix
+:doc:`animation <convergence>`.
 
-The warmup sweeps skip the blend launch **entirely** rather than blending with
-:math:`\omega = 1`: an :math:`\omega = 1` "identity" blend is not bit-exact in float
-arithmetic, and skipping it also saves launches.
+.. list-table::
+   :header-rows: 1
+   :widths: 30 20 50
 
-Three-buffer rotation and the transition trick
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   * - Static setting
+     - Default / range
+     - Effect and tradeoff
+   * - ``relax_accel``
+     - ``"chebyshev"`` or ``"none"``
+     - Enable extrapolation, or use plain Jacobi. Contact changes can make extrapolated
+       trajectories oscillate; compare acceptance and shape on your workload.
+   * - ``relax_cheby_rho``
+     - ``0.98``, [0, 1)
+     - Spectral-radius estimate controlling weights. Larger is not uniformly faster or
+       more stable on changing contacts.
+   * - ``relax_cheby_gamma``
+     - ``0.9``, (0, 1]
+     - Under-relaxation of the fresh Jacobi correction. Smaller values damp it.
+   * - ``relax_cheby_start``
+     - ``8``, integer >= 1
+     - Number of initial plain sweeps; first blend is zero-based sweep index 8 at the
+       default. Later starts let contacts settle before extrapolation.
 
-Acceleration needs a third buffer for the previous iterate :math:`x_{\text{prev}}`
-(``cheb_prev`` in ``RelaxScratch``). Once engaged, the three buffers rotate each sweep:
-the blended output becomes the next ``x_cur``, the old ``x_cur`` becomes the next
-``x_prev``, and the freed buffer becomes the next sweep's Jacobi output — fully
-overwritten by the step kernel before the blend reads it.
+This is the semi-iterative acceleration used for Jacobi position projection, related to
+Macklin et al., *Unified Particle Physics for Real-Time Applications* (2014). The
+configured spectral estimate does not prove convergence for this nonlinear contact set.
 
-The subtle part is the very first accelerated sweep. There is no true previous iterate
-yet, so the caller passes ``x_prev`` **aliasing** ``x_cur``. Then
-:math:`(x_{\text{cur}} - x_{\text{prev}})` cancels exactly and :math:`\omega = 1` there,
-making the result independent of the third buffer's contents. As a consequence
-``cheb_prev`` is **never read before being written** within a solve — its initial
-contents are irrelevant, so there is no zero-init and the solve is safe under CUDA graph
-replay (where buffer contents persist between replays).
+Smoothing and spacing polish
+----------------------------
 
-Graph-capture and zero-alloc
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The :math:`\omega` schedule is precomputed on the host and is **data-independent**, so
-the accelerated solve is still a fixed launch sequence with no host sync or
-data-dependent branching inside the loop. The whole solve remains CUDA-graph-capturable
-and zero-alloc per call: ``cheb_prev`` is pre-allocated in ``RelaxScratch`` (the capture
-path requires it; outside capture a missing buffer is allocated as a convenience for
-tests).
-
-Setting ``relax_accel="none"`` restores plain damped Jacobi wholesale — no blend kernel,
-no third buffer, the legacy two-buffer ping-pong.
-
-Smoothing tail
---------------
-
-After the main sweep loop, an optional **post-solve smoothing tail** runs. It removes the
-fine curvature noise the three constraints leave behind: the bending guard only fires
-when the local radius drops below :math:`R_{\min}` (a deadband), so gentler
-sub-:math:`R_{\min}` wiggles — small kinks that survive separation and spacing — are
-invisible to *all three* constraints and never get smoothed by the main solve.
-
-.. figure:: ../assets/relaxation-smoothing.png
-   :alt: Four rippled tracks before and after the post-solve smoothing tail, with a zoom
-         on the worst border segment
-   :align: center
-
-   The four noisiest valid tracks (metric benchmark regime, identical seeds) without the
-   tail (top) and with the default tail (bottom); the per-panel number is the
-   curvature-noise metric (dkappa RMS — RMS of adjacent Menger-curvature differences,
-   scaled by half-width). The 5th column zooms the most rippled border segment of the
-   worst track: the sub-:math:`R_{\min}` wiggle on the outer border (top) is gone after
-   the tail (bottom). Across the full benchmark (E=4096) the default tail cuts curvature
-   noise by **−30% / −34%** (hard / defaults regime) with **zero yield loss** and a
-   slightly **improved** spacing RMS.
-
-Taubin, not Laplacian
-~~~~~~~~~~~~~~~~~~~~~~~
-
-The tail uses **Taubin smoothing** — shrink-free Laplacian smoothing. One pass is two
-Laplacian half-steps over the circular bead chain:
+The main bending guard only acts below its target radius. An optional tail smooths the
+remaining small kinks, then restores near-uniform spacing. One Taubin pass applies two
+circular Laplacian steps:
 
 .. math::
 
-   x \mathrel{+}= \lambda\, L(x), \qquad x \mathrel{+}= \mu\, L(x),
-   \qquad L(x_i) = \tfrac{1}{2}(x_{i-1} + x_{i+1}) - x_i,
+   x\mathrel{+}=0.5L(x),\qquad x\mathrel{+}=-0.53L(x),\qquad
+   L(x_i)=\tfrac12(x_{i-1}+x_{i+1})-x_i.
 
-with :math:`\lambda = 0.5` (a positive shrinking step) and :math:`\mu = -0.53` (a slightly
-larger negative un-shrinking step). Because :math:`\mu < -\lambda`, the two half-steps
-cancel the low-frequency shrink while still attenuating high-frequency noise — the pass
-smooths without pulling the curve inward. This matters for validity: a **plain** Laplacian
-(:math:`\mu = 0`) shrinks corners, dragging them back through the thickness gate — in the
-prototype 10 plain-Laplacian passes collapsed yield to 0.12. The :math:`\lambda`/:math:`\mu`
-constants are hardcoded (not config); only the pass counts are exposed.
+The negative step counteracts the shrinkage of ordinary Laplacian smoothing. It does
+not preserve every radius or clearance. The spacing-only polish then uses the ordinary
+spacing correction with separation and bending disabled. The tail uses fixed launches
+and the existing position buffers; it does not run Chebyshev acceleration.
 
-Two knobs
-~~~~~~~~~
+.. _relax-smoothing-comparison:
 
-- ``relax_smooth_passes`` (default 5) — number of Taubin passes (each two half-steps).
-- ``relax_smooth_spacing_iters`` (default 10) — spacing-only polish sweeps applied after
-  the Taubin passes (the ordinary edge-spacing correction with separation and bending
-  off), which restore the bead uniformity the Taubin passes perturb.
+.. figure:: ../assets/racing/relaxation-smoothing.png
+   :alt: The same seed after zero, five and twenty Taubin passes, with an identical
+         zoom showing the unsmoothed centerline as an orange dashed baseline.
 
-Setting both to 0 disables the tail. In the prototype the default tail cut
-curvature-difference RMS ~33% on average (~51% on the worst track) with zero validity
-loss and slightly *improved* spacing RMS.
+   Only ``relax_smooth_passes`` changes after 50 main sweeps. Spacing polish is
+   disabled in all three panels so its correction does not hide the smoothing
+   effect. The fixed zoom shows small corners rounding; the orange dashed line
+   retains the zero-pass centerline. Counts, validity and failure masks describe
+   the returned, uniformly resampled road, not internal bead buffers.
 
-Graph-capture and zero-alloc
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+All three selected seed-0 results pass the configured checks. Their minimum
+nonlocal bead distance decreases from approximately ``1.043`` to ``0.996`` while
+the smallest local radius first increases, then decreases. Smooth-looking output
+does not imply improved separation or monotonic curvature. Measure final geometry
+and failure bits when changing either tail budget; :ref:`geometry-validity` explains
+what the sampled checks establish. The
+:download:`comparison manifest <../assets/racing/relaxation-manifest.json>` records
+the full settings and diagnostics.
 
-The tail simply continues the read/write ping-pong from wherever the main loop left it
-(the Chebyshev previous-iterate buffer is not used). Its launch sequence is a fixed,
-data-independent function of the two pass counts, with no per-call allocation, so it stays
-CUDA-graph-capturable exactly like the main solve. The Taubin passes reuse a small
-count-aware kernel (``_taubin_kernel``, NaN-preserving on padding beads); the spacing
-polish reuses the main ``_step_kernel`` with separation and bending switched off.
+.. list-table::
+   :header-rows: 1
+   :widths: 35 15 50
+
+   * - Static setting
+     - Default / range
+     - Effect and tradeoff
+   * - ``relax_smooth_passes``
+     - ``5``, >= 0
+     - Taubin passes, two half-steps each. More smoothing changes fine geometry and can
+       reduce clearance or local radius.
+   * - ``relax_smooth_spacing_iters``
+     - ``10``, >= 0
+     - Spacing-only sweeps after all Taubin passes. More work improves spacing only to
+       the extent allowed by the changing geometry; it does not enforce separation.
+
+Set both counts to zero to disable the tail. Final uniform resampling and validity run
+after it, so judge the returned ``Track`` rather than assuming smooth output is valid.

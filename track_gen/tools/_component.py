@@ -1,4 +1,4 @@
-"""``Component``, ``ComponentContext`` and ``InputSpec`` (roadmap PR14).
+"""``Component``, ``ComponentContext`` and ``InputSpec``.
 
 A component is a runtime consumer of a producer's result (a ``Track``, a
 ``GateSequence``, or another component's result), with a two-phase lifecycle: a cold
@@ -285,7 +285,7 @@ def _deps(comp) -> tuple:
 
 
 def _order(components) -> list:
-    """The components in execution order (roadmap PR15): a stable topological sort of
+    """The components in execution order: a stable topological sort of
     ``after`` + ``source`` over the given order (Kahn's algorithm, picking at each step
     the first remaining component whose dependencies are placed: the identity on an
     already-ordered list).

@@ -38,10 +38,10 @@ Data flow
 
    seeds[E]
      │  GENERATOR  (the registered generator: "bezier", "hull", "polar", "voronoi",
-     │    "checkpoint", "repulsive", or a plugin's; single pass, fixed shapes)
+     │    "checkpoint", "repulsive", or a plugin's; fixed buffers, Repulsive iterates)
      ▼
-   raw centerline [E * num_points]  (every env real) + gen.valid[E] (1 for the built-ins:
-     │                                 geometric validity is decided after relaxation)
+   raw centerline [E * num_points]  (every env real) + gen.valid[E]
+     │    Repulsive checks raw feasibility/target; final road checks follow the tail.
      │  RESAMPLE   constant spacing → count[e] = ⌊perimeter / spacing⌋ + 1, capped at N_max,
      │             + truncated[e] (1 where the cap applied: such envs fail validity)
      ▼
@@ -54,8 +54,8 @@ Data flow
      │  UNIFORM    re-uniformised resample ─► FRAMES (tangents, curvature, arc length)
      │             ─► OFFSET (the band) ─► ELEVATION ─► VALIDITY (fail bits) ─► LIFT (3D)
      ▼
-   Track(outer, center, inner, tangent, normal, arclen, length, half_width, count, valid,
-         fail_mask, truncated, winding, generation, attributes)
+   Track: outer, center, inner, tangent, normal, arclen, length, half_width, count, valid,
+          fail_mask, truncated, winding, generation; layout, fail_bits, attributes metadata
 
 .. figure:: ../assets/readme-pipeline-stages.png
 
@@ -111,8 +111,8 @@ channels. The built-ins:
    * - ``"repulsive"``
      - ``warp_generate_repulsive.py``
      - obstacle-seeded disc → tangent-point/Sobolev growth
-     - a ``BOUNDED`` stage: fixed host schedule, each env frozen on device once it
-       converges; far slower than the others (:doc:`/generators/repulsive`)
+     - a ``BOUNDED`` stage: fixed host schedule, guarded growth and optional
+       per-env freezing; final full-band disc/wall checks (:doc:`/generators/repulsive`)
 
 ``external`` is the seventh registered name: it ingests centerlines you provide instead
 of drawing them (:ref:`ingesting-centerlines`).
@@ -127,10 +127,12 @@ Every built-in generator follows the same contract (:ref:`generator-stage-contra
   recordable: no host-side retry loop, no host branch on generated data, no per-env
   Python branching (``repulsive`` included: its iteration stops early on device, see
   :ref:`cuda-graph-bounded`);
-- ``gen.valid`` is ``1`` for every env. It is a stage flag, not the final quality
-  decision: turning, thickness, NaNs, width floor, ``N_max`` truncation and optional
-  border intersections are judged later by the ``validity`` stage, after the
-  constant-spacing resample and XPBD relaxation (:ref:`pipeline-fail-bits`).
+- the five sampling/steering generators write ``gen.valid=1`` for every env.
+  Repulsive requires finite feasible raw geometry at its sampled target length;
+  optional optimizer freezing is separate. Final turning, thickness, NaNs, width
+  floor, ``N_max`` truncation and optional border checks run after the shared tail.
+  Repulsive also checks full-band disc/wall clearance there
+  (:ref:`pipeline-fail-bits`, :ref:`geometry-validity`).
 
 Per-generator algorithm details are in the catalogue, :doc:`/generators/overview`.
 
@@ -143,34 +145,17 @@ device is internally reproducible, and cross-device yields are compared statisti
 not per env. This holds for **all six** generators including ``repulsive`` (the
 iterative optimizer): its growth gradient is hand-written analytic adjoints, a per-vertex
 gather with no atomics, so it is byte-identical run-to-run on both ``cpu`` and ``cuda``,
-per seed. As with every generator, cross-*device* output is statistically equivalent
-(same yield and compactness band) but not bit-identical, since fp32 rounding differs
-between CPU and CUDA. See ``track_gen/_src/warp_generate_repulsive.py``'s module
-docstring for the full account.
+per seed. Cross-device byte equality is not promised: floating-point arithmetic
+can follow different accepted paths on CPU and CUDA. Measure shape and validity
+statistics for the device and settings you use. See the module docstring in
+``track_gen/_src/warp_generate_repulsive.py`` for the full account.
 
-**Yield.** Nearly every env is :term:`valid` at the defaults: the measured yield of each
-generator is in :doc:`/generators/benchmarks`, and the relaxation pages give it per regime
-(:doc:`/relaxation/convergence`). With a thin road (``half_width=0.03``) the default
-``N_max = 384`` is too short for the longest loops, which then fail as truncated: size
-``N_max`` for the longest track (:ref:`tuning-size`; :ref:`invalid-envs` explains how to
-measure the invalid fraction). Two design choices give that yield:
-
-- **Constant spacing makes relaxation lossless.** At a fixed 256 points the centerline is
-  over-resolved relative to its half-width, so a fixed iteration count cannot drive the
-  Jacobi solve to convergence (a yield ceiling of about 0.68 in the fat-band regime).
-  Relaxing at about ``0.6 × half_width`` spacing (about 145 to 160 nodes per track instead
-  of 256) lifts that regime to about 0.999, runs faster (fewer nodes), and keeps the solve
-  recordable.
-- **Single-pass centerline generation.** With relaxation lossless, the remaining
-  failures are smooth-centerline self-crossers. Rather than an accept-first-valid
-  regeneration loop, the ``bezier`` generator takes one corner draw per env and routes any
-  track whose smooth Bezier centerline self-crosses to its provably simple corner polygon,
-  which XPBD re-rounds. ``hull`` follows the same selected-polygon rescue for its
-  Catmull-Rom self-crossers, ``voronoi`` falls back to its selected anchor polygon,
-  ``checkpoint`` uses bounded best-of-K selection with an optional single-crossing clip
-  fallback, and ``polar`` emits a closed radial spline with no generator-local fallback.
-  ``max_regen_iters`` is therefore ignored by the pipeline and deprecated (a non-default
-  value emits a ``DeprecationWarning``; see :ref:`deprecated-config-fields`).
+**Validity is measured on the completed geometry.** Width, spacing, shape and solve
+settings affect the fraction that passes. Size capacity for your largest perimeter and
+measure failure bits on the actual seed set (:ref:`invalid-envs`). The generator guides
+explain their local fallback/selection mechanisms; XPBD then attempts to improve spacing,
+curvature and nonlocal separation. Neither stage guarantees that every sample becomes
+valid, and generation has no host retry loop.
 
 **FP tolerance and hard thresholds.** Validity gates (``th_ok``, ``turn_ok``) are hard
 comparisons; near a decision boundary the accepted ~1e-4 Warp-vs-torch drift can flip a

@@ -6,8 +6,14 @@ machine line of a caption). Nothing here is typed by hand: each file is written 
 command below, and prose never retypes a GPU number. This directory is not a Sphinx
 source (`exclude_patterns`).
 
+These datasets predate the 0.3 built-in hashed-RNG switch and are historical reference
+measurements. Running their commands against current source measures the new seed
+mapping and poison default; it does not reproduce these stored numbers. The 0.3 RNG
+distribution gate is documented separately in
+`docs/library-readiness/archive/upgrading/from-0.2.rst`.
+
 CPU files: every column but the timings (`gen_ms_per_call`, the collision `ms` lines)
-is deterministic for a given Warp version and platform, so a re-run reproduces them; the
+is deterministic for a fixed source revision, Warp version and platform; the
 timings depend on the machine and its load.
 
 GPU files: measured on the machine named in `machine-cuda.txt` (an NVIDIA GB10, an

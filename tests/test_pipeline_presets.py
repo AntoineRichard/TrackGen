@@ -89,7 +89,7 @@ def test_the_default_stage_list():
         ("offset", "default"), ("elevation", "flat"), ("validity", "default"),
         ("lift", "flat")]
     assert spec.batch == BatchSpec(num_envs=E, device=DEV, n_max=384, closed=True,
-                                   scale=1.0, on_invalid="keep")
+                                   scale=1.0, on_invalid="poison")
     assert dict(spec.stages[0].capacity) == {"raw": 256}
     assert dict(spec.stages[1].params) == {"spacing": pytest.approx(0.06)}
     assert spec.stages[9].params == {"z_base": 0.0}
@@ -207,7 +207,7 @@ def test_json_round_trip_with_plugin_stages_builds_byte_identical():
     b = TrackGenerator(back, _rng())
     assert _bytes(a._track) == _bytes(b._track)
     old = dict(d, batch={k: v for k, v in d["batch"].items() if k != "on_invalid"})
-    assert PipelineSpec.from_dict(old).batch.on_invalid == "keep"    # additive field
+    assert PipelineSpec.from_dict(old).batch.on_invalid == "poison"
 
 
 # ---------------------------------------------------------------------------------------

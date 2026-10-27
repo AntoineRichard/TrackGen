@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
-from track_gen._src.types import Track
+from track_gen._src.types import Layout, Track
 
 
 def make_annulus_track(E=1, n=512, N_max=None, r_center=1.0, half_width=0.3,
@@ -48,6 +48,12 @@ def make_annulus_track(E=1, n=512, N_max=None, r_center=1.0, half_width=0.3,
         count=wp.array(np.array(counts, np.int32), dtype=wp.int32, device=device),
         # theta increases 0 -> 2*pi, so every annulus loop winds CCW (+1.0).
         winding=wp.array(np.ones(E, np.float32), dtype=wp.float32, device=device),
+        truncated=wp.zeros(E, dtype=wp.int32, device=device),
+        generation=wp.zeros(E, dtype=wp.int32, device=device),
+        fail_mask=wp.zeros(E, dtype=wp.int32, device=device),
+        half_width=wp.array(np.where(np.isnan(arclen), np.nan, half_width).reshape(-1),
+                            dtype=wp.float32, device=device),
+        layout=Layout(E, N_max, str(device)),
     )
 
 

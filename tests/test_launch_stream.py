@@ -22,12 +22,7 @@ from track_gen.exec import LaunchContext, resolve, resolve_stream
 from track_gen.ops import fill
 from track_gen.testing.contract import stream_explicit
 
-# Roadmap PR13d: bezier's style_sampling is deprecated (one DeprecationWarning per built
-# generator); this module still exercises it.
-pytestmark = pytest.mark.filterwarnings(
-    "ignore:bezier's style_sampling is deprecated:DeprecationWarning")
-
-# Library modules plus the out-of-tree toy plugin (tests._plugin_toys, accepts_ctx=True),
+# Library modules plus the out-of-tree toy plugin (tests._plugin_toys, ctx-aware),
 # which is held to the same stream-explicit contract.
 _PROBED = ("track_gen", "tests._plugin_toys")
 
